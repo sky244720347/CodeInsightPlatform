@@ -27,6 +27,7 @@ import ModelConfig from '../pages/basic/models';
 import Prompts from '../pages/basic/prompts';
 import Permissions from '../pages/basic/permissions';
 import QuotaControl from '../pages/basic/quota-control';
+import TaskOrchestration from '../pages/basic/orchestration';
 import Login from '../pages/login';
 
 /**
@@ -85,6 +86,7 @@ export const router = createHashRouter([
           { path: 'prompts', element: <Prompts /> },
           { path: 'permissions', element: <Permissions /> },
           { path: 'quota', element: <QuotaControl /> },
+          { path: 'orchestration', element: <TaskOrchestration /> },
         ],
       },
       // 知识构建任务：子路由由侧栏独立入口访问（无页签壳）

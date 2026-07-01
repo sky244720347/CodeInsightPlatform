@@ -1,7 +1,7 @@
 package com.company.codeinsight.modules.entrypoint.trial;
 
 import com.company.codeinsight.common.response.ApiResponse;
-import com.company.codeinsight.modules.entrypoint.model.EntryPoint;
+import com.company.codeinsight.modules.entrypoint.model.DiscoveredEntrypoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -51,7 +51,7 @@ public class TrialRunController {
 
     @Operation(summary = "解析试跑结果中的入口列表（供前端回填选择使用）")
     @GetMapping("/{trialId}/entries")
-    public ApiResponse<List<EntryPoint>> getEntries(@PathVariable Long repoId, @PathVariable Long trialId) {
+    public ApiResponse<List<DiscoveredEntrypoint>> getEntries(@PathVariable Long repoId, @PathVariable Long trialId) {
         EntryScanTrialEntity t = trialRunService.get(trialId);
         if (t == null) return ApiResponse.success(List.of());
         return ApiResponse.success(trialRunService.parseResultEntries(t.getResultJson()));

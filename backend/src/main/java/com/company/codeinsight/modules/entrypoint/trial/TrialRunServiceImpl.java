@@ -4,7 +4,6 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.modules.entrypoint.model.DiscoveredEntrypoint;
-import com.company.codeinsight.modules.entrypoint.model.EntryPoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfigCodec;
 import com.company.codeinsight.modules.entrypoint.service.EntryPointDiscoveryService;
@@ -171,10 +170,10 @@ public class TrialRunServiceImpl implements TrialRunService {
     }
 
     @Override
-    public List<EntryPoint> parseResultEntries(String resultJson) {
+    public List<DiscoveredEntrypoint> parseResultEntries(String resultJson) {
         if (resultJson == null || resultJson.isEmpty()) return Collections.emptyList();
         try {
-            return objectMapper.readValue(resultJson, new TypeReference<List<EntryPoint>>() {});
+            return objectMapper.readValue(resultJson, new TypeReference<List<DiscoveredEntrypoint>>() {});
         } catch (Exception e) {
             log.warn("parseResultEntries failed: {}", e.getMessage());
             return Collections.emptyList();

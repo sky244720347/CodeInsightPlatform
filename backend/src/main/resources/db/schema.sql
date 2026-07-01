@@ -190,12 +190,14 @@ CREATE TABLE IF NOT EXISTS ci_entry_scan_trial (
     finished_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
+ALTER TABLE ci_entry_scan_trial ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_trial_repo ON ci_entry_scan_trial (repository_id);
 CREATE INDEX IF NOT EXISTS idx_trial_status ON ci_entry_scan_trial (status, finished_at);
 COMMENT ON TABLE ci_entry_scan_trial IS '入口扫描试跑记录：用户在仓库配置中点击"试跑"产生的入口识别结果（不入库真实任务，每次独立执行）';
 COMMENT ON COLUMN ci_entry_scan_trial.config_snapshot IS '本次试跑用的 entryScanConfig（JSON 字符串）';
 COMMENT ON COLUMN ci_entry_scan_trial.result_json IS '试跑结果：入口类 + 方法列表 JSON 字符串';
 COMMENT ON COLUMN ci_entry_scan_trial.status IS '试跑状态：PENDING/RUNNING/SUCCESS/FAILED/CANCELLED';
+COMMENT ON COLUMN ci_entry_scan_trial.updated_at IS '更新时间';
 
 -- 4. 知识构建任务表
 CREATE TABLE IF NOT EXISTS ci_task (

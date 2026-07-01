@@ -1,6 +1,6 @@
 package com.company.codeinsight.modules.entrypoint.trial;
 
-import com.company.codeinsight.modules.entrypoint.model.EntryPoint;
+import com.company.codeinsight.modules.entrypoint.model.DiscoveredEntrypoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
 
 import java.util.List;
@@ -41,7 +41,7 @@ public interface TrialRunService {
     EntryPointConfig parseConfigSnapshot(String configSnapshot);
 
     /**
-     * 解析 result_json 字符串回 List<EntryPoint>（供前端结果展示）
+     * 解析 result_json 字符串回 List&lt;DiscoveredEntrypoint&gt;（供前端结果展示）
      */
-    List<EntryPoint> parseResultEntries(String resultJson);
+    List<DiscoveredEntrypoint> parseResultEntries(String resultJson);
 }

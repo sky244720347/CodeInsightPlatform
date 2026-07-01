@@ -195,18 +195,34 @@ const basicNav: NavItem[] = [
     description: '当前账号信息与角色（后续接入 UM/SSO 后扩展为完整 RBAC）。',
   },
   {
-    key: '/basic/quota',
+    key: 'task-control',
     icon: <ThunderboltOutlined />,
-    label: <TabLink to="/basic/quota">流量管控</TabLink>,
-    title: '流量管控',
-    description: '全局限流配置、用户级 Token 额度、AI 调用并发控制。',
-  },
-  {
-    key: '/tasks/queue',
-    icon: <HourglassOutlined />,
-    label: <TabLink to="/tasks/queue">任务队列</TabLink>,
-    title: '任务队列',
-    description: '查看排队中的 PENDING 任务，调整优先级或取消排队。',
+    label: '任务管控',
+    title: '任务管控',
+    description: '流量配置 / 任务编排 / 队列查看。',
+    children: [
+      {
+        key: '/basic/quota',
+        icon: <ThunderboltOutlined />,
+        label: <TabLink to="/basic/quota">流量配置</TabLink>,
+        title: '流量配置',
+        description: '全局限流配置、用户级 Token 额度、AI 调用并发控制。',
+      },
+      {
+        key: '/basic/orchestration',
+        icon: <BranchesOutlined />,
+        label: <TabLink to="/basic/orchestration">任务编排</TabLink>,
+        title: '任务编排',
+        description: '查看所有时间窗口配置的仓库，分析调度密度与历史执行情况。',
+      },
+      {
+        key: '/tasks/queue',
+        icon: <HourglassOutlined />,
+        label: <TabLink to="/tasks/queue">队列查看</TabLink>,
+        title: '队列查看',
+        description: '查看排队中的 PENDING 任务，调整优先级或取消排队。',
+      },
+    ],
   },
 ];
 

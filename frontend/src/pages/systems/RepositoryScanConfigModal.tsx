@@ -110,19 +110,28 @@ const RepositoryScanConfigModal: React.FC<Props> = ({
 
   /** 构建试跑结果树（按 entryType 分组 → 类 → 方法） */
   const trialTreeData = useMemo<DataNode[]>(() => {
-    const groups: Record<string, any[]> = {};
-    trialEntries.forEach((e: any) => {
-      const t = e.entryType || 'UNKNOWN';
+    const normalized = trialEntries.map((e: any) => {
+      const base = e.base ?? e;
+      return { ...base, methods: e.methods ?? [] };
+    });
+    const groups: Record<string, typeof normalized> = {};
+    normalized.forEach((cls) => {
+      const t = cls.entryType || 'UNKNOWN';
       if (!groups[t]) groups[t] = [];
-      groups[t].push(e);
+      groups[t].push(cls);
     });
     return Object.entries(groups).sort(([, a], [, b]) => b.length - a.length).map(([k, items]) => ({
       key: k,
       title: <Space><Tag color="cyan">{k}</Tag><Text type="secondary">{items.length} 类</Text></Space>,
       selectable: false,
-      children: items.map((cls: any) => ({
+      children: items.map((cls) => ({
         key: cls.className,
-        title: <Text strong>{cls.className.split('.').pop()}</Text>,
+        title: (
+          <Space size={4}>
+            <Text strong>{cls.className.split('.').pop()}</Text>
+            {cls.remark && <Text type="secondary" style={{ fontSize: 11 }}>{cls.remark}</Text>}
+          </Space>
+        ),
         children: (cls.methods || []).map((m: any, i: number) => ({
           key: `${cls.className}-${i}`,
           isLeaf: true,

@@ -887,31 +887,8 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   //   - 重跑：触发任务流水线重新分析
   //   - 去推送：跳转 /push 页触发整组知识版本推送
   // 任务处于 PUSHING / PUSHED 时确认/重跑被锁定，与后端 assertNotPushed 同步。
-  const renderTaskActions = () => (
-    <div className="ci-action-group">
-      <Tooltip title={isTaskLocked ? '任务已推送，确认操作已锁定' : '确认通过当前任务（整组草稿一次性置 CONFIRMED，任务推进到 CONFIRMED）'}>
-        <Button icon={<CheckOutlined />} onClick={handleConfirm} disabled={isTaskLocked}>
-          确认通过
-        </Button>
-      </Tooltip>
-      <Tooltip title="查看当前任务下整组草稿的全部复核意见（含任务级确认记录）">
-        <Button icon={<MessageOutlined />} onClick={handleOpenTaskComments} disabled={!selectedTaskId}>
-          复核意见
-          {taskComments.length > 0 && <span className="ci-action-group-badge">{taskComments.length}</span>}
-        </Button>
-      </Tooltip>
-      <Tooltip title={isTaskLocked ? '任务已推送，重跑操作已锁定' : '触发当前任务重新分析以重新生成草稿'}>
-        <Button icon={<ReloadOutlined spin={rerunLoading} />} loading={rerunLoading} onClick={handleRerun} disabled={isTaskLocked}>
-          重跑
-        </Button>
-      </Tooltip>
-      <Tooltip title="去往推送页面（推送到 Git）">
-        <Button icon={<CloudUploadOutlined />} onClick={handlePush}>
-          去推送
-        </Button>
-      </Tooltip>
-    </div>
-  );
+  const renderTaskActions = () => null;
+
 
   // 编辑器标题栏 actions - 按"导航 / 视图 / 复核 / 信息 / 工具"五组分组
   const renderEditorActions = () => {

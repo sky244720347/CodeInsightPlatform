@@ -130,13 +130,9 @@ export interface PreviewSystemDto {
  *   2) 页面 URL 加上 ?demo=1
  *   3) 页面顶部的「演示数据」开关（运行时切换，刷新失效）
  */
-export function getDemoMode(): boolean {
-  return isMockEnabled();
-}
 
-export function toggleDemoMode(enabled: boolean): void {
-  setMockEnabled(enabled);
-}
+
+
 
 export function getWorkspaceByTask(taskId: number): Promise<{ workspace: DraftWorkspace; drafts: KnowledgeDraft[] }> {
   if (isMockEnabled()) return mockGetWorkspaceByTask(taskId);
@@ -258,3 +254,12 @@ export async function listAllTasksBySystem(systemId: number): Promise<import('..
   const page = await request.get<Page, Page>(`/tasks`, { params: { current: 1, size: 200, systemId } });
   return page?.records ?? [];
 }
+
+/** 单文档审核通过（锁定） */
+export const approveDraft = (id: number, author?: string): Promise<void> => {
+  return request.post(`/drafts/${id}/approve`, { author });
+};
+/** 单文档重跑（调用 AI 重新生成） */
+export const regenerateDraft = (id: number): Promise<void> => {
+  return request.post(`/drafts/${id}/regenerate`);
+};
