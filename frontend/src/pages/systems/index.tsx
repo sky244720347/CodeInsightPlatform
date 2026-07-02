@@ -3,6 +3,7 @@ import { Card, Form, Space, Table, message } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   deleteSystem,
+  getSystem,
   updateSystem,
 } from '../../api/system';
 import {
@@ -407,19 +408,28 @@ const Systems: React.FC = () => {
         repository={selectedRepo}
         onClose={() => {
           setPromptBindOpen(false);
-          setSelectedSystem(null);
+          setSelectedRepo(null);
         }}
         onSaved={async () => {
+          const systemId = selectedSystem?.id;
+          const repoId = selectedRepo?.id;
           await list.fetch();
-          if (selectedRepo?.id) {
+          if (systemId) {
+            await repoHook.refresh(systemId);
             try {
-              const updated = await getRepository(selectedRepo.id);
-              setSelectedRepo(updated);
-            } catch { /* ignore */ }
+              const updatedSystem = await getSystem(systemId);
+              setSelectedSystem(updatedSystem);
+            } catch {
+              /* ignore */
+            }
           }
-          // 顺便刷新仓库列表（抽屉里仓库行内显示的提示词绑定 ID 已变化）
-          if (selectedSystem?.id) {
-            await repoHook.refresh(selectedSystem.id);
+          if (repoId) {
+            try {
+              const updated = await getRepository(repoId);
+              setSelectedRepo(updated);
+            } catch {
+              /* ignore */
+            }
           }
         }}
       />

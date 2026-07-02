@@ -54,8 +54,9 @@ public class KnowledgeReleaseEditService {
             throw new BusinessException("仅待审核记录可批准，当前: " + row.getStatus());
         }
         ActiveKnowledgeContext ctx = activeKnowledgeResolver.require(row.getRepositoryId());
-        Path target = ctx.getReleaseDir().resolve(row.getRelativePath()).normalize();
-        if (!target.startsWith(ctx.getReleaseDir())) {
+        Path releaseDir = ctx.getReleaseDir().toAbsolutePath().normalize();
+        Path target = releaseDir.resolve(row.getRelativePath()).normalize();
+        if (!target.startsWith(releaseDir)) {
             throw new BusinessException("非法文件路径");
         }
         String body = ensureHumanEditedFrontMatter(row.getContentText());

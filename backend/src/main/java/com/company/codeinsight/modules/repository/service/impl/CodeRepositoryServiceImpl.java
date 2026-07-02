@@ -99,6 +99,14 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
         if ("******".equals(repository.getPassword())) {
             repository.setPassword(existing.getPassword());
         }
+        // 入参未携带提示词 ID 时（前端编辑表单未提交此字段），复用旧值
+        // 避免 MyBatis-Plus updateById 的全字段替换把已配置的仓库级提示词清空
+        if (repository.getModularizePromptId() == null) {
+            repository.setModularizePromptId(existing.getModularizePromptId());
+        }
+        if (repository.getDocumentPromptId() == null) {
+            repository.setDocumentPromptId(existing.getDocumentPromptId());
+        }
         repository.setId(id);
         this.updateById(repository);
         return repository;

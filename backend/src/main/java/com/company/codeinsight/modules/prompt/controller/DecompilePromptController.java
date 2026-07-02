@@ -14,6 +14,7 @@ import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.Data;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.CacheControl;
 import org.springframework.http.MediaType;
@@ -26,12 +27,14 @@ import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBo
 import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Objects;
 
 /**
  * AI 提示词模板管理控制器
  * 提供提示词配置的创建、版本编辑递增、克隆复制、启用状态切换、删除约束、以及基于样本代码的测试试跑 REST API 端点。
  */
 @Tag(name = "提示词管理", description = "用于代码总结的 AI 提示词模板管理")
+@Slf4j
 @RestController
 @RequestMapping("/prompts")
 @Validated
@@ -89,6 +92,9 @@ public class DecompilePromptController {
     /**
      * 更新已存在的提示词模板内容,自动递增版本号做审计回溯
      * <p><b>仅 DRAFT 状态可直接编辑,RELEASED/ARCHIVED 不可编辑</b>(如需改动请先调用 POST /clone 创建新草稿)。</p>
+     *
+     * <p><b>幂等保护</b>:name + content 与已存完全一致时,直接返回原对象,</p>
+     * <p>不写 DB、不递增 version,避免无意义提交产生空版本号与污染版本历史。</p>
      */
     @Operation(summary = "编辑提示词模板")
     @PutMapping("/{id}")
@@ -101,6 +107,15 @@ public class DecompilePromptController {
         if (!DecompilePrompt.LIFECYCLE_DRAFT.equals(existing.getLifecycle())) {
             throw new BusinessException("已发布/已归档的提示词不可直接编辑;请使用复制(POST /prompts/{id}/clone)创建新草稿");
         }
+
+        // 幂等保护：name + content 与已存完全一致 → 不写 DB、不 +1
+        boolean nameChanged = !Objects.equals(existing.getName(), prompt.getName());
+        boolean contentChanged = !Objects.equals(existing.getContent(), prompt.getContent());
+        if (!nameChanged && !contentChanged) {
+            log.info("updatePrompt no-op: id={}, name+content 未变化,跳过 version+1", id);
+            return ApiResponse.success(existing);
+        }
+
         prompt.setId(id);
         prompt.setVersion(existing.getVersion() + 1);
         if (!StringUtils.hasText(prompt.getPromptType())) {

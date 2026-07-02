@@ -149,7 +149,8 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
         // 根据状态转移矩阵判定流转合法性
         return switch (current) {
             case DRAFT -> target == TaskStatus.PENDING || target == TaskStatus.CANCELLED;
-            case PENDING -> target == TaskStatus.PULLING_CODE || target == TaskStatus.CANCELLED || target == TaskStatus.FAILED;
+            case PENDING -> target == TaskStatus.PULLING_CODE || target == TaskStatus.AI_ANALYZING
+                    || target == TaskStatus.GENERATING_DOC || target == TaskStatus.CANCELLED || target == TaskStatus.FAILED;
             case PULLING_CODE -> target == TaskStatus.PARSING_CODE || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case PARSING_CODE -> target == TaskStatus.SPLITTING_TASK || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case SPLITTING_TASK -> target == TaskStatus.ENTRYPOINT_REVIEW || target == TaskStatus.AI_ANALYZING || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;

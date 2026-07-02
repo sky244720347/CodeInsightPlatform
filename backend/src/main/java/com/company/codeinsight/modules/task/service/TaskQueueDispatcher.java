@@ -2,6 +2,7 @@ package com.company.codeinsight.modules.task.service;
 
 import com.company.codeinsight.common.cluster.ClusterLeaderLock;
 import com.company.codeinsight.common.cluster.ClusterProperties;
+import com.company.codeinsight.modules.knowledge.remediation.KnowledgeRemediationConstants;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.enums.TaskStatus;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
@@ -67,7 +68,7 @@ public class TaskQueueDispatcher {
                 continue;
             }
             try {
-                stateMachineService.transitTo(reserved, TaskStatus.PULLING_CODE, null);
+                transitPendingToExecutionStart(reserved);
                 decompileTaskService.runPipeline(taskId);
             } catch (Exception e) {
                 limiter.release(systemId, taskId);
@@ -98,12 +99,30 @@ public class TaskQueueDispatcher {
                 continue;
             }
             try {
-                stateMachineService.transitTo(t, TaskStatus.PULLING_CODE, null);
+                transitPendingToExecutionStart(t);
                 decompileTaskService.runPipeline(t.getId());
             } catch (Exception e) {
                 limiter.release(t.getSystemId(), t.getId());
                 log.error("dispatcher 触发任务 #{} 失败", t.getId(), e);
             }
         }
+    }
+
+    /**
+     * 普通任务从 PULLING_CODE 起跑；知识纠错任务按 resume_from 直接进入续跑阶段。
+     */
+    private void transitPendingToExecutionStart(DecompileTask task) {
+        if (KnowledgeRemediationConstants.TRIGGER_SOURCE.equals(task.getTriggerSource())) {
+            String resume = task.getResumeFrom();
+            if (KnowledgeRemediationConstants.RESUME_AI_ANALYZING.equals(resume)) {
+                stateMachineService.transitTo(task, TaskStatus.AI_ANALYZING, null);
+            } else if (KnowledgeRemediationConstants.RESUME_GENERATING_DOC.equals(resume)) {
+                stateMachineService.transitTo(task, TaskStatus.GENERATING_DOC, null);
+            } else {
+                throw new IllegalStateException("未知纠错续跑起点: " + resume);
+            }
+            return;
+        }
+        stateMachineService.transitTo(task, TaskStatus.PULLING_CODE, null);
     }
 }

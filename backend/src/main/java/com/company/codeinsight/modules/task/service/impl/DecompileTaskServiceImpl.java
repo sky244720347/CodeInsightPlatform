@@ -403,25 +403,25 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
 
     /**
      * 把传入的两类提示词 id 写入 task。
-     * 解析顺序：①调用方显式传入 → ②系统级绑定（ci_system.modularize_prompt_id / document_prompt_id）。
+     * 解析顺序：①调用方显式传入 → ②仓库级绑定（ci_repository.modularize_prompt_id / document_prompt_id）。
      * 不做全局默认提示词兜底。
      */
     private void applyPromptIds(DecompileTask task, Long modularizePromptId, Long documentPromptId) {
-        Long sysModularize = null;
-        Long sysDocument = null;
+        Long repoModularize = null;
+        Long repoDocument = null;
         if (modularizePromptId == null || documentPromptId == null) {
-            SystemApplication sys = systemApplicationService.getById(task.getSystemId());
-            if (sys != null) {
+            CodeRepository repo = codeRepositoryService.getById(task.getRepositoryId());
+            if (repo != null) {
                 if (modularizePromptId == null) {
-                    sysModularize = sys.getModularizePromptId();
+                    repoModularize = repo.getModularizePromptId();
                 }
                 if (documentPromptId == null) {
-                    sysDocument = sys.getDocumentPromptId();
+                    repoDocument = repo.getDocumentPromptId();
                 }
             }
         }
-        task.setModularizePromptId(modularizePromptId != null ? modularizePromptId : sysModularize);
-        task.setDocumentPromptId(documentPromptId != null ? documentPromptId : sysDocument);
+        task.setModularizePromptId(modularizePromptId != null ? modularizePromptId : repoModularize);
+        task.setDocumentPromptId(documentPromptId != null ? documentPromptId : repoDocument);
     }
 
     /**
@@ -752,7 +752,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                                                File projectDir,
                                                com.company.codeinsight.modules.scanner.model.IncrementalContext incrementalCtx) {
         // 4. AI_ANALYZING → MODULE_HIERARCHY
-        stateMachineService.transitTo(taskId, TaskStatus.AI_ANALYZING, null);
+        if (!TaskStatus.AI_ANALYZING.name().equals(task.getStatus())) {
+            stateMachineService.transitTo(taskId, TaskStatus.AI_ANALYZING, null);
+        }
         execLog.log(taskId, ">>> AI_ANALYZING — AI 归纳");
         execLog.log(taskId, "  aiMock=" + aiSummaryService.isAiMock() + " | model="
                 + (task.getModelName() != null ? task.getModelName() : "(default)"));
@@ -848,7 +850,10 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
 
     private void continueGeneratingDocRemediation(Long taskId, DecompileTask task, File projectDir,
             com.company.codeinsight.modules.scanner.model.IncrementalContext incrementalCtx) {
-        stateMachineService.transitTo(taskId, TaskStatus.GENERATING_DOC, null);
+        // 调度器已将纠错任务置为 GENERATING_DOC；幂等跳过重复流转
+        if (!TaskStatus.GENERATING_DOC.name().equals(task.getStatus())) {
+            stateMachineService.transitTo(taskId, TaskStatus.GENERATING_DOC, null);
+        }
         List<CodeChunk> chunks = codeChunkService.getChunksByTaskId(taskId);
         aiSummaryService.generateDraftDocument(taskId, chunks,
                 decompilePromptService.requireTaskPromptContent(task,
