@@ -161,5 +161,12 @@ public class DecompileTask extends BaseEntity {
 
     @TableField("remediation_scope_json")
     private String remediationScopeJson;
+
+    /**
+     * 本任务扫描时的源代码 Commit ID（{@code pullAndScan} 成功后写入一次）。
+     * <p>知识版本 {@code source_commit} 与增量影响分析均以此为准，不读仓库级字段。</p>
+     */
+    @TableField("source_commit")
+    private String sourceCommit;
 }
 

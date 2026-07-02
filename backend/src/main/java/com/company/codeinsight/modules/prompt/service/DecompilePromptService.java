@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.IService;
 import com.company.codeinsight.modules.prompt.dto.PromptTestResultDto;
 import com.company.codeinsight.modules.prompt.dto.PromptTestStreamEventDto;
+import com.company.codeinsight.modules.prompt.dto.SyncPromptFromResourceResultDto;
 import com.company.codeinsight.modules.prompt.entity.DecompilePrompt;
 
 import java.util.Map;
@@ -111,5 +112,24 @@ public interface DecompilePromptService extends IService<DecompilePrompt> {
      */
     void testRunStream(Long id, String sampleCode, Long modelId, String resolvedContent,
                        Consumer<PromptTestStreamEventDto> eventConsumer);
+
+    /**
+     * 把 classpath 上的 .md 资源内容同步为该 {@code promptType} 的默认提示词。
+     * <p>业务背景：模块提取/文档生成提示词经常随代码升级调整（{@code analyze_prompt.md} /
+     * {@code module_doc_prompt.md}），但生产 DB 中以 RELEASED 状态锁定，
+     * 升级后旧提示词仍然出现在 {@code requireTaskPromptContent} 解析路径上，
+     * 与代码中真实使用的占位符（{@code {candidate_methods}} 等）不匹配。
+     * 运维调此接口把文件最新内容以"新版本号 + RELEASED + 默认"方式落表，旧默认自动归档。</p>
+     *
+     * <p>行为：</p>
+     * <ul>
+     *   <li>{@code promptType} 必须是 {@link DecompilePrompt#TYPE_MODULARIZE}
+     *       或 {@link DecompilePrompt#TYPE_DOCUMENT_GENERATION}</li>
+     *   <li>{@code resourcePath} 例如 "analyze_prompt.md"——相对于 classpath 根</li>
+     *   <li>同步走 MD5 哈希对比，内容一致则 {@code changed=false}，不落表</li>
+     *   <li>内容不一致则新建一行（version = 老默认 version+1，如不存在则 2），置为默认，旧默认归档</li>
+     * </ul>
+     */
+    SyncPromptFromResourceResultDto syncFromResource(String promptType, String resourcePath);
 }
 

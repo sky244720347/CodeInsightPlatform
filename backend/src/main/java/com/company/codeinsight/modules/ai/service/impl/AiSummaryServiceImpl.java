@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.common.util.AiResponseJsonExtractor;
 import com.company.codeinsight.modules.ai.entity.AiCallRecord;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.modules.ai.mapper.AiCallRecordMapper;
@@ -23,6 +24,8 @@ import com.company.codeinsight.modules.parser.service.JavaParserService;
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo;
 import com.company.codeinsight.modules.draft.entity.DraftSourceReference;
 import com.company.codeinsight.modules.draft.mapper.DraftSourceReferenceMapper;
+import com.company.codeinsight.modules.hierarchy.entity.MethodFunctionBinding;
+import com.company.codeinsight.modules.hierarchy.mapper.MethodFunctionBindingMapper;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
 import com.company.codeinsight.modules.task.service.TaskExecutionLogger;
@@ -126,6 +129,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
     @Autowired
     private MethodCallMapper methodCallMapper;
+
+    @Autowired
+    private MethodFunctionBindingMapper methodFunctionBindingMapper;
 
     @Autowired
     private com.company.codeinsight.modules.callchain.service.MethodCallGraphService methodCallGraphService;
@@ -305,7 +311,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             // 8. 处理响应成功的情况并记录真实的 Token 计数进行审计
             if (response.statusCode() == 200) {
                 JsonNode root = objectMapper.readTree(response.body());
-                String aiText = root.path("choices").get(0).path("message").path("content").asText();
+                String aiText = normalizeModelContent(root.path("choices").get(0).path("message").path("content").asText());
                 int inTokens = root.path("usage").path("prompt_tokens").asInt();
                 int outTokens = root.path("usage").path("completion_tokens").asInt();
 
@@ -652,6 +658,13 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     @Override
     public void generateDraftDocument(Long taskId, List<CodeChunk> chunks, String promptContent,
                                      com.company.codeinsight.modules.scanner.model.IncrementalContext ctx) {
+        generateDraftDocument(taskId, chunks, promptContent, ctx, null);
+    }
+
+    @Override
+    public void generateDraftDocument(Long taskId, List<CodeChunk> chunks, String promptContent,
+                                     com.company.codeinsight.modules.scanner.model.IncrementalContext ctx,
+                                     com.company.codeinsight.modules.callchain.model.IncrementalImpact impact) {
         DecompileTask task = decompileTaskMapper.selectById(taskId);
         if (task == null) {
             throw new BusinessException("未找到关联的任务");
@@ -717,6 +730,12 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     if (!remediationModuleIds.contains(moduleDto.getId())) {
                         skipped++;
                         execLog.log(taskId, "  [module " + moduleIndex + "/" + moduleTotal + "] " + moduleDto.getModuleName() + " — 不在纠错范围，跳过");
+                        continue;
+                    }
+                } else if (impact != null && impact.isIncremental()) {
+                    if (!impact.getDocRetargetModuleIds().contains(moduleDto.getId())) {
+                        skipped++;
+                        execLog.log(taskId, "  [module " + moduleIndex + "/" + moduleTotal + "] " + moduleDto.getModuleName() + " — 未受本次变更影响，跳过");
                         continue;
                     }
                 } else if (changedFqSet != null && !moduleTouchedByChange(moduleDto, changedFqSet)) {
@@ -864,19 +883,13 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto, finalMarkdown, initialStatus, projectDir);
     }
 
-    /** 收集单个 Function 的可达源码（从 methodSignatures BFS） */
+    /** 收集单个 Function 的可达源码（从 method_function_binding 反查根方法 → BFS） */
     private String collectFunctionSourceCode(Long taskId,
                                               com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
                                               File projectDir) {
-        Set<String> rootSignatures = new LinkedHashSet<>();
-        if (fn.getMethodSignatures() != null) {
-            for (String sig : fn.getMethodSignatures()) {
-                String rootSig = buildFullMethodSignature(fn, sig);
-                if (StringUtils.hasText(rootSig)) rootSignatures.add(rootSig);
-            }
-        }
+        Set<String> rootSignatures = loadFunctionRootSignatures(taskId, fn);
         if (rootSignatures.isEmpty()) {
-            // fallback：按 classPaths（兼容旧数据）
+            // fallback：按 classPaths（兼容旧数据，且反向绑定表为空时不再做大杂烩 BFS）
             if (fn.getClassPaths() != null && !fn.getClassPaths().isEmpty()) {
                 StringBuilder sb = new StringBuilder();
                 for (String cp : fn.getClassPaths()) {
@@ -909,6 +922,49 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             sb.append(filteredContent).append("\n\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * 反查某功能的 BFS 根方法集合（"className#methodSignature(ParamTypes)" 格式）。
+     * <p>优先级：</p>
+     * <ol>
+     *   <li>主路径：从 {@code ci_method_function_binding} 反查该 function_node_id 下的全部方法绑定，
+     *       每条 (class, sig) → "className#sig"，天然多类支持（一个功能可有来自多 Controller 的入口方法）</li>
+     *   <li>回退路径：当反向绑定表为空（AI 没输出 method_bindings、或老任务）时，回退到
+     *       {@code fn.methodSignatures × fn.classPaths[0]} 的笛卡尔积（保持旧行为，标 deprecation）</li>
+     * </ol>
+     */
+    private Set<String> loadFunctionRootSignatures(Long taskId,
+                                                   com.company.codeinsight.modules.hierarchy.model.FunctionDto fn) {
+        Set<String> roots = new LinkedHashSet<>();
+        if (taskId != null && fn != null
+                && methodFunctionBindingMapper != null
+                && StringUtils.hasText(fn.getId())) {
+            List<MethodFunctionBinding> bindings =
+                    methodFunctionBindingMapper.selectByTaskAndFunction(taskId, fn.getId());
+            if (bindings != null) {
+                for (MethodFunctionBinding b : bindings) {
+                    if (!StringUtils.hasText(b.getClassName())
+                            || !StringUtils.hasText(b.getMethodSignature())) {
+                        continue;
+                    }
+                    roots.add(b.getClassName() + "#" + b.getMethodSignature());
+                }
+            }
+        }
+        // 回退：旧 fn.methodSignatures × classPaths[0]（已被反向索引取代的旧路径）
+        if (roots.isEmpty() && fn != null
+                && fn.getMethodSignatures() != null && !fn.getMethodSignatures().isEmpty()
+                && fn.getClassPaths() != null && !fn.getClassPaths().isEmpty()) {
+            String classPath = fn.getClassPaths().stream().findFirst().orElse(null);
+            if (StringUtils.hasText(classPath)) {
+                for (String sig : fn.getMethodSignatures()) {
+                    if (!StringUtils.hasText(sig)) continue;
+                    roots.add(classPath + "#" + sig);
+                }
+            }
+        }
+        return roots;
     }
 
     /** 构建 Function-scoped hierarchy JSON（仅保留该 Function 所在路径） */
@@ -1091,38 +1147,48 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     }
 
     /**
-     * 收集模块所有入口类，并 BFS 出每个入口的可达源码，拼装成单字符串
+     * 收集模块所有入口方法（BFS 入口），并按 ci_method_call 取可达源码。
+     * <p>模块层根方法直接从 {@code ci_method_function_binding WHERE module_node_id} 一次查出，
+     * 不再按"function × classPaths[0]"笛卡尔积（该路径已被反向索引取代，避免大杂烩 BFS）。</p>
      */
     private String collectModuleSourceCode(Long taskId,
                                            com.company.codeinsight.modules.hierarchy.model.ModuleDto moduleDto,
                                            File projectDir) {
-        // 1. 收集模块所有入口 methodSignatures（来自阶段 1 AI 输出）
         Set<String> rootSignatures = new LinkedHashSet<>();
-        for (com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm : moduleDto.getSubModules().values()) {
-            for (com.company.codeinsight.modules.hierarchy.model.FunctionDto fn : sm.getFunctions().values()) {
-                for (String methodSig : fn.getMethodSignatures()) {
-                    String rootSig = buildFullMethodSignature(fn, methodSig);
-                    if (StringUtils.hasText(rootSig)) {
-                        rootSignatures.add(rootSig);
+        if (taskId != null && moduleDto != null
+                && methodFunctionBindingMapper != null
+                && StringUtils.hasText(moduleDto.getId())) {
+            List<MethodFunctionBinding> bindings =
+                    methodFunctionBindingMapper.selectByTaskAndModule(taskId, moduleDto.getId());
+            if (bindings != null) {
+                for (MethodFunctionBinding b : bindings) {
+                    if (StringUtils.hasText(b.getClassName())
+                            && StringUtils.hasText(b.getMethodSignature())) {
+                        rootSignatures.add(b.getClassName() + "#" + b.getMethodSignature());
                     }
                 }
             }
         }
-
-        // 2. fallback：methodSignatures 为空时按 classPaths 走类粒度（兼容阶段 1 之前的数据）
+        // 回退：老数据（无 method_function_binding 行时）按 fn.methodSignatures × classPaths[0] 走
         if (rootSignatures.isEmpty()) {
-            return collectModuleSourceCodeByClass(taskId, moduleDto, projectDir);
+            for (com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm : moduleDto.getSubModules().values()) {
+                for (com.company.codeinsight.modules.hierarchy.model.FunctionDto fn : sm.getFunctions().values()) {
+                    Set<String> fnRoots = loadFunctionRootSignatures(taskId, fn);
+                    rootSignatures.addAll(fnRoots);
+                }
+            }
+            if (rootSignatures.isEmpty()) {
+                return collectModuleSourceCodeByClass(taskId, moduleDto, projectDir);
+            }
         }
 
-        // 3. BFS 调用链反查：rootSignatures → 全部可达方法签名
+        // BFS 调用链反查
         Set<String> reachableMethods = methodCallGraphService.resolveReachableMethods(taskId, rootSignatures);
         log.info("阶段 2 文档生成 taskId={} module={} roots={} reachable={}",
                 taskId, moduleDto.getModuleName(), rootSignatures.size(), reachableMethods.size());
 
-        // 4. 按 className 聚合 reachable 方法签名
         Map<String, Set<String>> classToMethodSigs = groupByClass(reachableMethods);
 
-        // 5. 读物理文件，按 methodSignatures 截取（filterClassToMethods）
         StringBuilder sb = new StringBuilder();
         for (Map.Entry<String, Set<String>> entry : classToMethodSigs.entrySet()) {
             String className = entry.getKey();
@@ -1370,6 +1436,48 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                                            File projectDir) {
         if (fn == null || draftId == null) return;
         java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+
+        // 主路径：直接按 method_function_binding 行写入每条方法引用，避免 classPaths × methodSignatures 笛卡尔积
+        if (methodFunctionBindingMapper != null && taskId != null
+                && StringUtils.hasText(fn.getId())) {
+            List<MethodFunctionBinding> bindings =
+                    methodFunctionBindingMapper.selectByTaskAndFunction(taskId, fn.getId());
+            if (bindings != null && !bindings.isEmpty()) {
+                for (MethodFunctionBinding b : bindings) {
+                    if (!StringUtils.hasText(b.getClassName())
+                            || !StringUtils.hasText(b.getMethodSignature())) {
+                        continue;
+                    }
+                    String classPath = b.getClassName();
+                    String filePath = lookupClassFilePath(taskId, classPath);
+                    if (!StringUtils.hasText(filePath)) {
+                        filePath = entryClassToFilePath(taskId, classPath);
+                    }
+                    if (!StringUtils.hasText(filePath)) continue;
+                    String dedupeKey = filePath + "|" + classPath + "|" + b.getMethodSignature();
+                    if (!seen.add(dedupeKey)) continue;
+                    File classFile = projectDir != null ? new File(projectDir, filePath) : null;
+                    int[] lines = resolveMethodLineRange(classFile, b.getMethodSignature());
+                    DraftSourceReference ref = new DraftSourceReference();
+                    ref.setDraftId(draftId);
+                    ref.setFilePath(filePath);
+                    ref.setClassName(classPath);
+                    ref.setMethodSignature(b.getMethodSignature().trim());
+                    if (lines != null) {
+                        ref.setStartLine(lines[0]);
+                        ref.setEndLine(lines[1]);
+                    } else {
+                        ref.setStartLine(1);
+                        ref.setEndLine(0);
+                    }
+                    ref.setCreatedAt(LocalDateTime.now());
+                    draftSourceReferenceMapper.insert(ref);
+                }
+                return; // 主路径优先：找到任何绑定就完成引用落库，不再走旧路径
+            }
+        }
+
+        // 回退（旧数据 / 无绑定表的退化任务）：仍按 fn.methodSignatures × fn.classPaths 笛卡尔积写入
         if (fn.getMethodSignatures() != null && !fn.getMethodSignatures().isEmpty()
                 && fn.getClassPaths() != null && !fn.getClassPaths().isEmpty()) {
             for (String classPath : fn.getClassPaths()) {
@@ -1903,7 +2011,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
             if (response.statusCode() == 200) {
                 JsonNode root = objectMapper.readTree(response.body());
-                String aiText = root.path("choices").get(0).path("message").path("content").asText();
+                String aiText = normalizeModelContent(root.path("choices").get(0).path("message").path("content").asText());
                 int inTokens = root.path("usage").path("prompt_tokens").asInt(currentEstimate);
                 int outTokens = root.path("usage").path("completion_tokens").asInt(aiText.length() / 3);
                 saveCallRecordAndAudit(systemId, taskId, null, null,
@@ -2030,5 +2138,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             log.warn("parseRemediationModuleIds failed taskId={}: {}", task.getId(), e.getMessage());
             return null;
         }
+    }
+
+    private String normalizeModelContent(String aiText) {
+        return AiResponseJsonExtractor.stripModelArtifacts(aiText);
     }
 }

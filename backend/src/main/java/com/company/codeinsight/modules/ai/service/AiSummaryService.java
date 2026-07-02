@@ -1,6 +1,7 @@
 package com.company.codeinsight.modules.ai.service;
 
 import com.company.codeinsight.modules.chunk.entity.CodeChunk;
+import com.company.codeinsight.modules.callchain.model.IncrementalImpact;
 import com.company.codeinsight.modules.scanner.model.IncrementalContext;
 import lombok.Data;
 
@@ -40,6 +41,13 @@ public interface AiSummaryService {
      * 本方法不会主动删除草稿（保留以备审计）。
      */
     void generateDraftDocument(Long taskId, List<CodeChunk> chunks, String promptContent, IncrementalContext ctx);
+
+    /**
+     * 增量感知 + 影响面裁剪的草稿生成。
+     * {@code impact} 非空且 {@code impact.isIncremental()} 时，按 {@code docRetargetModuleIds} 决定模块重跑范围。
+     */
+    void generateDraftDocument(Long taskId, List<CodeChunk> chunks, String promptContent,
+                               IncrementalContext ctx, IncrementalImpact impact);
 
     /**
      * 用任意已组装好的 prompt 字符串直接调用大模型

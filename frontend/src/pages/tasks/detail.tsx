@@ -4,6 +4,8 @@ import {
   ArrowLeftOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
+  CopyOutlined,
+  DownloadOutlined,
   EditOutlined,
   FileSearchOutlined,
   PlayCircleOutlined,
@@ -14,6 +16,7 @@ import { useNavigate, useParams } from 'react-router-dom';
 import { getTask, getTaskExecutionLog, getTaskLogSummary, retryTask, startTask, terminateTask } from '../../api/task';
 import { getSystem } from '../../api/system';
 import type { PipelineStageStat, System, Task, TaskLogSummary } from '../../types';
+import IncrementalImpactCard from './components/IncrementalImpactCard';
 
 /** 构造携带当前任务上下文（systemId + taskId）的复核页跳转链接 */
 const buildDraftsHref = (task: Task) => `/drafts/${task.id}`;
@@ -112,6 +115,27 @@ const TaskDetail: React.FC = () => {
       setLogLoading(false);
     }
   };
+  const copyExecLog = async () => {
+    if (!execLogContent) return;
+    try {
+      await navigator.clipboard.writeText(execLogContent);
+      message.success('日志已复制到剪贴板');
+    } catch {
+      message.error('复制失败');
+    }
+  };
+
+  const downloadExecLog = () => {
+    if (!taskId) return;
+    const blob = new Blob([execLogContent || ''], { type: 'text/plain;charset=utf-8' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `task_${taskId}_pipeline.log`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const fetchTaskDetails = useCallback(
     async (showLoading = true) => {
       if (!taskId) {
@@ -409,6 +433,13 @@ const timelineItem = (s: PipelineStageStat) => {
         />
       )}
 
+      {task.type === 'INCREMENTAL' && task.triggerSource !== 'KNOWLEDGE_REMEDIATION' && (
+        <IncrementalImpactCard
+          taskId={task.id}
+          polling={runningStatuses.includes(task.status)}
+        />
+      )}
+
       <Row gutter={[16, 16]}>
         {/* 左侧：任务静态指标表格 */}
         <Col xs={24} xl={12}>
@@ -574,7 +605,17 @@ const timelineItem = (s: PipelineStageStat) => {
         open={logModalOpen}
         onCancel={() => setLogModalOpen(false)}
         width={960}
-        footer={<Button onClick={() => setLogModalOpen(false)}>关闭</Button>}
+        footer={(
+          <Space>
+            <Button icon={<CopyOutlined />} onClick={copyExecLog} disabled={!execLogContent}>
+              复制
+            </Button>
+            <Button icon={<DownloadOutlined />} onClick={downloadExecLog} disabled={!execLogContent}>
+              导出
+            </Button>
+            <Button onClick={() => setLogModalOpen(false)}>关闭</Button>
+          </Space>
+        )}
         destroyOnClose
       >
         {/* 顶部粘性信息条：Mock / 模型 / 总耗时 / 状态 / 日志 URI */}

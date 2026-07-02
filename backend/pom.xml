@@ -73,6 +73,14 @@
             <version>${jgit.version}</version>
         </dependency>
 
+        <!-- JavaParser：纯 Java AST 解析库，支撑 parser 引擎的 AST 模式。
+             体积约 3.5MB，无 native 依赖；Phase 2 再叠加 javaparser-symbol-solver-core 做类型解析 -->
+        <dependency>
+            <groupId>com.github.javaparser</groupId>
+            <artifactId>javaparser-core</artifactId>
+            <version>3.26.4</version>
+        </dependency>
+
         <!-- OpenAPI (Swagger UI) -->
         <dependency>
             <groupId>org.springdoc</groupId>

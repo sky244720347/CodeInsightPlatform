@@ -75,7 +75,7 @@ COMMENT ON COLUMN ci_repository.password IS '凭证密码/Token';
 COMMENT ON COLUMN ci_repository.scan_root IS '扫描根目录';
 COMMENT ON COLUMN ci_repository.exclude_dirs IS '排除目录，逗号分隔';
 COMMENT ON COLUMN ci_repository.exclude_file_types IS '排除文件类型，逗号分隔';
-COMMENT ON COLUMN ci_repository.last_commit_id IS '最后确认 Commit ID';
+COMMENT ON COLUMN ci_repository.last_commit_id IS '已发布知识对应的源代码基线 Commit ID（推送成功或回滚时更新；扫描任务不再写入）';
 COMMENT ON COLUMN ci_repository.last_decompile_at IS '最后反编译时间';
 ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS entry_scan_config TEXT;
 COMMENT ON COLUMN ci_repository.entry_scan_config IS '仓库级入口扫描配置 JSON：includesByType（CONTROLLER/SCHEDULED_JOB/MQ_LISTENER/OTHER 各含 includeAnnotations/includeClasspaths/includeExtends）+ excludeClasspaths/excludePackages/excludeAnnotations/excludeTargets；新建任务时默认带出，任务可覆盖';
@@ -251,6 +251,9 @@ COMMENT ON COLUMN ci_task.claimed_by IS '集群模式下认领/执行该任务�
 COMMENT ON COLUMN ci_task.claimed_at IS '任务认领时间';
 COMMENT ON COLUMN ci_task.lease_until IS '认领租约到期时间；过期后其他节点可重新认领 PENDING 预留';
 CREATE INDEX IF NOT EXISTS idx_task_claimed ON ci_task (claimed_by) WHERE claimed_by IS NOT NULL;
+
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS source_commit VARCHAR(100);
+COMMENT ON COLUMN ci_task.source_commit IS '本任务扫描时的源代码 Commit ID（pullAndScan 写入；createVersion 与增量 diff 溯源依据）';
 
 COMMENT ON TABLE ci_task IS '知识构建任务表';
 COMMENT ON COLUMN ci_task.system_id IS '关联系统ID';
@@ -1062,4 +1065,48 @@ COMMENT ON COLUMN ci_business_knowledge.system_id  IS '所属业务系统ID（UN
 COMMENT ON COLUMN ci_business_knowledge.content    IS 'Markdown 正文，写入到 {business_knowledge.md} 占位符';
 COMMENT ON COLUMN ci_business_knowledge.version    IS '保存次数（每次保存 +1，便于审计）';
 COMMENT ON COLUMN ci_business_knowledge.updated_by IS '最后修改人（来自会话用户）';
+
+-- ============================================================
+-- 30. 方法 → 功能 反向绑定表
+-- ------------------------------------------------------------
+-- 把 hierarchy 阶段 AI 的"每方法归属到 (module, sub_module, function)"输出
+-- 由"function 持有 method_signatures 数组"反转为"方法指向 function"。
+-- 设计动机：原 ci_module_hierarchy.method_signatures 在 AI 漏输出时被回填成
+-- 入口类全集，BFS 出大杂烩；本表把方法级归属做成反向索引，BFS 只用于摸全
+-- 调用链实现，模块归属只来自本表（每方法 1 行）。
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ci_method_function_binding (
+    id                  BIGSERIAL PRIMARY KEY,
+    task_id             BIGINT       NOT NULL,
+    system_id           BIGINT,
+    module_node_id      VARCHAR(16)  NOT NULL,           -- ci_module_hierarchy.node_id（如 m0B1A），仅 FUNCTION 一级
+    sub_module_node_id  VARCHAR(16)  NOT NULL,           -- ci_module_hierarchy.node_id（如 s2Xy9）
+    function_node_id    VARCHAR(16)  NOT NULL,           -- ci_module_hierarchy.node_id（如 f3AbC）
+    class_name          VARCHAR(512) NOT NULL,           -- 入口类全限定名 com.example.UserController
+    method_signature    VARCHAR(512) NOT NULL,           -- methodName(ParamType1,ParamType2)，与 ci_method_call.caller_signature 风格一致
+    source              VARCHAR(16)  NOT NULL,           -- AI / USER / MIGRATED，便于审计
+    confidence          DECIMAL(4,3),                    -- 可选，AI 输出 0-1 置信度（暂不强制）
+    created_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    CONSTRAINT uk_mfb_task_class_method
+        UNIQUE (task_id, class_name, method_signature),
+    CONSTRAINT chk_mfb_source
+        CHECK (source IN ('AI', 'USER', 'MIGRATED'))
+);
+CREATE INDEX IF NOT EXISTS idx_mfb_task_function
+    ON ci_method_function_binding (task_id, function_node_id);
+CREATE INDEX IF NOT EXISTS idx_mfb_task_class
+    ON ci_method_function_binding (task_id, class_name);
+CREATE INDEX IF NOT EXISTS idx_mfb_task_module
+    ON ci_method_function_binding (task_id, module_node_id);
+COMMENT ON TABLE  ci_method_function_binding IS '方法→功能 反向绑定（hierarchy 阶段 AI 输出按方法粒度落表）；每方法 1 行，由 (task_id, class_name, method_signature) 唯一定位到 (module, sub_module, function)';
+COMMENT ON COLUMN ci_method_function_binding.task_id            IS '关联任务 ID（FK → ci_task.id）';
+COMMENT ON COLUMN ci_method_function_binding.system_id          IS '冗余系统 ID，便于按系统维度查询';
+COMMENT ON COLUMN ci_method_function_binding.module_node_id     IS '所属模块节点 ID（5 位 Base62，m 前缀；逻辑 FK → ci_module_hierarchy.node_id，本表不建物理 FK 以简化迁移）';
+COMMENT ON COLUMN ci_method_function_binding.sub_module_node_id IS '所属子模块节点 ID（s 前缀）';
+COMMENT ON COLUMN ci_method_function_binding.function_node_id   IS '所属功能节点 ID（f 前缀）';
+COMMENT ON COLUMN ci_method_function_binding.class_name         IS '入口类全限定名';
+COMMENT ON COLUMN ci_method_function_binding.method_signature   IS '方法签名 methodName(ParamType1,ParamType2)（不含返回类型）；与 ci_method_call.caller_signature 拆分后的函数名部分一致，便于按方法级反查调用链';
+COMMENT ON COLUMN ci_method_function_binding.source             IS '归属来源：AI-hierarchy 阶段 AI 输出；USER-人工在 MODULE_HIERARCHY_REVIEW 调整；MIGRATED-从旧 ci_module_hierarchy.method_signatures 一次性迁移';
+COMMENT ON COLUMN ci_method_function_binding.confidence        IS 'AI 输出的归属置信度（0-1，可空，向后兼容）';
 

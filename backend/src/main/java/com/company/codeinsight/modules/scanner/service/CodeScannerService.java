@@ -16,7 +16,7 @@ public interface CodeScannerService {
      * @param taskId       关联的任务 ID
      * @param repositoryId 关联的代码库配置 ID
      * @param taskType     任务类型：INITIAL-全量（默认） / INCREMENTAL-基于 git diff 的增量。
-     *                     增量任务需要仓库已存在 {@code lastCommitId} 基线，否则降级为全量扫描。
+     *                     增量任务需要仓库已存在已发布基线 {@code lastCommitId}，否则降级为全量扫描。
      * @return {@link ScanResult} 包含本地项目目录与本次扫描的增量上下文（变更/删除文件清单），
      *         下游 AST/Chunk/Hierarchy/AI 阶段通过 {@code ScanResult.getIncrementalContext()} 判断走全量还是增量。
      */

@@ -7,6 +7,7 @@ import com.company.codeinsight.common.response.ApiResponse;
 import com.company.codeinsight.common.response.PageResult;
 import com.company.codeinsight.modules.log.service.OperationLogService;
 import com.company.codeinsight.modules.prompt.dto.PromptTestResultDto;
+import com.company.codeinsight.modules.prompt.dto.SyncPromptFromResourceResultDto;
 import com.company.codeinsight.modules.prompt.entity.DecompilePrompt;
 import com.company.codeinsight.modules.prompt.service.DecompilePromptService;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -298,6 +299,41 @@ public class DecompilePromptController {
                 .contentType(MediaType.parseMediaType("application/x-ndjson"))
                 .cacheControl(CacheControl.noCache())
                 .body(body);
+    }
+
+    /**
+     * 把 classpath 上的 .md 资源内容同步为该 prompt_type 的默认提示词。
+     * <p>运维/开发在更新了 {@code analyze_prompt.md} / {@code module_doc_prompt.md} 后调此接口，
+     * 服务按 MD5 比对：内容不一致时新插入一行 RELEASED 默认提示词（version = 老+1），
+     * 把旧默认归档；内容一致时返回 changed=false 不落表。</p>
+     *
+     * <p>典型调用：</p>
+     * <pre>
+     *   POST /prompts/sync-from-resource?promptType=MODULARIZE&resourcePath=analyze_prompt.md
+     *   POST /prompts/sync-from-resource?promptType=DOCUMENT_GENERATION&resourcePath=module_doc_prompt.md
+     * </pre>
+     */
+    @Operation(summary = "从 classpath .md 资源同步提示词到 DB")
+    @PostMapping("/sync-from-resource")
+    public ApiResponse<SyncPromptFromResourceResultDto> syncFromResource(
+            @RequestParam("promptType") String promptType,
+            @RequestParam(value = "resourcePath", required = false) String resourcePath) {
+        String resolvedPath = resourcePath;
+        if (!StringUtils.hasText(resolvedPath)) {
+            if (DecompilePrompt.TYPE_MODULARIZE.equals(promptType)) {
+                resolvedPath = "analyze_prompt.md";
+            } else if (DecompilePrompt.TYPE_DOCUMENT_GENERATION.equals(promptType)) {
+                resolvedPath = "module_doc_prompt.md";
+            }
+        }
+        SyncPromptFromResourceResultDto result =
+                decompilePromptService.syncFromResource(promptType, resolvedPath);
+        operationLogService.logOperation(null, null, "SYNC_PROMPT_FROM_RESOURCE",
+                "同步提示词: type=" + promptType + ", resource=" + resolvedPath
+                        + ", changed=" + result.isChanged() + ", newId=" + result.getNewPromptId()
+                        + ", oldId=" + result.getOldPromptId(),
+                null, true);
+        return ApiResponse.success(result);
     }
 
     /**

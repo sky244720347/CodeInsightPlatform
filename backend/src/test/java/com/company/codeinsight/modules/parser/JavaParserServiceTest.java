@@ -2,7 +2,7 @@ package com.company.codeinsight.modules.parser;
 
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo;
 import com.company.codeinsight.modules.parser.service.JavaParserService;
-import com.company.codeinsight.modules.parser.service.impl.JavaParserServiceImpl;
+import com.company.codeinsight.modules.parser.service.impl.RegexJavaParserService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 
@@ -12,7 +12,7 @@ import java.io.IOException;
 
 public class JavaParserServiceTest {
 
-    private final JavaParserService parserService = new JavaParserServiceImpl();
+    private final JavaParserService parserService = new RegexJavaParserService();
 
     @Test
     public void testParseJavaFile() throws IOException {

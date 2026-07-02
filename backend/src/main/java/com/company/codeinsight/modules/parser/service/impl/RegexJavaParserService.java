@@ -6,7 +6,6 @@ import com.company.codeinsight.modules.parser.model.ParsedClassInfo.MethodInfo;
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo.SqlReference;
 import com.company.codeinsight.modules.parser.service.JavaParserService;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.io.File;
@@ -22,13 +21,15 @@ import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
 /**
- * Java 静态解析服务实现类
- * 使用轻量级正则表达式，对 Java 源文件进行词法与简单的语法扫描。
- * 解析内容包括：包名、注解、类属性与依赖组件、HTTP 路由映射、方法签名、内部方法调用链及嵌入的 SQL 语句和数据表/字段依赖。
+ * 基于正则表达式的 Java 静态解析实现（REGEX 引擎）。
+ * 使用轻量级正则与括号匹配，对 Java 源文件做词法级别的近似扫描，
+ * 提取包名、注解、组件角色、HTTP 路由、方法签名、内部方法调用链及嵌入 SQL 等结构。
+ *
+ * <p>作为 AST 引擎的兜底实现：AST 解析抛 ParseProblemException 时，FallbackJavaParserService 会转调本类
+ * 保证流水线不中断。本类不直接暴露为 Spring Bean，由 ParserEngineConfig 按配置装配。</p>
  */
 @Slf4j
-@Service
-public class JavaParserServiceImpl implements JavaParserService {
+public class RegexJavaParserService implements JavaParserService {
 
     /**
      * 任务级解析结果缓存，避免 Stage 2（方法调用链）和 Stage 3（代码切片）对同一文件重复 AST 解析。
@@ -59,6 +60,9 @@ public class JavaParserServiceImpl implements JavaParserService {
     private static final Pattern TABLE_PATTERN = Pattern.compile("@Table\\s*\\([^)]*?(?:name\\s*=\\s*)?\"([^\"]+)\"");
     // 正则表达式：解析标准 Java 方法的修饰符、返回值类型、方法名和参数列表
     private static final Pattern METHOD_PATTERN = Pattern.compile("(?:public|protected|private|static|final|synchronized|\\s)+\\s+([\\w<>\\[\\],.?\\s]+)\\s+(\\w+)\\s*\\(([^)]*)\\)");
+    // 正则表达式：匹配构造器声明。构造器名（=类名）与左括号之间没有空格，
+    // 故 METHOD_PATTERN（要求类型与名称间至少一个空白）不会命中，需独立匹配
+    private static final Pattern CONSTRUCTOR_PATTERN = Pattern.compile("(?:public|protected|private)\\s+(\\w+)\\s*\\(([^)]*)\\)");
     // 正则表达式：匹配 extends 子句中的父类 FQ
     private static final Pattern EXTENDS_PATTERN = Pattern.compile("\\bextends\\s+([\\w.]+)");
     // 正则表达式：匹配 implements 子句中的接口列表（支持 extends 后置或 { 结束）
@@ -196,6 +200,15 @@ public class JavaParserServiceImpl implements JavaParserService {
                 collectSql(line, classInfo);
 
                 // 8. 匹配类中的方法定义头
+                // 8.0 构造器注入识别：把 (paramName → type) 加入 dependencyVariables，
+                //     让方法体内的 svc.foo() 这类调用能被 collectMethodCalls 识别为依赖调用，
+                //     与 FIELD_DEPENDENCY_PATTERN 等价，覆盖构造器注入场景。
+                if (classInfo.getClassName() != null) {
+                    Matcher ctorMatcher = CONSTRUCTOR_PATTERN.matcher(line);
+                    if (ctorMatcher.find() && classInfo.getClassName().equals(ctorMatcher.group(1))) {
+                        collectConstructorDependencies(ctorMatcher.group(2), dependencyVariables, classInfo);
+                    }
+                }
                 Matcher methodMatcher = METHOD_PATTERN.matcher(line);
                 // 过滤掉 if/for/while/switch 等结构控制关键字误匹配为方法
                 boolean methodStartedOnLine = methodMatcher.find() && !isControlFlow(methodMatcher.group(2));
@@ -401,6 +414,60 @@ public class JavaParserServiceImpl implements JavaParserService {
                 dependencyVariables.put(variable, type);
                 addUnique(variable + ":" + type, classInfo.getDependencies());
             }
+        }
+    }
+
+    /**
+     * 解析构造器参数列表中的依赖项（构造器注入）。
+     * 把 (paramName → type) 加入 dependencyVariables，使 collectMethodCalls
+     * 能识别 svc.foo() 这类调用，与字段注入（FIELD_DEPENDENCY_PATTERN）等价。
+     *
+     * 支持形式：
+     * - 简单：public X(Type1 a, Type2 b)
+     * - 注解：@Autowired public X(Type a) / public X(@Autowired Type a)
+     * - final：public X(final Type a)
+     * - 泛型与 varargs：Map<String, UserService> services / FooService... svcs
+     *
+     * 不支持：Lombok @RequiredArgsConstructor 等编译期生成的构造器（源码里看不到）
+     */
+    private void collectConstructorDependencies(String argsText,
+                                                Map<String, String> dependencyVariables,
+                                                ParsedClassInfo classInfo) {
+        if (!StringUtils.hasText(argsText)) {
+            return;
+        }
+        for (String rawParam : argsText.split(",")) {
+            String param = rawParam.trim();
+            if (param.isEmpty()) {
+                continue;
+            }
+            // 去掉 @Autowired / @Qualifier / @Lazy 等注解前缀
+            param = param.replaceAll("@[A-Za-z][\\w.]*", "").trim();
+            // 去掉 final 修饰符
+            if (param.startsWith("final ")) {
+                param = param.substring("final ".length()).trim();
+            }
+            // 按最后一个空白切：前面是 Type（含泛型），后面是变量名
+            int split = param.lastIndexOf(' ');
+            if (split <= 0) {
+                continue;
+            }
+            String type = param.substring(0, split).trim();
+            String variable = param.substring(split + 1).trim();
+            // 去泛型 + 去 varargs 后缀（如 FooService...）
+            type = stripGeneric(type).replaceAll("\\.\\.\\.", "").trim();
+            // 过滤：空 / 原始类型（首字母小写，long/int/boolean 等）/ 基础包装类
+            if (!StringUtils.hasText(type) || !StringUtils.hasText(variable)) {
+                continue;
+            }
+            if (!Character.isUpperCase(type.charAt(0))) {
+                continue;
+            }
+            if (isSimpleValueType(type)) {
+                continue;
+            }
+            dependencyVariables.put(variable, type);
+            addUnique(variable + ":" + type, classInfo.getDependencies());
         }
     }
 

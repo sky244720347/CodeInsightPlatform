@@ -1,5 +1,6 @@
 package com.company.codeinsight.modules.hierarchy.service;
 
+import com.company.codeinsight.modules.callchain.model.IncrementalImpact;
 import com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy;
 import com.company.codeinsight.modules.scanner.model.IncrementalContext;
 
@@ -37,6 +38,12 @@ public interface ModuleHierarchyService {
      * </ul>
      */
     ModuleHierarchy buildAndPersist(Long taskId, File projectDir, IncrementalContext ctx);
+
+    /**
+     * 增量感知 + 影响面裁剪的层级构建。
+     * {@code impact} 非空且 {@code impact.isIncremental()} 时，按 {@code hierarchyRetargetEntries} 决定入口 AI 调用范围。
+     */
+    ModuleHierarchy buildAndPersist(Long taskId, File projectDir, IncrementalContext ctx, IncrementalImpact impact);
 
     /**
      * 从数据库加载该任务的模块层级 DTO

@@ -12,10 +12,24 @@ public final class ScanResult {
 
     private final File projectDir;
     private final IncrementalContext incrementalContext;
+    private final String baselineCommitId;
+    private final String headCommitId;
+    private final String scanMode;
 
     public ScanResult(File projectDir, IncrementalContext incrementalContext) {
+        this(projectDir, incrementalContext, null, null, "INITIAL");
+    }
+
+    public ScanResult(File projectDir,
+                      IncrementalContext incrementalContext,
+                      String baselineCommitId,
+                      String headCommitId,
+                      String scanMode) {
         this.projectDir = projectDir;
         this.incrementalContext = incrementalContext == null ? IncrementalContext.fullScan() : incrementalContext;
+        this.baselineCommitId = baselineCommitId;
+        this.headCommitId = headCommitId;
+        this.scanMode = scanMode == null ? "INITIAL" : scanMode;
     }
 
     public File getProjectDir() {
@@ -24,5 +38,17 @@ public final class ScanResult {
 
     public IncrementalContext getIncrementalContext() {
         return incrementalContext;
+    }
+
+    public String getBaselineCommitId() {
+        return baselineCommitId;
+    }
+
+    public String getHeadCommitId() {
+        return headCommitId;
+    }
+
+    public String getScanMode() {
+        return scanMode;
     }
 }

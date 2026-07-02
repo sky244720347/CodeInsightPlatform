@@ -18,6 +18,12 @@ code-insight:
   storage:
     local-path: ./storage
     workspace-root: ./temp_repos
+  parser:
+    # 解析引擎选择。可选：
+    #   ast-fallback-regex（默认）：先 AST，失败无感降级到 REGEX
+    #   ast                       ：纯 AST，失败抛异常（排障用）
+    #   regex                     ：纯正则（保留 MVP 行为）
+    engine: ast-fallback-regex
   ai:
     hierarchy-parallelism: 4   # 模块层级 AI 调用并发数，按模型 API 限流调整
   schedule:

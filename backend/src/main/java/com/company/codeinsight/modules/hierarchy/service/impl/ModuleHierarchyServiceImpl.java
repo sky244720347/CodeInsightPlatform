@@ -3,6 +3,7 @@ package com.company.codeinsight.modules.hierarchy.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
+import com.company.codeinsight.common.util.AiResponseJsonExtractor;
 import com.company.codeinsight.common.util.Base62Generator;
 import com.company.codeinsight.common.util.PromptTemplateLoader;
 import com.company.codeinsight.modules.ai.service.AiSummaryService;
@@ -13,6 +14,8 @@ import com.company.codeinsight.modules.entrypoint.model.EntrypointMethodView;
 import com.company.codeinsight.modules.entrypoint.service.EntrypointReviewService;
 import com.company.codeinsight.modules.entrypoint.service.EntryPointDiscoveryService;
 import com.company.codeinsight.modules.hierarchy.entity.ModuleHierarchyNode;
+import com.company.codeinsight.modules.hierarchy.entity.MethodFunctionBinding;
+import com.company.codeinsight.modules.hierarchy.mapper.MethodFunctionBindingMapper;
 import com.company.codeinsight.modules.hierarchy.mapper.ModuleHierarchyNodeMapper;
 import com.company.codeinsight.modules.hierarchy.model.FunctionDto;
 import com.company.codeinsight.modules.hierarchy.model.ModuleDto;
@@ -75,6 +78,12 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     private ModuleHierarchyNodeMapper nodeMapper;
 
     @Autowired
+    private MethodFunctionBindingMapper methodFunctionBindingMapper;
+
+    @Autowired
+    private com.company.codeinsight.modules.callchain.mapper.MethodCallMapper methodCallMapper;
+
+    @Autowired
     private DecompileTaskMapper taskMapper;
 
     @Autowired
@@ -128,6 +137,13 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     @Override
     @Transactional(rollbackFor = Exception.class)
     public ModuleHierarchy buildAndPersist(Long taskId, File projectDir, IncrementalContext ctx) {
+        return buildAndPersist(taskId, projectDir, ctx, null);
+    }
+
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public ModuleHierarchy buildAndPersist(Long taskId, File projectDir, IncrementalContext ctx,
+                                           com.company.codeinsight.modules.callchain.model.IncrementalImpact impact) {
         if (taskId == null) {
             throw new BusinessException("taskId 不能为空");
         }
@@ -156,7 +172,13 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         int skippedByIncremental = 0;
         List<EntryPoint> toProcess = new ArrayList<>();
         for (EntryPoint entry : entries) {
-            if (effective.isIncremental() && !effective.isPathChanged(entry.getFilePath())) {
+            if (effective.isIncremental() && impact != null && impact.isIncremental()) {
+                if (!impact.isHierarchyRetarget(entry)) {
+                    skippedByIncremental++;
+                } else {
+                    toProcess.add(entry);
+                }
+            } else if (effective.isIncremental() && !effective.isPathChanged(entry.getFilePath())) {
                 skippedByIncremental++;
             } else {
                 toProcess.add(entry);
@@ -182,6 +204,8 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                 JsonNode inc = futures.get(i).join();
                 if (inc != null) {
                     mergeEntryResult(hierarchy, toProcess.get(i), inc, methodsByClass);
+                    persistMethodBindingsFromIncrement(taskId, task.getSystemId(),
+                            toProcess.get(i), inc, methodsByClass);
                     processedByAi++;
                 }
             }
@@ -377,7 +401,7 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                 }
 
                 try {
-                    String cleaned = stripCodeFence(aiResponse);
+                    String cleaned = AiResponseJsonExtractor.extractJsonPayload(aiResponse);
                     JsonNode inc = objectMapper.readTree(cleaned);
                     return inc;
                 } catch (Exception e) {
@@ -416,6 +440,13 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
 
     /**
      * 对 method_signatures 为空的功能节点，从 ci_entrypoint.methods_json 按 class_paths 兜底注入。
+     * <p>2026-07 反向索引迁移：仅当 {@code fn.classPaths} <b>也</b>为空时（AI 完全没给 class 提示），
+     * 才用入口的全集方法填充，否则直接跳过——避免 AI 给了 class_paths 但漏 method_signatures 时被全集污染。
+     * <ul>
+     *   <li>AI 输出 classPaths = ["UserController"] + methodSignatures = [...] → 不进 backfill，
+     *       binding 表才是权威（笛卡尔积合法元组被交叉校验保留）</li>
+     *   <li>AI 输出 classPaths = []（罕见，可能 deprecated schema/漏填）→ 仍走老回退，避免完全没数据</li>
+     * </ul>
      */
     private void backfillMethodSignaturesFromEntrypoints(ModuleHierarchy hierarchy,
                                                          Map<String, List<EntrypointMethodView>> methodsByClass) {
@@ -424,11 +455,160 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
             for (SubModuleDto sm : m.getSubModules().values()) {
                 for (FunctionDto fn : sm.getFunctions().values()) {
                     if (fn.getMethodSignatures() == null || fn.getMethodSignatures().isEmpty()) {
-                        backfillFunctionMethodSignatures(fn, methodsByClass);
+                        if (fn.getClassPaths() == null || fn.getClassPaths().isEmpty()) {
+                            backfillFunctionMethodSignatures(fn, methodsByClass);
+                        }
+                        // classPaths 非空 + methodSignatures 空 → 不再污染回填，靠 binding 表驱动 BFS
                     }
                 }
             }
         }
+    }
+
+    /**
+     * 解析 AI 增量 JSON 中已合并入 DTO 树（{@code modules[].sub_modules[].functions[]}）的
+     * 功能节点，并把每个 function 的 {@code class_paths × method_signatures} 笛卡尔积成
+     * 反向绑定行写入 {@code ci_method_function_binding}。
+     *
+     * <p>关键设计（2026-07 反向索引方案，与 analyze_prompt.md 输出结构解耦）：</p>
+     * <ul>
+     *   <li>AI 输出 schema 仍然是 {@code modules[].sub_modules[].functions[].class_paths[] + method_signatures[]}，
+     *       我们不再改 prompt 的输出契约——这是用户的"根基"约束</li>
+     *   <li>对每个 function，把 {@code class_paths[i] × method_signatures[j]} 笛卡尔积成 N 条 (class, sig) 元组</li>
+     *   <li>把每个 (class, sig) 元组与 {@code ci_method_call.caller_signature} 做存在性交叉校验——
+     *       数据库里没有这条 caller 边的鬼魂元组会被丢弃并 warn</li>
+     *   <li>校验通过的元组按 (module, sub_module, function) 三段 Base62 ID 落表；
+     *       ID 是从 {@code mergeIncrementIntoHierarchy} 后的 {@code ModuleHierarchy} DTO 里取，
+     *       而不是从 AI JSON 里读，因此不可能出现 ID 不全的丢弃路径</li>
+     * </ul>
+     *
+     * <p>净效果：BFS 沿 binding 表走，源头不再是 {@code ci_module_hierarchy.method_signatures}
+     * 的"全集污染"；AI 输出契约保持不变。</p>
+     */
+    private void persistMethodBindingsFromIncrement(Long taskId, Long systemId,
+                                                    EntryPoint entry,
+                                                    JsonNode increment,
+                                                    Map<String, List<EntrypointMethodView>> methodsByClass) {
+        if (taskId == null || entry == null || increment == null || methodFunctionBindingMapper == null) {
+            return;
+        }
+        // 入口类本身的限定（本入口外的 class 不做白名单限制——并行阶段其他入口已落库）
+        String entryClassName = entry.getClassName();
+
+        JsonNode modulesNode = increment.path("modules");
+        if (!modulesNode.isArray()) {
+            return;
+        }
+        // 一次 SQL 收集 task 内所有现存 caller_signature 的全集，作为白名单存在性校验
+        Set<String> candidateCrossCheck = collectAllKnownCallerSignaturesFromCallGraph(taskId);
+
+        List<MethodFunctionBinding> rows = new ArrayList<>();
+        int skippedEmptyCartesian = 0;
+        int skippedNotExisting = 0;
+        for (JsonNode modNode : modulesNode) {
+            JsonNode subs = modNode.path("sub_modules");
+            if (!subs.isArray()) continue;
+            for (JsonNode subNode : subs) {
+                JsonNode fns = subNode.path("functions");
+                if (!fns.isArray()) continue;
+                for (JsonNode fnNode : fns) {
+                    String moduleId = modNode.path("id").asText("").trim();
+                    String subModuleId = subNode.path("id").asText("").trim();
+                    String functionId = fnNode.path("id").asText("").trim();
+                    if (!StringUtils.hasText(moduleId)
+                            || !StringUtils.hasText(subModuleId)
+                            || !StringUtils.hasText(functionId)) {
+                        log.warn("modules 跳过 ID 不全 (entry={}): moduleId/subModuleId/functionId 至少一段缺失",
+                                entryClassName);
+                        continue;
+                    }
+                    Set<String> classPaths = collectAsTextSet(fnNode.path("class_paths"));
+                    Set<String> methodSigs = collectAsTextSet(fnNode.path("method_signatures"));
+                    if (classPaths.isEmpty() || methodSigs.isEmpty()) {
+                        skippedEmptyCartesian++;
+                        continue;
+                    }
+                    // 笛卡尔积 → (class, sig) 元组
+                    int before = rows.size();
+                    for (String cp : classPaths) {
+                        for (String sig : methodSigs) {
+                            String full = cp + "#" + sig;
+                            // 与 ci_method_call 交叉校验：仅保留 DB 真有 caller 边的元组
+                            if (!candidateCrossCheck.isEmpty() && !candidateCrossCheck.contains(full)) {
+                                skippedNotExisting++;
+                                log.warn("modules 元组不存在于 ci_method_call, 跳过 (entry={}, tuple={})",
+                                        entryClassName, full);
+                                continue;
+                            }
+                            MethodFunctionBinding row = new MethodFunctionBinding();
+                            row.setTaskId(taskId);
+                            row.setSystemId(systemId);
+                            row.setModuleNodeId(moduleId);
+                            row.setSubModuleNodeId(subModuleId);
+                            row.setFunctionNodeId(functionId);
+                            row.setClassName(cp);
+                            row.setMethodSignature(sig);
+                            row.setSource("AI");
+                            rows.add(row);
+                        }
+                    }
+                    if (rows.size() == before) {
+                        log.info("entry={} 的 function={} 笛卡尔后所有元组都被交叉校验剔除",
+                                entryClassName, functionId);
+                    }
+                }
+            }
+        }
+        if (rows.isEmpty()) {
+            if (skippedNotExisting > 0 || skippedEmptyCartesian > 0) {
+                log.info("入口 {} binding 入库为空（笛卡尔空 {} 条, call-graph 不存在 {} 条）",
+                        entryClassName, skippedEmptyCartesian, skippedNotExisting);
+            }
+            return;
+        }
+        int upserted = methodFunctionBindingMapper.batchUpsertBindings(rows);
+        log.info("入口 {} binding 入库: 笛卡尔+交叉校验后 {} 行, upsert {} 行 (call-graph 不存在 {} 条)",
+                entryClassName, rows.size(), upserted, skippedNotExisting);
+    }
+
+    /** 收集 JSON 数组节点的文本值到 Set（trim 后非空） */
+    private Set<String> collectAsTextSet(JsonNode arrayNode) {
+        Set<String> out = new LinkedHashSet<>();
+        if (arrayNode == null || !arrayNode.isArray()) return out;
+        for (JsonNode n : arrayNode) {
+            String v = n.asText("");
+            if (StringUtils.hasText(v)) out.add(v.trim());
+        }
+        return out;
+    }
+
+    /**
+     * 取该任务下 {@code ci_method_call} 的全部 caller_signature，作为反向绑定交叉校验的白名单。
+     * <p>实现方式：通过 {@link MethodCallMapper} 的 {@code selectExistingCallerSignatures}
+     * 一次查询汇总。表为空（新任务还未持久化 AST）或查询失败时返回空集合——空集合视为"跳过交叉校验"
+     * 而不是"全部丢弃"，避免回退路径被锁死。</p>
+     */
+    private Set<String> collectAllKnownCallerSignaturesFromCallGraph(Long taskId) {
+        Set<String> known = new HashSet<>();
+        try {
+            // 一次查询拿全部：把 task 内所有 caller_signature 选中。我们约定一次性查 ≤ 5k 行；
+            // 超出时分批，避免内存爆。本 MVP 阶段简单取首 5000 行。
+            com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.company.codeinsight.modules.callchain.entity.MethodCall> all =
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<>();
+            all.eq(com.company.codeinsight.modules.callchain.entity.MethodCall::getTaskId, taskId)
+               .isNotNull(com.company.codeinsight.modules.callchain.entity.MethodCall::getCallerSignature)
+               .select(com.company.codeinsight.modules.callchain.entity.MethodCall::getCallerSignature)
+               .last("LIMIT 5000");
+            List<com.company.codeinsight.modules.callchain.entity.MethodCall> rows = methodCallMapper.selectList(all);
+            for (com.company.codeinsight.modules.callchain.entity.MethodCall row : rows) {
+                if (row.getCallerSignature() != null) {
+                    known.add(row.getCallerSignature());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("collectAllKnownCallerSignaturesFromCallGraph 失败, 回退为跳过交叉校验: {}", e.getMessage());
+        }
+        return known;
     }
 
     private void backfillFunctionMethodSignatures(FunctionDto fn,
@@ -904,17 +1084,6 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         } catch (Exception e) {
             return "";
         }
-    }
-
-    private String stripCodeFence(String text) {
-        if (text == null) return "";
-        String t = text.trim();
-        if (t.startsWith("```")) {
-            int firstNewline = t.indexOf('\n');
-            if (firstNewline > 0) t = t.substring(firstNewline + 1);
-            if (t.endsWith("```")) t = t.substring(0, t.length() - 3);
-        }
-        return t.trim();
     }
 
     private int countFunctions(ModuleHierarchy hierarchy) {

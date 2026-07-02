@@ -10,6 +10,8 @@ import com.company.codeinsight.modules.scanner.mapper.CodeFileSnapshotMapper;
 import com.company.codeinsight.modules.scanner.model.IncrementalContext;
 import com.company.codeinsight.modules.scanner.model.ScanResult;
 import com.company.codeinsight.modules.scanner.service.CodeScannerService;
+import com.company.codeinsight.modules.task.entity.DecompileTask;
+import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.ibatis.session.ExecutorType;
 import org.apache.ibatis.session.SqlSession;
@@ -59,6 +61,9 @@ public class CodeScannerServiceImpl implements CodeScannerService {
     @Autowired
     private TaskWorkspacePaths taskWorkspacePaths;
 
+    @Autowired
+    private DecompileTaskMapper taskMapper;
+
     /** 快照批量写入大小，减少 DB 往返次数 */
     private static final int SNAPSHOT_BATCH_SIZE = 500;
 
@@ -97,6 +102,9 @@ public class CodeScannerServiceImpl implements CodeScannerService {
         boolean performFullScan = true;
         Set<String> changedPaths = null;  // ADD / MODIFY / COPY / RENAME-新路径
         Set<String> deletedPaths = null;  // DELETE / RENAME-旧路径
+        boolean isIncremental = "INCREMENTAL".equalsIgnoreCase(taskType);
+        boolean hasBaseline = StringUtils.hasText(repo.getLastCommitId());
+        String baselineCommitId = isIncremental && hasBaseline ? repo.getLastCommitId() : null;
 
         // 检查配置的 GitUrl 是否为本地已存在的绝对或相对路径
         File localSourceDir = new File(repo.getGitUrl());
@@ -145,9 +153,6 @@ public class CodeScannerServiceImpl implements CodeScannerService {
 
         if (gitPullSuccess) {
             // === 1. 计算本次扫描的文件范围（增量或全量） ===
-            boolean isIncremental = "INCREMENTAL".equalsIgnoreCase(taskType);
-            boolean hasBaseline = StringUtils.hasText(repo.getLastCommitId());
-
             if (isIncremental && gitHandle != null && hasBaseline) {
                 try {
                     DiffOutcome diff = computeIncrementalDiff(gitHandle, repo.getLastCommitId(), "HEAD");
@@ -201,8 +206,8 @@ public class CodeScannerServiceImpl implements CodeScannerService {
                 totalInserted[0] += flushSnapshotBatch(batchBuffer);
             }
 
-            // === 4. 更新 Repository 的最近一次拉取元数据（无论全量还是增量都要刷新） ===
-            repo.setLastCommitId(commitId);
+            // === 4. 落库任务扫描 commit；刷新仓库最近扫描时间（发布基线 commit 仅在推送/回滚时更新） ===
+            persistTaskSourceCommit(taskId, commitId);
             repo.setLastDecompileAt(LocalDateTime.now());
             repositoryMapper.updateById(repo);
 
@@ -226,7 +231,12 @@ public class CodeScannerServiceImpl implements CodeScannerService {
         IncrementalContext ctx = performFullScan
                 ? IncrementalContext.fullScan()
                 : IncrementalContext.incremental(changedPaths, deletedPaths);
-        return new ScanResult(targetDir, ctx);
+        String scanMode = "INITIAL";
+        String headCommitId = commitId;
+        if (isIncremental) {
+            scanMode = performFullScan ? "DEGRADED_FULL" : "INCREMENTAL";
+        }
+        return new ScanResult(targetDir, ctx, baselineCommitId, headCommitId, scanMode);
     }
 
     /**
@@ -654,5 +664,22 @@ public class User {
 }
 """);
         }
+    }
+
+    /**
+     * 将本次扫描 HEAD 写入任务 {@code source_commit}。入口扫描试跑等非任务场景（无 ci_task 行）则跳过。
+     */
+    private void persistTaskSourceCommit(Long taskId, String commitId) {
+        if (taskId == null || !StringUtils.hasText(commitId)) {
+            return;
+        }
+        DecompileTask task = taskMapper.selectById(taskId);
+        if (task == null) {
+            log.debug("pullAndScan: taskId={} 无对应任务行，跳过 source_commit 落库", taskId);
+            return;
+        }
+        task.setSourceCommit(commitId);
+        taskMapper.updateById(task);
+        log.info("任务 source_commit 已落库: taskId={} commit={}", taskId, commitId);
     }
 }

@@ -92,7 +92,8 @@ public class CodeRepository extends BaseEntity {
     private String excludeFileTypes;
 
     /**
-     * 扫描时所拉取的最近一次 Git 提交 Commit ID
+     * 已发布知识对应的源代码基线 Commit ID。
+     * <p>推送成功或发布回滚时更新；增量扫描 diff 的旧端以此为准。</p>
      */
     private String lastCommitId;
 

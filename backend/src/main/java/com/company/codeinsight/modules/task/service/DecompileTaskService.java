@@ -76,6 +76,7 @@ public interface DecompileTaskService extends IService<DecompileTask> {
     void terminateTask(Long id);
     void retryTask(Long id);
     void resumeAfterHierarchyReview(Long id);
+    void rebuildModuleHierarchy(Long id);
     void resumeAfterEntrypointReview(Long id);
 
     void resumeAfterEntrypointReview(Long id, java.util.List<com.company.codeinsight.modules.entrypoint.model.ExcludeTarget> additionalExcludes);

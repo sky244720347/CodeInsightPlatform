@@ -24,7 +24,7 @@ public class ParsedClassInfo {
 
     /**
      * 源文件相对于项目根目录的路径（如 accounting-service/src/main/java/com/demo/UserController.java）
-     * 由 JavaParserServiceImpl.parseDirectory 在扫描时写入，供入口识别与源码读取使用
+     * 由 Regex/Ast JavaParserService.parseDirectory 在扫描时写入，供入口识别与源码读取使用
      */
     private String sourceRelativePath;
 
@@ -60,13 +60,13 @@ public class ParsedClassInfo {
 
     /**
      * 该类是否包含 Java SE 标准入口方法 public static void main(String[] args)
-     * 由 JavaParserServiceImpl.parseFile 在识别到时置为 true
+     * 由 Regex/Ast JavaParserService.parseFile 在识别到时置为 true
      */
     private boolean hasMainMethod;
 
     /**
      * 该类直接继承的父类全限定名（extends 子句的第一个类型）
-     * 由 JavaParserServiceImpl.parseFile 提取；interface / enum / @interface 时该字段保持 null
+     * 由 Regex/Ast JavaParserService.parseFile 提取；interface / enum / @interface 时该字段保持 null
      */
     private String extendsClass;
 
@@ -113,7 +113,7 @@ public class ParsedClassInfo {
         private String httpMethod;
         /**
          * 方法体起始行（1-indexed，含方法签名行）
-         * 由 JavaParserServiceImpl.parseFile 在解析时写入
+         * 由 Regex/Ast JavaParserService.parseFile 在解析时写入
          * 用于阶段 2 按方法签名截取源码（filterClassToMethods）
          */
         private Integer startLine;

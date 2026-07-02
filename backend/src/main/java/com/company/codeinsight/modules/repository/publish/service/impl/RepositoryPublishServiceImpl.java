@@ -84,11 +84,11 @@ public class RepositoryPublishServiceImpl implements RepositoryPublishService, R
         RepositoryPublishSnapshot existing = snapshotMapper.selectByVersionId(versionId);
         if (existing != null) {
             log.warn("applyFromTask: versionId={} 快照已存在，幂等跳过 insert", versionId);
-            applySnapshotToRepository(repo, existing, entrypoints, hierarchy, operator);
+            applySnapshotToRepository(repo, existing, entrypoints, hierarchy, operator, version.getSourceCommit());
             return existing;
         }
         snapshotMapper.insert(snapshot);
-        applySnapshotToRepository(repo, snapshot, entrypoints, hierarchy, operator);
+        applySnapshotToRepository(repo, snapshot, entrypoints, hierarchy, operator, version.getSourceCommit());
         log.info("applyFromTask ok repoId={} versionId={} entrypoints={} hierarchy={}",
                 repo.getId(), versionId, entrypoints.size(), hierarchy.size());
         return snapshot;
@@ -129,8 +129,9 @@ public class RepositoryPublishServiceImpl implements RepositoryPublishService, R
 
         List<EntrypointEntity> entrypoints = deserializeEntrypoints(snapshot.getEntrypointsJson());
         List<ModuleHierarchyNode> hierarchy = deserializeHierarchy(snapshot.getModuleHierarchyJson());
-        applySnapshotToRepository(repo, snapshot, entrypoints, hierarchy, operator);
-        log.info("rollbackToVersion ok repoId={} versionId={} operator={}", repositoryId, versionId, operator);
+        applySnapshotToRepository(repo, snapshot, entrypoints, hierarchy, operator, version.getSourceCommit());
+        log.info("rollbackToVersion ok repoId={} versionId={} baselineCommit={} operator={}",
+                repositoryId, versionId, version.getSourceCommit(), operator);
         return snapshot;
     }
 
@@ -237,12 +238,16 @@ public class RepositoryPublishServiceImpl implements RepositoryPublishService, R
                                            RepositoryPublishSnapshot snapshot,
                                            List<EntrypointEntity> entrypoints,
                                            List<ModuleHierarchyNode> hierarchy,
-                                           String operator) {
+                                           String operator,
+                                           String publishedSourceCommit) {
         repo.setEntryScanConfig(snapshot.getEntryScanConfig());
         repo.setModularizePromptId(snapshot.getModularizePromptId());
         repo.setDocumentPromptId(snapshot.getDocumentPromptId());
         repo.setLastPublishedTaskId(snapshot.getTaskId());
         repo.setLastPublishedVersionId(snapshot.getVersionId());
+        if (StringUtils.hasText(publishedSourceCommit)) {
+            repo.setLastCommitId(publishedSourceCommit);
+        }
         repo.setPublishedAt(LocalDateTime.now());
         repo.setPublishedBy(operator);
         repositoryMapper.updateById(repo);

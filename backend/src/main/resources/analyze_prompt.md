@@ -77,7 +77,9 @@
           "functions": [
             {
               "id": "p3QwR",
-              "function_name": "功能名"
+              "function_name": "功能名",
+              "class_paths": ["com.example.Controller"],
+              "method_signatures": ["methodA(String)", "methodB(Integer)"]
             }
           ]
         }

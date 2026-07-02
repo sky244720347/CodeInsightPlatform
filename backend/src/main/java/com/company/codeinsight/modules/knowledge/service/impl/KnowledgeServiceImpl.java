@@ -104,6 +104,9 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         if (task == null) {
             throw new BusinessException("未找到知识构建任务");
         }
+        if (!StringUtils.hasText(task.getSourceCommit())) {
+            throw new BusinessException("任务尚未完成代码拉取，缺少 source_commit，无法生成知识版本");
+        }
 
         CodeRepository repo = repositoryMapper.selectById(task.getRepositoryId());
         if (repo == null) {
@@ -342,7 +345,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             ObjectNode versionJson = objectMapper.createObjectNode();
             versionJson.put("version", normalizedVersionNum);
             versionJson.put("systemId", task.getSystemId());
-            versionJson.put("commitId", repo.getLastCommitId());
+            versionJson.put("commitId", task.getSourceCommit());
             versionJson.put("generatedAt", LocalDateTime.now().toString());
             versionJson.put("confirmedBy", confirmedBy);
 
@@ -367,7 +370,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         version.setTaskId(taskId);
         version.setVersionNum(normalizedVersionNum);
         version.setSourceBranch(repo.getBranch());
-        version.setSourceCommit(repo.getLastCommitId());
+        version.setSourceCommit(task.getSourceCommit());
         version.setTargetBranch(
                 org.springframework.util.StringUtils.hasText(repo.getPushBranch())
                         ? repo.getPushBranch()

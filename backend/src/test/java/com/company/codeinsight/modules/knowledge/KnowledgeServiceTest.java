@@ -60,7 +60,7 @@ public class KnowledgeServiceTest {
         repo.setSystemId(1L);
         repo.setGitUrl("https://github.com/dummy/repo.git");
         repo.setBranch("main");
-        repo.setLastCommitId("mockcommit123");
+        repo.setLastCommitId("published-baseline-old");
         repositoryService.save(repo);
 
         DecompileTask task = new DecompileTask();
@@ -70,6 +70,7 @@ public class KnowledgeServiceTest {
         task.setStatus("CONFIRMED");
         task.setType("INITIAL");
         task.setProgress(0);
+        task.setSourceCommit("task-scan-commit-abc");
         taskMapper.insert(task);
 
         // 2. 创建草稿工作区和草稿文件
@@ -101,6 +102,7 @@ public class KnowledgeServiceTest {
         KnowledgeVersion version = knowledgeService.createVersion(taskId, "v1.0.0", "Tester");
         Assertions.assertNotNull(version);
         Assertions.assertEquals("v1.0.0", version.getVersionNum());
+        Assertions.assertEquals("task-scan-commit-abc", version.getSourceCommit());
         Assertions.assertEquals("DRAFT", version.getStatus());
         Assertions.assertEquals("GIT", version.getPushMethod());
 
@@ -132,7 +134,7 @@ public class KnowledgeServiceTest {
         repo.setSystemId(1L);
         repo.setGitUrl("https://github.com/dummy/repo.git");
         repo.setBranch("main");
-        repo.setLastCommitId("mockcommit123");
+        repo.setLastCommitId("published-baseline-old");
         repositoryService.save(repo);
 
         DecompileTask task = new DecompileTask();
@@ -142,6 +144,7 @@ public class KnowledgeServiceTest {
         task.setStatus("CONFIRMED");
         task.setType("INITIAL");
         task.setProgress(0);
+        task.setSourceCommit("task-scan-commit-abc");
         taskMapper.insert(task);
 
         DraftWorkspace ws = new DraftWorkspace();

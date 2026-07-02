@@ -2,6 +2,7 @@ import request from './request';
 import type {
   EntrypointReviewItem,
   EntryScanConfig,
+  IncrementalImpactDto,
   ModuleHierarchy,
   PageResult,
   Task,
@@ -109,6 +110,10 @@ export const getRepositoryReadiness = (
   params: { systemId?: number; repositoryId?: number } = {},
 ): Promise<RepositoryReadiness> => {
   return request.get('/drafts/readiness', { params });
+};
+
+export const getTaskIncrementalImpact = (id: number): Promise<IncrementalImpactDto> => {
+  return request.get(`/tasks/${id}/incremental-impact`);
 };
 
 export const getTask = (id: number): Promise<Task> => {

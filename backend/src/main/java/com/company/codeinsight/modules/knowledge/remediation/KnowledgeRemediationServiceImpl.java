@@ -23,6 +23,7 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.util.List;
 
@@ -139,6 +140,11 @@ public class KnowledgeRemediationServiceImpl implements KnowledgeRemediationServ
         task.setDocumentPromptId(repo.getDocumentPromptId());
         DecompileTask baseTask = decompileTaskService.getById(baseTaskId);
         task.setModelName(baseTask != null ? baseTask.getModelName() : null);
+        if (baseTask != null && StringUtils.hasText(baseTask.getSourceCommit())) {
+            task.setSourceCommit(baseTask.getSourceCommit());
+        } else if (StringUtils.hasText(repo.getLastCommitId())) {
+            task.setSourceCommit(repo.getLastCommitId());
+        }
         task.setStatus(TaskStatus.DRAFT.name());
         task.setType("INITIAL");
         task.setProgress(0);

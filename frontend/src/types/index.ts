@@ -102,6 +102,33 @@ export interface PipelineStageStat {
   endedAt?: string;
 }
 
+export type ImpactTraceKind = 'ENTRY_DIRECT' | 'REVERSE_BFS' | 'DEGRADED_CLASS_PATH';
+
+export interface ImpactTraceDto {
+  changedFqcn: string;
+  path: string;
+  moduleId: string;
+  moduleName: string;
+  kind: ImpactTraceKind | string;
+}
+
+/** 增量影响分析（GET /tasks/{id}/incremental-impact） */
+export interface IncrementalImpactDto {
+  incremental: boolean;
+  available?: boolean;
+  message?: string;
+  scanMode?: string;
+  baselineCommitId?: string;
+  headCommitId?: string;
+  changedPaths?: string[];
+  deletedPaths?: string[];
+  hierarchyRetargetEntryCount?: number;
+  docRetargetModuleIds?: string[];
+  traces?: ImpactTraceDto[];
+  degradedModuleCount?: number;
+  computedAt?: string;
+}
+
 /**
  * 任务执行日志的结构化摘要（来自 GET /tasks/{id}/log/summary）。
  * 同时驱动知识构建任务页的"执行日志"卡片与"查看完整日志"模态框顶栏。

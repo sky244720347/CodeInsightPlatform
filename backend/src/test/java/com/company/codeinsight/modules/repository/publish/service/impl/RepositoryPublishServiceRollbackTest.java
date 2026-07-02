@@ -24,8 +24,10 @@ import org.junit.jupiter.api.io.TempDir;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
+import java.nio.file.Files;
 import java.nio.file.Path;
 
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -68,6 +70,42 @@ class RepositoryPublishServiceRollbackTest {
                 storageProperties,
                 activeKnowledgeResolver
         );
+    }
+
+    @Test
+    void rollbackToVersion_syncsPublishedBaselineCommit() throws Exception {
+        CodeRepository repo = new CodeRepository();
+        repo.setId(10L);
+        repo.setLastPublishedVersionId(100L);
+        repo.setLastCommitId("commit-current");
+        when(repositoryMapper.selectById(10L)).thenReturn(repo);
+
+        KnowledgeVersion version = new KnowledgeVersion();
+        version.setId(99L);
+        version.setRepositoryId(10L);
+        version.setSystemId(1L);
+        version.setVersionNum("v1.0.0");
+        version.setStatus("PUSHED");
+        version.setSourceCommit("commit-rollback-target");
+        when(versionMapper.selectById(99L)).thenReturn(version);
+
+        RepositoryPublishSnapshot snapshot = new RepositoryPublishSnapshot();
+        snapshot.setRepositoryId(10L);
+        snapshot.setVersionId(99L);
+        snapshot.setTaskId(7L);
+        snapshot.setEntrypointsJson("[]");
+        snapshot.setModuleHierarchyJson("[]");
+        when(snapshotMapper.selectByVersionId(99L)).thenReturn(snapshot);
+
+        Path releaseDir = storageProperties.releaseDir(1L, 10L, "v1.0.0");
+        Files.createDirectories(releaseDir);
+
+        service.rollbackToVersion(10L, 99L, "tester");
+
+        org.mockito.ArgumentCaptor<CodeRepository> captor = org.mockito.ArgumentCaptor.forClass(CodeRepository.class);
+        verify(repositoryMapper).updateById(captor.capture());
+        Assertions.assertEquals("commit-rollback-target", captor.getValue().getLastCommitId());
+        Assertions.assertEquals(99L, captor.getValue().getLastPublishedVersionId());
     }
 
     @Test

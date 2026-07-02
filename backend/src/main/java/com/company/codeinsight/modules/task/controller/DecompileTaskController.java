@@ -10,9 +10,11 @@ import com.company.codeinsight.modules.entrypoint.service.EntrypointReviewServic
 import com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy;
 import com.company.codeinsight.modules.hierarchy.service.ModuleHierarchyService;
 import com.company.codeinsight.modules.log.service.OperationLogService;
+import com.company.codeinsight.modules.task.dto.IncrementalImpactDto;
 import com.company.codeinsight.modules.task.dto.TaskLogSummaryDto;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.service.DecompileTaskService;
+import com.company.codeinsight.modules.task.service.IncrementalImpactQueryService;
 import com.company.codeinsight.modules.task.service.TaskExecutionLogger;
 import com.company.codeinsight.modules.task.service.TaskLogSummaryService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -53,6 +55,9 @@ public class DecompileTaskController {
 
     @Autowired
     private TaskExecutionLogger taskExecutionLogger;
+
+    @Autowired
+    private IncrementalImpactQueryService incrementalImpactQueryService;
 
     /**
      * 创建全量解析分析任务（扫描整个分支所有代码文件并重新进行 AI 归纳）
@@ -220,6 +225,15 @@ public class DecompileTaskController {
     }
 
     /**
+     * 查询增量任务的影响面分析结果
+     */
+    @Operation(summary = "查询增量影响分析")
+    @GetMapping("/{id}/incremental-impact")
+    public ApiResponse<IncrementalImpactDto> getIncrementalImpact(@PathVariable Long id) {
+        return ApiResponse.success(incrementalImpactQueryService.getByTaskId(id));
+    }
+
+    /**
      * 查询任务的模块层级（人工复核断点用）
      * <p>
      * 返回从 ci_module_hierarchy 重建的 ModuleHierarchy DTO（含 classPaths）。
@@ -272,6 +286,16 @@ public class DecompileTaskController {
     @PostMapping("/{id}/module-hierarchy/resume")
     public ApiResponse<Void> resumeModuleHierarchyReview(@PathVariable Long id) {
         decompileTaskService.resumeAfterHierarchyReview(id);
+        return ApiResponse.success();
+    }
+
+    /**
+     * 在模块层级复核断点重新执行 AI 提炼（解析失败导致空树时使用）。
+     */
+    @Operation(summary = "重新提炼模块层级")
+    @PostMapping("/{id}/module-hierarchy/rebuild")
+    public ApiResponse<Void> rebuildModuleHierarchy(@PathVariable Long id) {
+        decompileTaskService.rebuildModuleHierarchy(id);
         return ApiResponse.success();
     }
 

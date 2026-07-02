@@ -51,10 +51,32 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     /**
      * 流水线断点恢复所需的轻量上下文（projectDir + IncrementalContext）。
      * <p>在 {@code runPipeline} 入口识别步骤完成后入缓存；在断点（ENTRYPOINT_REVIEW）resume 时读取使用，
-     * 避免重新调用 {@code pullAndScan}（INCREMENTAL 任务会重复克隆仓库、可能更新 lastCommitId）。</p>
+     * 避免重新调用 {@code pullAndScan}（重复克隆仓库；扫描 commit 已写入任务 {@code source_commit}）。</p>
      * <p>在 {@code ENTRYPOINT_REVIEW} 暂停期间保留；由 resume / reject 或 pipeline 正常结束时清理。</p>
      */
-    public record PipelineContext(java.io.File projectDir, com.company.codeinsight.modules.scanner.model.IncrementalContext ctx) {}
+    public record PipelineContext(
+            java.io.File projectDir,
+            com.company.codeinsight.modules.scanner.model.IncrementalContext ctx,
+            String baselineCommitId,
+            String headCommitId,
+            String scanMode) {
+
+        public static PipelineContext fromScan(java.io.File projectDir,
+                                               com.company.codeinsight.modules.scanner.model.ScanResult scanResult) {
+            return new PipelineContext(
+                    projectDir,
+                    scanResult.getIncrementalContext(),
+                    scanResult.getBaselineCommitId(),
+                    scanResult.getHeadCommitId(),
+                    scanResult.getScanMode());
+        }
+
+        public static PipelineContext fullScan(java.io.File projectDir) {
+            return new PipelineContext(projectDir,
+                    com.company.codeinsight.modules.scanner.model.IncrementalContext.fullScan(),
+                    null, null, "INITIAL");
+        }
+    }
     public static final java.util.Map<Long, PipelineContext> pipelineContextCache = new java.util.concurrent.ConcurrentHashMap<>();
 
     @Autowired
@@ -95,6 +117,12 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
 
     @Autowired
     private com.company.codeinsight.modules.task.service.TaskExecutionLogger execLog;
+
+    @Autowired
+    private com.company.codeinsight.modules.callchain.service.IncrementalImpactAnalyzer incrementalImpactAnalyzer;
+
+    @Autowired
+    private com.company.codeinsight.modules.callchain.service.IncrementalImpactPersistence incrementalImpactPersistence;
 
     @Autowired
     private AiCallRecordMapper aiCallRecordMapper;
@@ -542,6 +570,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         task.setLeaseUntil(null);
         pipelineContextCache.remove(taskId);
         execLog.truncate(taskId);
+        incrementalImpactPersistence.delete(taskId);
         this.updateById(task);
     }
 
@@ -632,6 +661,46 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     }
 
     /**
+     * 在模块层级复核断点重新执行 AI 提炼（用于解析失败导致空树等场景）。
+     */
+    @Override
+    public void rebuildModuleHierarchy(Long id) {
+        DecompileTask task = this.getById(id);
+        if (task == null) {
+            throw new BusinessException("任务不存在");
+        }
+        TaskStatus current = TaskStatus.valueOf(task.getStatus());
+        if (current != TaskStatus.MODULE_HIERARCHY_REVIEW) {
+            throw new BusinessException("仅在模块层级复核状态下可重新提炼，当前状态: " + current);
+        }
+        assertTaskAffinity(task);
+        File projectDir = taskWorkspacePaths.taskProjectDir(id);
+        if (!projectDir.isDirectory()) {
+            throw new BusinessException("任务工作目录不存在，无法重新提炼");
+        }
+        taskCache.put(task.getId(), task);
+        CompletableFuture.runAsync(() -> {
+            try {
+                execLog.log(id, ">>> MODULE_HIERARCHY — 重新提炼模块层级");
+                com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy hierarchy =
+                        moduleHierarchyService.buildAndPersist(id, projectDir);
+                int modCount = hierarchy.getModules() != null ? hierarchy.getModules().size() : 0;
+                execLog.log(id, "  模块数         = " + modCount);
+                execLog.log(id, "<<< 模块层级重新提炼完成");
+            } catch (Exception e) {
+                log.error("Rebuild module hierarchy failed for task {}", id, e);
+                try {
+                    stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
+                } catch (Exception ex) {
+                    log.error("Failed to transit failed status", ex);
+                }
+            } finally {
+                taskCache.remove(id);
+            }
+        });
+    }
+
+    /**
      * 在知识入口人工复核断点 (ENTRYPOINT_REVIEW) 处恢复流水线。
      * <p>仅当任务处于 ENTRYPOINT_REVIEW 时可调用；流转到 AI_ANALYZING → MODULE_HIERARCHY →（按 requireHierarchyReview
      * 选择 GENERATING_DOC 或 MODULE_HIERARCHY_REVIEW）。</p>
@@ -672,7 +741,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                     }
                     execLog.log(id, "  pipelineContext 已从 temp_repos 重建（内存缓存失效，如后端重启）");
                 }
-                continueAfterEntrypointReview(id, taskRef, pctx.projectDir(), pctx.ctx());
+                continueAfterEntrypointReview(id, taskRef, pctx.projectDir(), pctx.ctx(), pctx);
             } catch (Exception e) {
                 log.error("Resume after entrypoint review failed for task " + id, e);
                 try {
@@ -719,8 +788,43 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         if (!projectDir.isDirectory()) {
             return null;
         }
-        return new PipelineContext(projectDir,
-                com.company.codeinsight.modules.scanner.model.IncrementalContext.fullScan());
+        return PipelineContext.fullScan(projectDir);
+    }
+
+    private com.company.codeinsight.modules.callchain.model.IncrementalImpact analyzeIncrementalImpact(
+            Long taskId,
+            File projectDir,
+            com.company.codeinsight.modules.scanner.model.IncrementalContext incrementalCtx,
+            PipelineContext pctx) {
+        com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy hierarchy =
+                moduleHierarchyService.loadByTaskId(taskId);
+        java.util.List<com.company.codeinsight.modules.entrypoint.model.EntryPoint> entries =
+                entrypointReviewService.loadEnabledEntries(taskId);
+        String baseline = pctx != null ? pctx.baselineCommitId() : null;
+        String head = pctx != null ? pctx.headCommitId() : null;
+        String scanMode = pctx != null ? pctx.scanMode() : "INITIAL";
+        long t0 = System.currentTimeMillis();
+        com.company.codeinsight.modules.callchain.model.IncrementalImpact impact =
+                incrementalImpactAnalyzer.analyze(taskId, projectDir, incrementalCtx, hierarchy, entries,
+                        baseline, head, scanMode);
+        execLog.log(taskId, ">>> INCREMENTAL_IMPACT — 增量影响分析");
+        if (impact.isIncremental()) {
+            execLog.log(taskId, "  changed classes = " + incrementalCtx.getChangedPaths().stream()
+                    .filter(p -> p.endsWith(".java")).count());
+            execLog.log(taskId, "  entry retarget    = " + impact.getHierarchyRetargetEntries().size());
+            execLog.log(taskId, "  doc modules       = " + impact.getDocRetargetModuleIds().size());
+            execLog.log(taskId, "  reverse BFS hits  = " + impact.reverseBfsHitCount());
+            execLog.log(taskId, "  degraded modules  = " + impact.getDegradedModuleCount());
+            for (com.company.codeinsight.modules.callchain.model.ImpactTrace trace : impact.getTraces()) {
+                if (trace.kind() == com.company.codeinsight.modules.callchain.model.ImpactTraceKind.REVERSE_BFS) {
+                    execLog.log(taskId, "  trace: " + trace.changedFqcn() + " → " + trace.path()
+                            + " → 模块「" + trace.moduleName() + "」");
+                }
+            }
+        }
+        execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t0) + "ms");
+        incrementalImpactPersistence.persist(taskId, impact, incrementalCtx);
+        return impact;
     }
 
     /**
@@ -751,6 +855,13 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     private void continueAfterEntrypointReview(Long taskId, DecompileTask task,
                                                File projectDir,
                                                com.company.codeinsight.modules.scanner.model.IncrementalContext incrementalCtx) {
+        continueAfterEntrypointReview(taskId, task, projectDir, incrementalCtx, null);
+    }
+
+    private void continueAfterEntrypointReview(Long taskId, DecompileTask task,
+                                               File projectDir,
+                                               com.company.codeinsight.modules.scanner.model.IncrementalContext incrementalCtx,
+                                               PipelineContext pctx) {
         // 4. AI_ANALYZING → MODULE_HIERARCHY
         if (!TaskStatus.AI_ANALYZING.name().equals(task.getStatus())) {
             stateMachineService.transitTo(taskId, TaskStatus.AI_ANALYZING, null);
@@ -759,11 +870,13 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         execLog.log(taskId, "  aiMock=" + aiSummaryService.isAiMock() + " | model="
                 + (task.getModelName() != null ? task.getModelName() : "(default)"));
         long aiT0 = System.currentTimeMillis();
+        com.company.codeinsight.modules.callchain.model.IncrementalImpact impact = analyzeIncrementalImpact(
+                taskId, projectDir, incrementalCtx, pctx);
         stateMachineService.transitTo(taskId, TaskStatus.MODULE_HIERARCHY, null);
         execLog.log(taskId, ">>> MODULE_HIERARCHY — AI 提炼模块层级");
         long t1 = System.currentTimeMillis();
         com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy hierarchy =
-                moduleHierarchyService.buildAndPersist(taskId, projectDir, incrementalCtx);
+                moduleHierarchyService.buildAndPersist(taskId, projectDir, incrementalCtx, impact);
         int modCount = hierarchy.getModules() != null ? hierarchy.getModules().size() : 0;
         execLog.log(taskId, "  模块数         = " + modCount);
         execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
@@ -778,7 +891,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             aiSummaryService.generateDraftDocument(taskId, chunks,
                     decompilePromptService.requireTaskPromptContent(task,
                             com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
-                    incrementalCtx);
+                    incrementalCtx, impact);
             stateMachineService.transitTo(taskId, TaskStatus.PENDING_REVIEW, null);
             execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
             // AI 阶段终态汇总：从 ci_ai_call_record 统计本次任务的成功/失败次数
@@ -808,6 +921,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         CompletableFuture.runAsync(() -> {
             try {
                 execLog.truncate(taskId);
+        incrementalImpactPersistence.delete(taskId);
                 execLog.log(taskId, "══════ 知识纠错流水线 taskId=" + taskId + " ══════");
                 DecompileTask task = this.getById(taskId);
                 if (task == null) {
@@ -886,6 +1000,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 }
 
                 execLog.truncate(taskId);
+        incrementalImpactPersistence.delete(taskId);
                 execLog.log(taskId, "══════ 流水线启动 taskId=" + taskId + " ══════");
 
                 // 1. PULLING_CODE
@@ -910,6 +1025,12 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 com.company.codeinsight.modules.scanner.model.IncrementalContext incrementalCtx = scanResult.getIncrementalContext();
                 execLog.log(taskId, "  projectDir     = " + projectDir.getAbsolutePath());
                 execLog.log(taskId, "  scanMode       = " + (incrementalCtx.isIncremental() ? "INCREMENTAL" : "INITIAL"));
+                if (StringUtils.hasText(scanResult.getHeadCommitId())) {
+                    execLog.log(taskId, "  sourceCommit   = " + scanResult.getHeadCommitId());
+                }
+                if (StringUtils.hasText(scanResult.getBaselineCommitId())) {
+                    execLog.log(taskId, "  publishedBase  = " + scanResult.getBaselineCommitId());
+                }
                 if (incrementalCtx.isIncremental()) {
                     execLog.log(taskId, "  changed files  = " + incrementalCtx.getChangedPaths().size()
                             + ", deleted files = " + incrementalCtx.getDeletedPaths().size());
@@ -955,7 +1076,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
 
                 // 流水线上下文入缓存，供 resumeAfterEntrypointReview 使用
-                pipelineContextCache.put(taskId, new PipelineContext(projectDir, incrementalCtx));
+                pipelineContextCache.put(taskId, PipelineContext.fromScan(projectDir, scanResult));
 
                 if (Boolean.TRUE.equals(task.getRequireEntrypointReview())) {
                     execLog.log(taskId, ">>> ENTRYPOINT_REVIEW — 入口复核");
@@ -965,7 +1086,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                     return;
                 }
                 // 跳过断点：直接进入 AI 阶段（continueAfterEntrypointReview 复用）
-                continueAfterEntrypointReview(taskId, task, projectDir, incrementalCtx);
+                PipelineContext runCtx = pipelineContextCache.get(taskId);
+                continueAfterEntrypointReview(taskId, task, projectDir, incrementalCtx, runCtx);
                 return;
             } catch (Exception e) {
                 execLog.log(taskId, "!!! 流水线异常: " + e.getClass().getSimpleName() + " — " + e.getMessage());

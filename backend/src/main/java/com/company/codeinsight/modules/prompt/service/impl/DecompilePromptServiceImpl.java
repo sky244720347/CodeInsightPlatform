@@ -8,6 +8,7 @@ import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.modules.model.entity.AiModel;
 import com.company.codeinsight.modules.prompt.dto.PromptTestResultDto;
 import com.company.codeinsight.modules.prompt.dto.PromptTestStreamEventDto;
+import com.company.codeinsight.modules.prompt.dto.SyncPromptFromResourceResultDto;
 import com.company.codeinsight.modules.prompt.entity.DecompilePrompt;
 import com.company.codeinsight.modules.prompt.mapper.DecompilePromptMapper;
 import com.company.codeinsight.modules.prompt.service.DecompilePromptService;
@@ -20,14 +21,19 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.DigestUtils;
 import org.springframework.util.StringUtils;
 
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -188,6 +194,101 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
             updateWrapper.ne(DecompilePrompt::getId, excludeId);
         }
         this.update(updateWrapper);
+    }
+
+    /**
+     * 把 classpath 上指定 .md 资源的内容同步为该 {@code promptType} 的默认提示词。
+     * <p>详细业务背景见接口注释。本方法处于事务边界内：
+     * 内容比对 → 若变更则新插入 + 旧默认归档 → 一次性提交。</p>
+     *
+     * <p>典型用法：</p>
+     * <pre>
+     *   syncFromResource("MODULARIZE", "analyze_prompt.md");
+     *   syncFromResource("DOCUMENT_GENERATION", "module_doc_prompt.md");
+     * </pre>
+     */
+    @Override
+    @Transactional(rollbackFor = Exception.class)
+    public SyncPromptFromResourceResultDto syncFromResource(String promptType, String resourcePath) {
+        String normalized = normalizePromptType(promptType);
+        if (!DecompilePrompt.TYPE_MODULARIZE.equals(normalized)
+                && !DecompilePrompt.TYPE_DOCUMENT_GENERATION.equals(normalized)) {
+            throw new BusinessException("仅支持 MODULARIZE / DOCUMENT_GENERATION 两类提示词的资源同步");
+        }
+        if (!StringUtils.hasText(resourcePath)) {
+            throw new BusinessException("resourcePath 不能为空（约定相对于 classpath 根）");
+        }
+        // 1. 读取 classpath 资源
+        String resourceContent;
+        try {
+            ClassPathResource res = new ClassPathResource(resourcePath);
+            if (!res.exists()) {
+                throw new BusinessException("classpath 资源不存在: " + resourcePath);
+            }
+            resourceContent = new String(res.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        } catch (BusinessException e) {
+            throw e;
+        } catch (Exception e) {
+            throw new BusinessException("读取 classpath 资源失败: " + resourcePath + " — " + e.getMessage());
+        }
+        String resourceMd5 = DigestUtils.md5DigestAsHex(resourceContent.getBytes(StandardCharsets.UTF_8));
+        // 2. 查现有默认提示词（按 promptType + isDefault=1）
+        DecompilePrompt oldDefault = this.getOne(
+                new LambdaQueryWrapper<DecompilePrompt>()
+                        .eq(DecompilePrompt::getPromptType, normalized)
+                        .eq(DecompilePrompt::getIsDefault, 1)
+                        .eq(DecompilePrompt::getCategory, "DEFAULT")
+                        .last("LIMIT 1"));
+        // 3. 内容比对：MD5 一致则跳过
+        if (oldDefault != null) {
+            String oldMd5 = DigestUtils.md5DigestAsHex(
+                    (oldDefault.getContent() == null ? "" : oldDefault.getContent()).getBytes(StandardCharsets.UTF_8));
+            if (oldMd5.equals(resourceMd5)) {
+                log.info("syncFromResource 内容一致, 跳过: promptType={}, resource={}", normalized, resourcePath);
+                return new SyncPromptFromResourceResultDto(false, null, oldDefault.getId(),
+                        "content identical", oldDefault.getVersion(), resourcePath);
+            }
+        }
+        // 4. 内容不一致：新建版本 + 切换默认 + 归档旧默认
+        int newVersion;
+        String defaultName;
+        if (oldDefault != null) {
+            newVersion = (oldDefault.getVersion() == null ? 1 : oldDefault.getVersion()) + 1;
+            defaultName = oldDefault.getName();
+        } else {
+            newVersion = 1;
+            defaultName = "默认" + (DecompilePrompt.TYPE_MODULARIZE.equals(normalized) ? "模块提取" : "文档生成") + "提示词";
+        }
+        // 同一 promptType 下其他 DEFAULT 行的 is_default 清零（让位）
+        clearDefaultPrompts(normalized, oldDefault == null ? null : oldDefault.getId(), 1);
+
+        DecompilePrompt fresh = new DecompilePrompt();
+        fresh.setName(defaultName);
+        fresh.setContent(resourceContent);
+        fresh.setVersion(newVersion);
+        fresh.setPromptType(normalized);
+        fresh.setLifecycle(DecompilePrompt.LIFECYCLE_RELEASED);
+        fresh.setIsDefault(1);
+        fresh.setCategory("DEFAULT");
+        fresh.setScopeId(null);
+        fresh.setCreatedAt(LocalDateTime.now());
+        fresh.setUpdatedAt(LocalDateTime.now());
+        this.save(fresh);
+        // 5. 归档旧默认（如有）
+        Long oldId = null;
+        if (oldDefault != null) {
+            try {
+                archivePrompt(oldDefault.getId());
+                oldId = oldDefault.getId();
+            } catch (Exception e) {
+                log.warn("归档旧默认提示词失败，但新默认已生效: oldId={}, err={}", oldDefault.getId(), e.getMessage());
+                oldId = oldDefault.getId();
+            }
+        }
+        log.info("syncFromResource 同步成功: promptType={}, resource={}, newPromptId={}, version={}, oldPromptId={}",
+                normalized, resourcePath, fresh.getId(), newVersion, oldId);
+        String reason = oldDefault == null ? "first seed" : "content changed";
+        return new SyncPromptFromResourceResultDto(true, fresh.getId(), oldId, reason, newVersion, resourcePath);
     }
 
     /**
