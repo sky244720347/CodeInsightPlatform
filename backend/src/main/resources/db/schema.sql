@@ -83,7 +83,7 @@ COMMENT ON COLUMN ci_repository.exclude_file_types IS '排除文件类型，逗�
 COMMENT ON COLUMN ci_repository.last_commit_id IS '最后确认 Commit ID';
 COMMENT ON COLUMN ci_repository.last_decompile_at IS '最后反编译时间';
 ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS entry_scan_config TEXT;
-COMMENT ON COLUMN ci_repository.entry_scan_config IS '仓库级入口扫描配置 JSON：含 includeAnnotations/includeClasspaths/includeExtends 与 excludeClasspaths/excludePackages/excludeAnnotations；新建任务时默认带出，任务可覆盖';
+COMMENT ON COLUMN ci_repository.entry_scan_config IS '仓库级入口扫描配置 JSON：includesByType（CONTROLLER/SCHEDULED_JOB/MQ_LISTENER/OTHER 各含 includeAnnotations/includeClasspaths/includeExtends）+ excludeClasspaths/excludePackages/excludeAnnotations/excludeTargets；新建任务时默认带出，任务可覆盖';
 
 -- 2.1 代码库软删除字段
 ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;
@@ -445,6 +445,10 @@ COMMENT ON COLUMN ci_draft_source_reference.draft_id IS '关联草稿ID';
 COMMENT ON COLUMN ci_draft_source_reference.file_path IS '引用源文件路径';
 COMMENT ON COLUMN ci_draft_source_reference.start_line IS '起始行号';
 COMMENT ON COLUMN ci_draft_source_reference.end_line IS '结束行号';
+ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS class_name VARCHAR(512);
+ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS method_signature VARCHAR(512);
+COMMENT ON COLUMN ci_draft_source_reference.class_name IS '入口类全限定名（可选，便于复核展示）';
+COMMENT ON COLUMN ci_draft_source_reference.method_signature IS '方法签名 methodName(ParamTypes)，不含返回类型（可选）';
 
 -- 13. 知识版本表
 CREATE TABLE IF NOT EXISTS ci_knowledge_version (
@@ -468,6 +472,8 @@ CREATE TABLE IF NOT EXISTS ci_knowledge_version (
 );
 CREATE INDEX IF NOT EXISTS idx_version_system_id ON ci_knowledge_version (system_id);
 CREATE INDEX IF NOT EXISTS idx_version_number ON ci_knowledge_version (version_num);
+-- 同一仓库 version_num 唯一：由应用层强制。库内若已有重复 (repository_id, version_num) 则勿自动建唯一索引（会致启动失败）。
+-- CREATE UNIQUE INDEX IF NOT EXISTS uk_knowledge_version_repo_version_num ON ci_knowledge_version (repository_id, version_num);
 ALTER TABLE ci_knowledge_version ADD COLUMN IF NOT EXISTS push_method VARCHAR(20) DEFAULT 'GIT';
 COMMENT ON TABLE ci_knowledge_version IS '知识版本表';
 COMMENT ON COLUMN ci_knowledge_version.system_id IS '关联系统ID';
@@ -723,7 +729,7 @@ COMMENT ON COLUMN ci_module_hierarchy.confirmed IS '人工逐项复核确认标�
 
 -- 20. 任务级入口扫描配置（每任务独立，配置只跟任务绑定）
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS entry_scan_config TEXT;
-COMMENT ON COLUMN ci_task.entry_scan_config IS '入口扫描配置 JSON：含 includeAnnotations/includeClasspaths/includeExtends 三类入口规则与 excludeClasspaths/excludePackages/excludeAnnotations 三类排除规则，null 时走默认 Controller/JOB/MQ 兜底';
+COMMENT ON COLUMN ci_task.entry_scan_config IS '任务级入口扫描快照 JSON：创建时全量复制仓库配置（含 excludeTargets）后允许覆写；识别/复核/AI 阶段只读此字段，不再 merge 仓库；null 时运行时回退平台默认预置';
 
 -- 21. 是否启用模块层级调试（人工复核断点）
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS require_hierarchy_review BOOLEAN DEFAULT TRUE NOT NULL;
@@ -946,4 +952,91 @@ INSERT INTO ci_system_config (key, value, description) VALUES
     ('task.concurrency',          '2',        '全局同时在跑任务上限（任务级并发闸门，TaskQueueDispatcher 调度）')
 ON CONFLICT (key) DO NOTHING;
 
+-- =====================================================================
+-- 11. 仓库发布态（推送应用到仓库 + 按版本回滚）
+-- =====================================================================
+
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS last_published_task_id BIGINT;
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS last_published_version_id BIGINT;
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS published_at TIMESTAMP;
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS published_by VARCHAR(100);
+COMMENT ON COLUMN ci_repository.last_published_task_id IS '最近一次成功发布到仓库的来源任务 ID';
+COMMENT ON COLUMN ci_repository.last_published_version_id IS '当前生效的已发布知识版本 ID（ci_knowledge_version.id）；知识浏览与回滚均以此指针读取 NAS releases';
+COMMENT ON COLUMN ci_repository.published_at IS '最近一次成功发布到仓库的时间';
+COMMENT ON COLUMN ci_repository.published_by IS '最近一次成功发布到仓库的操作人';
+
+CREATE TABLE IF NOT EXISTS ci_repository_entrypoint (
+    id BIGSERIAL PRIMARY KEY,
+    repository_id BIGINT NOT NULL,
+    system_id BIGINT NOT NULL,
+    class_name VARCHAR(500) NOT NULL,
+    file_path VARCHAR(500),
+    entry_type VARCHAR(50),
+    annotation VARCHAR(255),
+    remark VARCHAR(500),
+    methods_json TEXT,
+    sort_order INT DEFAULT 0 NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT uk_repo_entrypoint_class UNIQUE (repository_id, class_name)
+);
+CREATE INDEX IF NOT EXISTS idx_repo_entrypoint_repo ON ci_repository_entrypoint (repository_id);
+COMMENT ON TABLE ci_repository_entrypoint IS '仓库级已发布入口复核结果（推送成功时从 ci_entrypoint 覆盖写入）';
+
+CREATE TABLE IF NOT EXISTS ci_repository_module_hierarchy (
+    id BIGSERIAL PRIMARY KEY,
+    repository_id BIGINT NOT NULL,
+    system_id BIGINT NOT NULL,
+    level VARCHAR(20) NOT NULL,
+    parent_id BIGINT,
+    node_id VARCHAR(20) NOT NULL,
+    name VARCHAR(200) NOT NULL,
+    keywords TEXT,
+    class_paths TEXT,
+    method_signatures TEXT,
+    confirmed BOOLEAN DEFAULT FALSE NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    CONSTRAINT uk_repo_hierarchy_node UNIQUE (repository_id, node_id)
+);
+CREATE INDEX IF NOT EXISTS idx_repo_hierarchy_repo ON ci_repository_module_hierarchy (repository_id);
+CREATE INDEX IF NOT EXISTS idx_repo_hierarchy_parent ON ci_repository_module_hierarchy (parent_id);
+COMMENT ON TABLE ci_repository_module_hierarchy IS '仓库级已发布模块层级复核结果（推送成功时从 ci_module_hierarchy 覆盖写入）';
+
+CREATE TABLE IF NOT EXISTS ci_repository_publish_snapshot (
+    id BIGSERIAL PRIMARY KEY,
+    repository_id BIGINT NOT NULL,
+    system_id BIGINT NOT NULL,
+    task_id BIGINT NOT NULL,
+    version_id BIGINT NOT NULL,
+    version_num VARCHAR(50) NOT NULL,
+    entry_scan_config TEXT,
+    modularize_prompt_id BIGINT,
+    document_prompt_id BIGINT,
+    model_name VARCHAR(100),
+    entrypoints_json TEXT NOT NULL,
+    module_hierarchy_json TEXT NOT NULL,
+    published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    published_by VARCHAR(100),
+    CONSTRAINT uk_repo_publish_version UNIQUE (version_id)
+);
+CREATE INDEX IF NOT EXISTS idx_repo_publish_snapshot_repo ON ci_repository_publish_snapshot (repository_id, published_at DESC);
+COMMENT ON TABLE ci_repository_publish_snapshot IS '仓库发布快照：每次推送成功写入，供按版本回滚；与 ci_knowledge_version 一一对应';
+
+-- 9. 业务知识配置（按系统维度维护，喂给 AI 占位符 {business_knowledge.md}）
+CREATE TABLE IF NOT EXISTS ci_business_knowledge (
+    id          BIGSERIAL PRIMARY KEY,
+    system_id   BIGINT       NOT NULL UNIQUE,
+    content     TEXT         NOT NULL DEFAULT '',
+    version     INT          NOT NULL DEFAULT 1,
+    updated_by  VARCHAR(64),
+    created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_business_knowledge_system ON ci_business_knowledge (system_id);
+COMMENT ON TABLE  ci_business_knowledge IS '业务知识配置（按系统维度，1:1 覆盖式保存）';
+COMMENT ON COLUMN ci_business_knowledge.system_id  IS '所属业务系统ID（UNIQUE，1:1）';
+COMMENT ON COLUMN ci_business_knowledge.content    IS 'Markdown 正文，写入到 {business_knowledge.md} 占位符';
+COMMENT ON COLUMN ci_business_knowledge.version    IS '保存次数（每次保存 +1，便于审计）';
+COMMENT ON COLUMN ci_business_knowledge.updated_by IS '最后修改人（来自会话用户）';
 
