@@ -46,6 +46,7 @@ const RepositoryDrawer: React.FC<Props> = ({
   onDeleteRepo,
   onScan,
   onScanConfig,
+  onBindPrompts,
   onScanWindow,
 }) => {
   const columns = useRepositoryColumns({
@@ -53,6 +54,7 @@ const RepositoryDrawer: React.FC<Props> = ({
     onDelete: onDeleteRepo,
     onScan,
     onScanConfig,
+    onBindPrompts,
     onScanWindow,
   });
 

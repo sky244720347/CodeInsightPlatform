@@ -25,6 +25,7 @@ import java.util.concurrent.ScheduledFuture;
 
 /**
  * 定时扫描任务调度器：动态 cron + Redis 持久化 + 热更新无需重启。
+ * <p>命中扫描窗口后创建知识构建任务并自动 {@code startTask} 入 PENDING 队列。</p>
  */
 @Slf4j
 @Component
@@ -143,9 +144,11 @@ public class ScanWindowScheduler {
             if (repo == null) continue;
 
             try {
-                decompileTaskService.createInitialTask(repo.getSystemId(), repo.getId(),
+                var task = decompileTaskService.createInitialTask(repo.getSystemId(), repo.getId(),
                         null, null, null, null, true, true, "SCHEDULED");
+                decompileTaskService.startTask(task.getId());
                 fired++;
+                log.info("scan fire ok: repoId={} taskId={} → PENDING", w.getRepositoryId(), task.getId());
                 ScanWindowEntity upd = new ScanWindowEntity();
                 upd.setRepositoryId(w.getRepositoryId());
                 upd.setWeekDays(w.getWeekDays());

@@ -18,6 +18,8 @@ export interface KnowledgeVersion {
   confirmedAt: string;
   pushedAt: string | null;
   createdAt: string;
+  /** 是否为仓库当前生效的已发布版本 */
+  activePublished?: boolean;
 }
 
 export interface PushTask {
@@ -41,10 +43,14 @@ export function createVersion(taskId: number, versionNum: string, confirmedBy?: 
   });
 }
 
-export function pushVersion(versionId: number, method: string = 'GIT'): Promise<void> {
+export function pushVersion(versionId: number, method: string = 'NAS'): Promise<void> {
   return request.post(`/knowledge/${versionId}/push`, null, {
     params: { method },
   });
+}
+
+export function rollbackRepositoryPublish(versionId: number): Promise<void> {
+  return request.post(`/knowledge/${versionId}/rollback-repository`);
 }
 
 export function listPushTasks(versionId: number): Promise<PushTask[]> {
@@ -55,6 +61,29 @@ export function listVersions(params: {
   current: number;
   size: number;
   systemId?: number;
+  repositoryId?: number;
 }): Promise<{ total: number; records: KnowledgeVersion[] }> {
   return request.get('/knowledge/page', { params });
+}
+
+export interface RepositoryPublishSnapshotView {
+  id: number;
+  repositoryId: number;
+  systemId: number;
+  taskId: number;
+  versionId: number;
+  versionNum: string;
+  modularizePromptId?: number;
+  documentPromptId?: number;
+  modelName?: string;
+  publishedAt: string;
+  publishedBy?: string;
+  releaseDirExists?: boolean;
+  activePublished?: boolean;
+}
+
+export function listRepositoryPublishSnapshots(
+  repositoryId: number,
+): Promise<RepositoryPublishSnapshotView[]> {
+  return request.get(`/repositories/${repositoryId}/publish/snapshots`);
 }

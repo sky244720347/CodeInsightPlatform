@@ -3,6 +3,8 @@ package com.company.codeinsight.modules.entrypoint;
 import com.company.codeinsight.modules.callchain.service.MethodCallService;
 import com.company.codeinsight.modules.entrypoint.model.EntryPoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
+import com.company.codeinsight.modules.entrypoint.model.ExcludeTarget;
+import com.company.codeinsight.modules.entrypoint.model.TypeIncludeRules;
 import com.company.codeinsight.modules.entrypoint.service.EntryPointDiscoveryService;
 import com.company.codeinsight.modules.entrypoint.service.impl.EntryPointDiscoveryServiceImpl;
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo;
@@ -14,6 +16,7 @@ import org.junit.jupiter.api.Test;
 import java.io.File;
 import java.io.FileWriter;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
 import java.util.List;
@@ -50,13 +53,25 @@ public class EntryPointDiscoveryServiceTest {
         return info;
     }
 
+    private EntryPointConfig controllerClasspathOnly(String pattern) {
+        EntryPointConfig cfg = EntryPointConfig.defaults();
+        TypeIncludeRules rules = cfg.getIncludesByType().get(EntryPointConfig.TYPE_CONTROLLER);
+        rules.setIncludeAnnotations(new ArrayList<>());
+        rules.setIncludeClasspaths(new ArrayList<>(List.of(pattern)));
+        rules.setIncludeExtends(new ArrayList<>());
+        cfg.getIncludesByType().put(EntryPointConfig.TYPE_SCHEDULED_JOB, new TypeIncludeRules());
+        cfg.getIncludesByType().put(EntryPointConfig.TYPE_MQ_LISTENER, new TypeIncludeRules());
+        cfg.getIncludesByType().put(EntryPointConfig.TYPE_OTHER, new TypeIncludeRules());
+        return cfg;
+    }
+
     @Test
     public void testRestControllerDetected() {
         ParsedClassInfo ctl = buildClass("UserController", "CONTROLLER", false, "RestController");
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(ctl));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        List<EntryPoint> entries = service.discoverEntries(1L, new File("."));
+        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), EntryPointConfig.defaults());
         Assertions.assertEquals(1, entries.size());
         Assertions.assertEquals("CONTROLLER", entries.get(0).getEntryType());
         Assertions.assertEquals("com.demo.UserController", entries.get(0).getClassName());
@@ -68,7 +83,7 @@ public class EntryPointDiscoveryServiceTest {
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(job));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        List<EntryPoint> entries = service.discoverEntries(1L, new File("."));
+        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), EntryPointConfig.defaults());
         Assertions.assertEquals(1, entries.size());
         Assertions.assertEquals("SCHEDULED_JOB", entries.get(0).getEntryType());
     }
@@ -79,20 +94,19 @@ public class EntryPointDiscoveryServiceTest {
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(mq));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        List<EntryPoint> entries = service.discoverEntries(1L, new File("."));
+        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), EntryPointConfig.defaults());
         Assertions.assertEquals(1, entries.size());
         Assertions.assertEquals("MQ_LISTENER", entries.get(0).getEntryType());
     }
 
     @Test
-    public void testMainMethodDetectedAsApplication() {
+    public void testMainMethodNotDetectedWithoutOtherRules() {
         ParsedClassInfo app = buildClass("CodeInsightApplication", "APPLICATION", true, "SpringBootApplication");
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(app));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        List<EntryPoint> entries = service.discoverEntries(1L, new File("."));
-        Assertions.assertEquals(1, entries.size());
-        Assertions.assertEquals("APPLICATION", entries.get(0).getEntryType());
+        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), EntryPointConfig.defaults());
+        Assertions.assertEquals(0, entries.size());
     }
 
     @Test
@@ -102,7 +116,7 @@ public class EntryPointDiscoveryServiceTest {
         when(javaParserService.parseDirectory(any())).thenReturn(Arrays.asList(a, b));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        List<EntryPoint> entries = service.discoverEntries(1L, new File("."));
+        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), EntryPointConfig.defaults());
         Assertions.assertEquals(1, entries.size());
     }
 
@@ -118,14 +132,11 @@ public class EntryPointDiscoveryServiceTest {
 
         ParsedClassInfo info = buildClass("UserController", "CONTROLLER", false, "RestController");
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(info));
-        // 调用链无记录 → 直接读物理文件
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
         String src = service.collectReachableSource(1L, "com.demo.UserController", root);
         Assertions.assertTrue(src.contains("public class UserController"));
     }
-
-    // ============================ 配置驱动：include 三类规则 ============================
 
     @Test
     public void testIncludeAnnotationsHit() {
@@ -133,9 +144,7 @@ public class EntryPointDiscoveryServiceTest {
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(ctl));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        EntryPointConfig cfg = new EntryPointConfig();
-        cfg.setIncludeAnnotations(Arrays.asList("RestController"));
-        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), cfg);
+        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), EntryPointConfig.defaults());
         Assertions.assertEquals(1, entries.size());
         Assertions.assertEquals("com.demo.UserController", entries.get(0).getClassName());
     }
@@ -146,8 +155,7 @@ public class EntryPointDiscoveryServiceTest {
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(ctl));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        EntryPointConfig cfg = new EntryPointConfig();
-        cfg.setIncludeClasspaths(Arrays.asList("com.demo.controller.*"));
+        EntryPointConfig cfg = controllerClasspathOnly("com.demo.*");
         List<EntryPoint> entries = service.discoverEntries(1L, new File("."), cfg);
         Assertions.assertEquals(1, entries.size());
     }
@@ -159,13 +167,14 @@ public class EntryPointDiscoveryServiceTest {
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(child));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        EntryPointConfig cfg = new EntryPointConfig();
-        cfg.setIncludeExtends(Arrays.asList("com.demo.BaseEntry"));
+        EntryPointConfig cfg = EntryPointConfig.defaults();
+        TypeIncludeRules other = new TypeIncludeRules();
+        other.setIncludeExtends(new ArrayList<>(List.of("com.demo.BaseEntry")));
+        cfg.getIncludesByType().put(EntryPointConfig.TYPE_OTHER, other);
         List<EntryPoint> entries = service.discoverEntries(1L, new File("."), cfg);
         Assertions.assertEquals(1, entries.size());
+        Assertions.assertEquals(EntryPointConfig.TYPE_OTHER, entries.get(0).getEntryType());
     }
-
-    // ============================ 配置驱动：exclude 三类规则 ============================
 
     @Test
     public void testExcludeClasspath() {
@@ -173,9 +182,8 @@ public class EntryPointDiscoveryServiceTest {
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(ctl));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        EntryPointConfig cfg = new EntryPointConfig();
-        cfg.setIncludeAnnotations(Arrays.asList("RestController"));
-        cfg.setExcludeClasspaths(Arrays.asList("*.TestController"));
+        EntryPointConfig cfg = EntryPointConfig.defaults();
+        cfg.setExcludeClasspaths(new ArrayList<>(List.of("*.TestController")));
         List<EntryPoint> entries = service.discoverEntries(1L, new File("."), cfg);
         Assertions.assertEquals(0, entries.size());
     }
@@ -186,9 +194,8 @@ public class EntryPointDiscoveryServiceTest {
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(ctl));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        EntryPointConfig cfg = new EntryPointConfig();
-        cfg.setIncludeAnnotations(Arrays.asList("RestController"));
-        cfg.setExcludePackages(Arrays.asList("com.demo.config"));
+        EntryPointConfig cfg = EntryPointConfig.defaults();
+        cfg.setExcludePackages(new ArrayList<>(List.of("com.demo.config")));
         List<EntryPoint> entries = service.discoverEntries(1L, new File("."), cfg);
         Assertions.assertEquals(0, entries.size());
     }
@@ -199,66 +206,42 @@ public class EntryPointDiscoveryServiceTest {
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(ctl));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        EntryPointConfig cfg = new EntryPointConfig();
-        cfg.setIncludeAnnotations(Arrays.asList("RestController"));
-        cfg.setExcludeAnnotations(Arrays.asList("Internal"));
+        EntryPointConfig cfg = EntryPointConfig.defaults();
+        cfg.setExcludeAnnotations(new ArrayList<>(List.of("Internal")));
         List<EntryPoint> entries = service.discoverEntries(1L, new File("."), cfg);
         Assertions.assertEquals(0, entries.size());
     }
 
-    // ============================ "或"逻辑与默认行为兜底 ============================
-
     @Test
-    public void testMultipleIncludeRulesOrLogic() {
-        ParsedClassInfo a = buildClass("A", "UNKNOWN", false, "RestController");
-        ParsedClassInfo b = buildClass("B", "UNKNOWN", false);
-        ParsedClassInfo c = buildClass("C", "UNKNOWN", false);
-        c.setExtendsClass("com.demo.BaseEntry");
-        when(javaParserService.parseDirectory(any())).thenReturn(Arrays.asList(a, b, c));
-        when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
-
-        EntryPointConfig cfg = new EntryPointConfig();
-        cfg.setIncludeClasspaths(Arrays.asList("com.demo.B"));
-        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), cfg);
-        Assertions.assertEquals(1, entries.size());
-        Assertions.assertEquals("com.demo.B", entries.get(0).getClassName());
-    }
-
-    @Test
-    public void testMultipleExcludeRulesOrLogic() {
-        ParsedClassInfo a = buildClass("A", "UNKNOWN", false, "RestController");
-        ParsedClassInfo b = buildClass("B", "UNKNOWN", false, "RestController", "Internal");
-        when(javaParserService.parseDirectory(any())).thenReturn(Arrays.asList(a, b));
-        when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
-
-        EntryPointConfig cfg = new EntryPointConfig();
-        cfg.setIncludeAnnotations(Arrays.asList("RestController"));
-        cfg.setExcludeAnnotations(Arrays.asList("Internal"));
-        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), cfg);
-        Assertions.assertEquals(1, entries.size());
-        Assertions.assertEquals("com.demo.A", entries.get(0).getClassName());
-    }
-
-    @Test
-    public void testConfigNullFallsBackToDefault() {
+    public void testExcludeTargetClassLevel() {
         ParsedClassInfo ctl = buildClass("UserController", "CONTROLLER", false, "RestController");
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(ctl));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), null);
+        EntryPointConfig cfg = EntryPointConfig.defaults();
+        cfg.setExcludeTargets(new ArrayList<>(List.of(new ExcludeTarget("com.demo.UserController", null))));
+        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), cfg);
+        Assertions.assertEquals(0, entries.size());
+    }
+
+    @Test
+    public void testControllerPriorityOverJob() {
+        ParsedClassInfo both = buildClass("Hybrid", "JOB", false, "RestController", "Scheduled");
+        when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(both));
+        when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
+
+        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), EntryPointConfig.defaults());
         Assertions.assertEquals(1, entries.size());
         Assertions.assertEquals("CONTROLLER", entries.get(0).getEntryType());
     }
 
     @Test
-    public void testConfigAllIncludeEmptyFallsBackToDefault() {
+    public void testConfigNullUsesDefaults() {
         ParsedClassInfo ctl = buildClass("UserController", "CONTROLLER", false, "RestController");
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(ctl));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        EntryPointConfig cfg = new EntryPointConfig();
-        cfg.setExcludeClasspaths(Arrays.asList("never.match.*"));
-        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), cfg);
+        List<EntryPoint> entries = service.discoverEntries(1L, new File("."), null);
         Assertions.assertEquals(1, entries.size());
         Assertions.assertEquals("CONTROLLER", entries.get(0).getEntryType());
     }
@@ -280,7 +263,7 @@ public class EntryPointDiscoveryServiceTest {
         when(javaParserService.parseFile(any())).thenReturn(info);
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        List<EntryPoint> entries = service.discoverEntries(1L, root);
+        List<EntryPoint> entries = service.discoverEntries(1L, root, EntryPointConfig.defaults());
         Assertions.assertEquals(1, entries.size());
         Assertions.assertEquals("accounting-service/src/main/java/net/demo/AccountsController.java", entries.get(0).getFilePath());
 
@@ -302,8 +285,8 @@ public class EntryPointDiscoveryServiceTest {
         when(javaParserService.parseDirectory(any())).thenReturn(Collections.singletonList(info));
         when(methodCallService.listByTaskId(any())).thenReturn(Collections.emptyList());
 
-        EntryPointConfig cfg = new EntryPointConfig();
-        cfg.setExcludeClasspaths(Arrays.asList("com.demo.UserController"));
+        EntryPointConfig cfg = EntryPointConfig.defaults();
+        cfg.setExcludeClasspaths(new ArrayList<>(List.of("com.demo.UserController")));
         String result = service.collectReachableSource(1L, "com.demo.UserController", root, cfg);
         Assertions.assertEquals("", result);
     }

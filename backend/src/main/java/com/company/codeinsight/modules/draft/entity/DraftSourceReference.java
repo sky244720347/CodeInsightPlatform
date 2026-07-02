@@ -41,6 +41,12 @@ public class DraftSourceReference {
      */
     private Integer endLine;
 
+    /** 入口类全限定名（可选） */
+    private String className;
+
+    /** 方法签名 methodName(ParamTypes)，不含返回类型（可选） */
+    private String methodSignature;
+
     /**
      * 记录创建时间
      */

@@ -17,24 +17,28 @@ import {
   ArrowLeftOutlined,
   ArrowRightOutlined,
   CheckCircleOutlined,
+  PlayCircleOutlined,
   PlusOutlined,
   SyncOutlined,
 } from '@ant-design/icons';
 import { createSystem, updateSystem } from '../../api/system';
 import {
   createRepository,
+  listRepositories,
   updateRepository,
   testRepositoryConnection,
 } from '../../api/repository';
 import { listPrompts } from '../../api/prompt';
 import type { Repository, System, EntryScanConfig, Prompt } from '../../types';
 import EntryScanConfigEditor from '../../components/EntryScanConfigEditor';
+import RepositoryScanConfigModal from './RepositoryScanConfigModal';
+import { buildScanConfigWithDefaults } from '../../utils/scanConfigDefaults';
 import SystemPromptEditorModal from './SystemPromptEditorModal';
 import SystemPromptTrialModal from './SystemPromptTrialModal';
 
 const { Text, Paragraph } = Typography;
 
-const DEFAULT_EXCLUDE = ['**/*Test', '**/*Tests', '**/*TestCase'];
+const DEFAULT_SCAN_VALUES = buildScanConfigWithDefaults(undefined);
 
 const DEFAULT_PROMPTS: Record<'MODULARIZE' | 'DOCUMENT_GENERATION', { key: string; label: string }> = {
   MODULARIZE: { key: 'MODULARIZE', label: '模块提取提示词' },
@@ -47,6 +51,12 @@ interface Props {
   initialSystemId?: number | null;
   onClose: () => void;
   onCompleted: (systemId: number) => void;
+  /**
+   * 阶段性保存(Steps 1-3 落库后)回调,用于父页面刷新列表。
+   * 调用时机:Step 1 / 2 / 3 各自 save 成功后,以及 handleCancel 关闭弹窗时(若有新建数据)。
+   * 父页面应该在此回调内重新拉取列表,使用户在向导关闭后能立刻看到中途落库的草稿数据。
+   */
+  onPartialSave?: () => void;
 }
 
 interface SystemFormValues {
@@ -68,14 +78,20 @@ interface RepositoryFormValues {
 
 /**
  * 「新建系统」4 步向导：
- *  Step 1 基本信息  →  POST /systems（state=DRAFT）
- *  Step 2 配置仓库  →  POST /repositories（state=REPO_CONFIGURED）
- *  Step 3 入口扫描  →  PUT /repositories/{id} {entryScanConfig}（state=SCAN_CONFIGURED）
- *  Step 4 提示词    →  PUT /systems/{id} {modularizePromptId, documentPromptId}（state=PROMPT_CONFIGURED）
+ *  Step 1 基本信息  →  POST /systems
+ *  Step 2 配置仓库  →  POST /repositories
+ *  Step 3 入口扫描  →  PUT /repositories/{id} {entryScanConfig}
+ *  Step 4 提示词    →  PUT /systems/{id} {modularizePromptId, documentPromptId}
  *
- * 状态机推进由后端自动完成；前端每步只调一个 API。
+ *  <p>系统级启停状态机已删除：每步只提交必要参数即可，提交后系统可立即在列表中查看并使用。</p>
  */
-const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, onCompleted }) => {
+const SystemWizardModal: React.FC<Props> = ({
+  open,
+  initialSystemId,
+  onClose,
+  onCompleted,
+  onPartialSave,
+}) => {
   const [currentStep, setCurrentStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
 
@@ -103,10 +119,20 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
   /** 试跑弹窗:用已选中的 prompt 直接试跑 */
   const [trialPrompt, setTrialPrompt] = useState<Prompt | null>(null);
   const [trialOpen, setTrialOpen] = useState(false);
+  /** Step 3: 入口扫描试跑（复用 RepositoryScanConfigModal trialOnly） */
+  const [scanTrialOpen, setScanTrialOpen] = useState(false);
+  /* 下拉选择先暂存，由底部「完成配置」统一提交；null 表示用户主动清空 */
+  const [pendingModularizeId, setPendingModularizeId] = useState<number | null | undefined>(undefined);
+  const [pendingDocumentId, setPendingDocumentId] = useState<number | null | undefined>(undefined);
 
   // 重置 wizard 状态
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setScanTrialOpen(false);
+      setPendingModularizeId(undefined);
+      setPendingDocumentId(undefined);
+      return;
+    }
     setCurrentStep(0);
     setSystemId(initialSystemId ?? null);
     setRepoId(null);
@@ -114,15 +140,39 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
     repoForm.resetFields();
     scanForm.resetFields();
     promptForm.resetFields();
+    setPendingModularizeId(undefined);
+    setPendingDocumentId(undefined);
   }, [open, initialSystemId, systemForm, repoForm, scanForm, promptForm]);
 
-  // Step 4：拉取可用提示词（DEFAULT is_default=1 + 该系统下 USER 提示词）
+  // Step 4：拉取可用提示词（DEFAULT 全局默认 + 系统下所有仓库的 USER 自定义）
+  // 提示词 scope_id = repository.id,下拉框需要看到系统下所有仓库的 USER 提示词（共享）
+  // 实现方式:先 listRepositories 拿到系统下所有仓库 id,再对每个 id 调 listPrompts
   const fetchPrompts = useCallback(async () => {
     setPromptsLoading(true);
     try {
       const all: Prompt[] = [];
+
+      // 1) 拉系统下所有仓库的 id
+      let repoIds: number[] = [];
+      if (systemId != null) {
+        try {
+          const reposRes = await listRepositories({
+            current: 1,
+            size: 1000,
+            systemId,
+          });
+          repoIds = (reposRes.records || []).map((r) => r.id);
+        } catch {
+          repoIds = [];
+        }
+      }
+      // 当前 wizard 创建的仓库一定要包含在内（listRepositories 可能还没同步到）
+      if (repoId != null && !repoIds.includes(repoId)) {
+        repoIds = [repoId, ...repoIds];
+      }
+
       for (const t of Object.values(DEFAULT_PROMPTS)) {
-        // 拉 DEFAULT 类别 is_default=1 的
+        // 2) 拉 DEFAULT 类别 is_default=1 的
         const defRes = await listPrompts({
           current: 1,
           size: 200,
@@ -132,26 +182,27 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
           isDefault: 1,
         });
         all.push(...defRes.records);
-        // 如已有 systemId,顺便拉该系统下的 USER 提示词
-        if (systemId) {
+        // 3) 对系统下每个仓库,拉 USER 自定义并合并
+        for (const rid of repoIds) {
           const userRes = await listPrompts({
             current: 1,
             size: 200,
-            lifecycle: 'RELEASED',
             promptType: t.key,
             category: 'USER',
-            scopeId: systemId,
+            scopeId: rid,
           });
           all.push(...userRes.records);
         }
       }
-      setPrompts(all);
+      // 按 id 去重
+      const dedup = Array.from(new Map(all.map((p) => [p.id, p])).values());
+      setPrompts(dedup);
     } catch {
       // 拦截器已提示
     } finally {
       setPromptsLoading(false);
     }
-  }, [systemId]);
+  }, [systemId, repoId]);
 
   useEffect(() => {
     if (open && currentStep === 3) fetchPrompts();
@@ -168,7 +219,7 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
 
   const modularizeOptions = useMemo(
     () => prompts
-      .filter((p) => p.promptType === 'MODULARIZE' && p.lifecycle === 'RELEASED')
+      .filter((p) => p.promptType === 'MODULARIZE')
       .map((p) => ({
         value: p.id,
         label: `${p.name} (v${p.version})${p.isDefault === 1 ? ' · 默认' : ''}`,
@@ -177,7 +228,7 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
   );
   const documentOptions = useMemo(
     () => prompts
-      .filter((p) => p.promptType === 'DOCUMENT_GENERATION' && p.lifecycle === 'RELEASED')
+      .filter((p) => p.promptType === 'DOCUMENT_GENERATION')
       .map((p) => ({
         value: p.id,
         label: `${p.name} (v${p.version})${p.isDefault === 1 ? ' · 默认' : ''}`,
@@ -210,33 +261,14 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
   }, [currentStep, prompts, defaultModularize, defaultDocument, promptForm]);
 
   /** Step 4 交互处理 */
-  /* 下拉选择先暂存，不直接写表单；用户点"保存"后才提交 */
-  const [pendingModularizeId, setPendingModularizeId] = useState<number | undefined>();
-  const [pendingDocumentId, setPendingDocumentId] = useState<number | undefined>();
-
-  const handleSelectExisting = (promptType: 'MODULARIZE' | 'DOCUMENT_GENERATION', id: number) => {
+  const handleSelectExisting = (promptType: 'MODULARIZE' | 'DOCUMENT_GENERATION', id: number | undefined) => {
     if (promptType === 'MODULARIZE') {
-      setPendingModularizeId(id);
+      setPendingModularizeId(id ?? null);
     } else {
-      setPendingDocumentId(id);
+      setPendingDocumentId(id ?? null);
     }
   };
 
-  const handleSavePrompt = (promptType: 'MODULARIZE' | 'DOCUMENT_GENERATION') => {
-    if (promptType === 'MODULARIZE') {
-      if (pendingModularizeId != null) {
-        promptForm.setFieldValue('modularizePromptId', pendingModularizeId);
-        setPendingModularizeId(undefined);
-        message.success('模块提取提示词已保存');
-      }
-    } else {
-      if (pendingDocumentId != null) {
-        promptForm.setFieldValue('documentPromptId', pendingDocumentId);
-        setPendingDocumentId(undefined);
-        message.success('文档生成提示词已保存');
-      }
-    }
-  };
   const openCustomPrompt = (promptType: 'MODULARIZE' | 'DOCUMENT_GENERATION') => {
     setEditorState({ open: true, mode: 'custom', promptType });
   };
@@ -244,17 +276,20 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
     setTrialPrompt(p);
     setTrialOpen(true);
   };
-  /** 提示词创建成功 → 自动绑定到对应字段并刷新列表 */
-  const handlePromptCreated = async (p: Prompt) => {
-    const fieldName =
-      p.promptType === 'MODULARIZE' ? 'modularizePromptId' : 'documentPromptId';
-    promptForm.setFieldValue(fieldName, p.id);
-    // 把新 prompt 合并到本地列表(后续列表/试跑都要用)
+  /** 提示词创建成功 → 仅 stage 到 pending + 推入本地列表,不调后端绑定 */
+  const handlePromptCreated = (p: Prompt) => {
+    // 把新 prompt 合并到本地列表(下拉框立即可见)
     setPrompts((prev) => {
       if (prev.some((x) => x.id === p.id)) return prev;
       return [...prev, p];
     });
-    message.success(`已绑定提示词:${p.name}`);
+    // stage 到 pending,由底部「完成配置」统一提交
+    if (p.promptType === 'MODULARIZE') {
+      setPendingModularizeId(p.id);
+    } else {
+      setPendingDocumentId(p.id);
+    }
+    message.success(`已创建自定义提示词:${p.name}（点击底部「完成配置」生效）`);
   };
 
   /** Step 1: 基本信息 */
@@ -274,6 +309,8 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
       setSystemName(sys.name ?? values.name ?? '');
       message.success('基本信息已保存');
       setCurrentStep(1);
+      // 阶段性保存:通知父页面刷新列表,使用户关闭向导后能看到新建的系统草稿
+      onPartialSave?.();
     } finally {
       setSubmitting(false);
     }
@@ -291,6 +328,8 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
       setRepoId(repo.id);
       message.success('仓库已添加');
       setCurrentStep(2);
+      // 阶段性保存:刷新父列表,用户在向导内可看到仓库已挂载
+      onPartialSave?.();
     } finally {
       setSubmitting(false);
     }
@@ -309,16 +348,7 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
 
   /** Step 3: 入口扫描 */
   const handleFillDefaultScan = () => {
-    scanForm.setFieldsValue({
-      entryScanConfig: {
-        includeAnnotations: ['RestController', 'Controller', 'RequestMapping'],
-        includeClasspaths: [],
-        includeExtends: [],
-        excludeClasspaths: DEFAULT_EXCLUDE,
-        excludePackages: [],
-        excludeAnnotations: ['Deprecated'],
-      },
-    });
+    scanForm.setFieldsValue({ entryScanConfig: buildScanConfigWithDefaults(undefined) });
   };
 
   const handleStep3Submit = async () => {
@@ -331,6 +361,8 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
       } as Partial<Repository>);
       message.success('入口扫描规则已保存');
       setCurrentStep(3);
+      // 阶段性保存:刷新父列表,使状态机推进(SCAN_CONFIGURED)可见
+      onPartialSave?.();
     } finally {
       setSubmitting(false);
     }
@@ -338,17 +370,32 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
 
   /** Step 4:提示词(必须两项都选,不再兜底默认) */
   const handleStep4Submit = async () => {
-    const values = await promptForm.validateFields();
-    if (!values.modularizePromptId || !values.documentPromptId) {
+    if (!repoId) {
+      message.error('缺少仓库上下文，无法绑定提示词');
+      return;
+    }
+    const formValues = await promptForm.validateFields();
+    // 最终提交值:
+    // - pending === undefined → 用户未改,沿用 form 字段(useEffect 自动填的默认)
+    // - pending 是 number    → 用户选择的新值
+    // - pending 是 null      → 用户主动清空 → 视为未选,阻止提交
+    const modularizePromptId =
+      pendingModularizeId === undefined ? formValues.modularizePromptId : pendingModularizeId;
+    const documentPromptId =
+      pendingDocumentId === undefined ? formValues.documentPromptId : pendingDocumentId;
+    if (!modularizePromptId || !documentPromptId) {
       message.error('请为模块提取 / 文档生成提示词各选择一个提示词');
       return;
     }
     setSubmitting(true);
     try {
-      await updateSystem(systemId!, {
-        modularizePromptId: values.modularizePromptId,
-        documentPromptId: values.documentPromptId,
-      });
+      // 提示词绑定已迁移到仓库级(ci_repository.modularize_prompt_id / document_prompt_id)
+      // 调用 updateRepository 而不是 updateSystem,后端会按 Repository 维度落表并推动状态机
+      await updateRepository(repoId, {
+        id: repoId,
+        modularizePromptId,
+        documentPromptId,
+      } as Partial<Repository>);
       message.success('提示词已绑定，系统进入「已配提示词」状态');
       onCompleted(systemId!);
     } finally {
@@ -483,20 +530,18 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
           <Form<{ entryScanConfig: EntryScanConfig }>
             form={scanForm}
             layout="vertical"
-            initialValues={{
-              entryScanConfig: {
-                includeAnnotations: ['RestController', 'Controller', 'RequestMapping'],
-                includeClasspaths: [],
-                includeExtends: [],
-                excludeClasspaths: DEFAULT_EXCLUDE,
-                excludePackages: [],
-                excludeAnnotations: ['Deprecated'],
-              },
-            }}
+            initialValues={{ entryScanConfig: DEFAULT_SCAN_VALUES }}
           >
             <Space style={{ marginBottom: 12 }}>
               <Button icon={<SyncOutlined />} onClick={handleFillDefaultScan}>
                 重置
+              </Button>
+              <Button
+                icon={<PlayCircleOutlined />}
+                disabled={!repoId || !systemId}
+                onClick={() => setScanTrialOpen(true)}
+              >
+                试跑
               </Button>
             </Space>
             <Form.Item
@@ -544,26 +589,26 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
             }
             extra={
               <Space size={4} wrap>
-                <Select
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder="选择已有提示词"
-                  style={{ width: 320 }}
-                  value={pendingModularizeId ?? selectedModularize?.id}
-                  onChange={(id) => handleSelectExisting('MODULARIZE', id)}
-                  options={modularizeOptions}
-                  loading={promptsLoading}
-                  allowClear
-                />
+                {/* 用 Form.Item 包裹使字段被注册,validateFields 才能拿到值 */}
+                <Form.Item name="modularizePromptId" noStyle>
+                  <Select
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder="选择已有提示词"
+                    style={{ width: 320 }}
+                    value={pendingModularizeId ?? undefined}
+                    onChange={(id) => handleSelectExisting('MODULARIZE', id)}
+                    options={modularizeOptions}
+                    loading={promptsLoading}
+                    allowClear
+                  />
+                </Form.Item>
                 <Button
                   icon={<PlusOutlined />}
                   onClick={() => openCustomPrompt('MODULARIZE')}
                 >
                   自定义
                 </Button>
-                {pendingModularizeId != null && (
-                  <Button key="save-m" type="primary" size="small" onClick={() => handleSavePrompt('MODULARIZE')}>保存</Button>
-                )}
                 {selectedModularize && (
                   <Button
                     size="small"
@@ -598,26 +643,26 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
             }
             extra={
               <Space size={4} wrap>
-                <Select
-                  showSearch
-                  optionFilterProp="label"
-                  placeholder="选择已有提示词"
-                  style={{ width: 320 }}
-                  value={pendingDocumentId ?? selectedDocument?.id}
-                  onChange={(id) => handleSelectExisting('DOCUMENT_GENERATION', id)}
-                  options={documentOptions}
-                  loading={promptsLoading}
-                  allowClear
-                />
+                {/* 用 Form.Item 包裹使字段被注册,validateFields 才能拿到值 */}
+                <Form.Item name="documentPromptId" noStyle>
+                  <Select
+                    showSearch
+                    optionFilterProp="label"
+                    placeholder="选择已有提示词"
+                    style={{ width: 320 }}
+                    value={pendingDocumentId ?? undefined}
+                    onChange={(id) => handleSelectExisting('DOCUMENT_GENERATION', id)}
+                    options={documentOptions}
+                    loading={promptsLoading}
+                    allowClear
+                  />
+                </Form.Item>
                 <Button
                   icon={<PlusOutlined />}
                   onClick={() => openCustomPrompt('DOCUMENT_GENERATION')}
                 >
                   自定义
                 </Button>
-                {pendingDocumentId != null && (
-                  <Button key="save-d" type="primary" size="small" onClick={() => handleSavePrompt('DOCUMENT_GENERATION')}>保存</Button>
-                )}
                 {selectedDocument && (
                   <Button
                     size="small"
@@ -636,7 +681,7 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
           </Card>
 
           <Paragraph type="secondary" style={{ marginTop: 8 }}>
-            提交后系统状态将进入「已配提示词 (PROMPT_CONFIGURED)」。你可以在系统列表点「启用」按钮将其激活为 ACTIVE。
+            提交后系统可立即在系统列表查看与使用。系统级启停状态已下线，无需额外启用。
           </Paragraph>
         </>
       )}
@@ -689,7 +734,7 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
             editorState.promptType === 'MODULARIZE' ? defaultModularize : defaultDocument
           }
           systemName={systemName}
-          scopeId={systemId}
+          scopeId={repoId}
           promptType={editorState.promptType}
           promptTypeLabel={
             editorState.promptType === 'MODULARIZE'
@@ -714,6 +759,16 @@ const SystemWizardModal: React.FC<Props> = ({ open, initialSystemId, onClose, on
           onClose={() => setTrialOpen(false)}
         />
       )}
+
+      <RepositoryScanConfigModal
+        open={scanTrialOpen}
+        trialOnly
+        form={scanForm}
+        repoId={repoId ?? undefined}
+        systemId={systemId ?? undefined}
+        onCancel={() => setScanTrialOpen(false)}
+        onSubmit={() => setScanTrialOpen(false)}
+      />
     </Modal>
   );
 };

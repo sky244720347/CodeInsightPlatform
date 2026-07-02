@@ -15,7 +15,9 @@ import TaskDetail from '../pages/tasks/detail';
 import HierarchyReview from '../pages/tasks/hierarchy-review';
 import EntrypointReview from '../pages/tasks/entrypoint-review';
 import EntrypointReviewDetail from '../pages/tasks/entrypoint-review-detail';
-import KnowledgeBrowse from '../pages/knowledge';
+import KnowledgeDocuments from '../pages/knowledge/documents';
+import KnowledgeEntrypoints from '../pages/knowledge/entrypoints';
+import KnowledgeHierarchy from '../pages/knowledge/hierarchy';
 import Drafts from '../pages/drafts';
 import DraftReviewDetail from '../pages/drafts/detail';
 import Push from '../pages/push';
@@ -117,8 +119,20 @@ export const router = createHashRouter([
         element: <TaskDetail />,
       },
       {
-        path: 'knowledge/browse', // 知识查看（按系统聚合浏览文档 / 索引 / 清单）
-        element: <KnowledgeBrowse />,
+        path: 'knowledge/documents',
+        element: <KnowledgeDocuments />,
+      },
+      {
+        path: 'knowledge/entrypoints',
+        element: <KnowledgeEntrypoints />,
+      },
+      {
+        path: 'knowledge/hierarchy',
+        element: <KnowledgeHierarchy />,
+      },
+      {
+        path: 'knowledge/browse',
+        element: <Navigate to="/knowledge/documents" replace />,
       },
       // 旧 /models / /prompts 入口已迁移到 /basic/models / /basic/prompts
       { path: 'models', element: <Navigate to="/basic/models" replace /> },

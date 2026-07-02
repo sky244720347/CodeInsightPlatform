@@ -635,7 +635,6 @@ public class DraftServiceImpl implements DraftService {
             dto.setSystemId(sysId);
             dto.setSystemName(sys.getName());
             dto.setOwner(sys.getOwner());
-            dto.setStatus(sys.getStatus());
             dto.setPendingReviewCount(statusCount.getOrDefault("PENDING_REVIEW", 0L));
             dto.setReviewingCount(statusCount.getOrDefault("REVIEWING", 0L));
             dto.setConfirmedCount(statusCount.getOrDefault("CONFIRMED", 0L));
@@ -761,7 +760,7 @@ public class DraftServiceImpl implements DraftService {
         if (workspaces.isEmpty()) {
             RepositoryReadinessDto dto = new RepositoryReadinessDto();
             dto.setUnconfirmedCount(0);
-            applyPromptReadiness(dto, systemId);
+            applyPromptReadiness(dto, systemId, repositoryId);
             if (dto.isPromptsConfigured()) {
                 dto.setReady(true);
             }
@@ -782,7 +781,7 @@ public class DraftServiceImpl implements DraftService {
         RepositoryReadinessDto dto = new RepositoryReadinessDto();
         dto.setUnconfirmedCount(blocking.size());
         dto.setReady(blocking.isEmpty());
-        applyPromptReadiness(dto, systemId);
+        applyPromptReadiness(dto, systemId, repositoryId);
         if (blocking.isEmpty()) {
             return dto;
         }
@@ -811,16 +810,17 @@ public class DraftServiceImpl implements DraftService {
         return dto;
     }
 
-    private void applyPromptReadiness(RepositoryReadinessDto dto, Long systemId) {
-        if (systemId == null) {
+    private void applyPromptReadiness(RepositoryReadinessDto dto, Long systemId, Long repositoryId) {
+        if (repositoryId == null) {
+            // 没有仓库上下文时跳过提示词校验（与 readiness 检查的语义对齐：只按仓库判断）
             dto.setPromptsConfigured(true);
             return;
         }
-        boolean configured = decompilePromptService.isSystemPromptsConfigured(systemId);
+        boolean configured = decompilePromptService.isRepositoryPromptsConfigured(repositoryId);
         dto.setPromptsConfigured(configured);
         if (!configured) {
             dto.setReady(false);
-            dto.setPromptsMessage(decompilePromptService.getSystemPromptsConfigurationMessage(systemId));
+            dto.setPromptsMessage(decompilePromptService.getRepositoryPromptsConfigurationMessage(repositoryId));
         }
     }
 }

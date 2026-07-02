@@ -22,16 +22,15 @@ COMMENT ON COLUMN ci_system.name IS '系统名称';
 COMMENT ON COLUMN ci_system.name_cn IS '系统中文名称';
 COMMENT ON COLUMN ci_system.description IS '系统描述';
 COMMENT ON COLUMN ci_system.owner IS '系统负责人';
-COMMENT ON COLUMN ci_system.status IS '启用状态：0-停用，1-启用（已废弃，请使用 state 字段）';
 COMMENT ON COLUMN ci_system.deleted_at IS '逻辑删除时间，NULL=未删除';
 
 -- 1.1 系统软删除字段（兼容旧库）
 ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;
 COMMENT ON COLUMN ci_system.deleted_at IS '逻辑删除时间，NULL=未删除';
 
--- 1.1.1 系统状态机列（基础流程重构新增）
-ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS state VARCHAR(20) DEFAULT 'DRAFT' NOT NULL;
-COMMENT ON COLUMN ci_system.state IS '系统状态：DRAFT/REPO_CONFIGURED/SCAN_CONFIGURED/PROMPT_CONFIGURED/ACTIVE/DISABLED';
+-- 1.1.1 旧 state 列清理（已废弃，新逻辑不再需要系统级启停状态）
+ALTER TABLE ci_system DROP COLUMN IF EXISTS state;
+ALTER TABLE ci_system DROP COLUMN IF EXISTS status;
 
 -- 1.1.2 系统级提示词绑定（任务下发时继承此处；未设置时回退到默认提示词 is_default=1）
 ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS modularize_prompt_id BIGINT;
@@ -42,10 +41,6 @@ COMMENT ON COLUMN ci_system.document_prompt_id IS '文档生成提示词 ID（FK
 -- 1.1.3 任务队列：系统级并发上限（每系统同时在跑任务数）
 ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS max_concurrent_tasks INT DEFAULT 1 NOT NULL;
 COMMENT ON COLUMN ci_system.max_concurrent_tasks IS '同时在跑任务上限（系统级并发闸门），默认 1';
-
--- 1.1.4 数据迁移：把旧 status 1/0 映成新 state（仅对仍为 DRAFT 默认值的行迁移）
-UPDATE ci_system SET state = 'ACTIVE'   WHERE status = 1 AND state = 'DRAFT';
-UPDATE ci_system SET state = 'DISABLED' WHERE status = 0 AND state = 'DRAFT';
 
 -- 2. 代码库配置表
 CREATE TABLE IF NOT EXISTS ci_repository (
@@ -227,7 +222,17 @@ ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS entry_scan_config TEXT;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS require_hierarchy_review BOOLEAN DEFAULT TRUE NOT NULL;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS trigger_source VARCHAR(20) DEFAULT 'MANUAL' NOT NULL;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS schedule_id BIGINT;
-COMMENT ON COLUMN ci_task.trigger_source IS '触发来源：MANUAL-手动触发，SCHEDULED-定时调度触发';
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS remediation_kind VARCHAR(30);
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS base_version_id BIGINT;
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS base_task_id BIGINT;
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS resume_from VARCHAR(30);
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS remediation_scope_json TEXT;
+COMMENT ON COLUMN ci_task.remediation_kind IS '知识纠错类型：ENTRYPOINT / HIERARCHY / DOCUMENT（trigger_source=KNOWLEDGE_REMEDIATION 时）';
+COMMENT ON COLUMN ci_task.base_version_id IS '纠错所依据的已发布知识版本 ID';
+COMMENT ON COLUMN ci_task.base_task_id IS '纠错克隆来源任务 ID（last_published_task_id）';
+COMMENT ON COLUMN ci_task.resume_from IS '纠错续跑起点：AI_ANALYZING / GENERATING_DOC';
+COMMENT ON COLUMN ci_task.remediation_scope_json IS '纠错范围 JSON（如 moduleIds / relativePath）';
+COMMENT ON COLUMN ci_task.trigger_source IS '触发来源：MANUAL / SCHEDULED / KNOWLEDGE_REMEDIATION';
 COMMENT ON COLUMN ci_task.schedule_id IS '触发该任务的定时配置 ID（trigger_source=SCHEDULED 时非空），FK → ci_schedule_task.id';
 CREATE INDEX IF NOT EXISTS idx_task_trigger_source ON ci_task (trigger_source);
 CREATE INDEX IF NOT EXISTS idx_task_schedule ON ci_task (schedule_id);
@@ -491,6 +496,23 @@ COMMENT ON COLUMN ci_knowledge_version.push_method IS '推送方式: GIT=Git推�
 COMMENT ON COLUMN ci_knowledge_version.confirmed_by IS '确认人';
 COMMENT ON COLUMN ci_knowledge_version.confirmed_at IS '确认时间';
 COMMENT ON COLUMN ci_knowledge_version.pushed_at IS '推送时间';
+
+-- 13.2 知识发布文档人工修订（审核通过后直写 release 目录）
+CREATE TABLE IF NOT EXISTS ci_knowledge_release_edit (
+    id BIGSERIAL PRIMARY KEY,
+    repository_id BIGINT NOT NULL,
+    version_id BIGINT NOT NULL,
+    relative_path VARCHAR(500) NOT NULL,
+    content_text TEXT NOT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
+    submitted_by VARCHAR(50) NOT NULL,
+    approved_by VARCHAR(50),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    approved_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_release_edit_repo ON ci_knowledge_release_edit (repository_id);
+CREATE INDEX IF NOT EXISTS idx_release_edit_status ON ci_knowledge_release_edit (status);
+COMMENT ON TABLE ci_knowledge_release_edit IS '知识发布文档人工修订待审记录；通过后直写 NAS releases';
 
 -- 13.5. 推送任务审计表
 CREATE TABLE IF NOT EXISTS ci_push_task (

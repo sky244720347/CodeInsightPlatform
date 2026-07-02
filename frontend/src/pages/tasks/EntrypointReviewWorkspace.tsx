@@ -22,6 +22,7 @@ import {
   CheckCircleOutlined,
   CloseCircleOutlined,
   LoadingOutlined,
+  CloseOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import {
@@ -30,19 +31,36 @@ import {
   rejectEntrypointReview,
   resumeEntrypointReview,
 } from '../../api/task';
-import type { EntrypointReviewItem, Task } from '../../types';
+import type { EntrypointReviewItem, ExcludeTarget, Task } from '../../types';
 
 const { Text } = Typography;
 
 const ENTRY_TYPE_LABEL: Record<string, { color: string; label: string }> = {
-  CONTROLLER: { color: 'cyan', label: '控制器' },
-  SCHEDULED_JOB: { color: 'purple', label: '定时任务' },
-  MQ_LISTENER: { color: 'gold', label: '消息监听' },
+  CONTROLLER: { color: 'cyan', label: 'Controller' },
+  SCHEDULED_JOB: { color: 'purple', label: 'Job' },
+  MQ_LISTENER: { color: 'gold', label: 'MQ' },
+  OTHER: { color: 'default', label: '其他' },
   COMPONENT: { color: 'blue', label: '组件' },
   APPLICATION: { color: 'magenta', label: '应用入口' },
   MAIN: { color: 'magenta', label: 'Main 入口' },
   CUSTOM: { color: 'default', label: '自定义' },
 };
+
+function targetKey(t: ExcludeTarget): string {
+  return `${t.className}#${t.methodSignature?.trim() || ''}`;
+}
+
+function isPendingExcluded(
+  pending: ExcludeTarget[],
+  className: string,
+  methodSignature?: string,
+): boolean {
+  return pending.some((t) => {
+    if (t.className !== className) return false;
+    if (!t.methodSignature?.trim()) return true;
+    return !!methodSignature && t.methodSignature.trim() === methodSignature.trim();
+  });
+}
 
 /** 从全限定类名中提取简短类名（如 com.demo.UserController → UserController） */
 function shortClassName(fq: string): string {
@@ -71,6 +89,7 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
   const [items, setItems] = useState<EntrypointReviewItem[]>([]);
   const [rejectReason, setRejectReason] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'tree'>('list');
+  const [pendingExcludes, setPendingExcludes] = useState<ExcludeTarget[]>([]);
 
   useEffect(() => {
     setTaskLoading(true);
@@ -95,21 +114,46 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
     };
   }, [taskId]);
 
+  const visibleItems = useMemo(() => {
+    return items
+      .filter((it) => !isPendingExcluded(pendingExcludes, it.className))
+      .map((it) => ({
+        ...it,
+        methods: (it.methods || []).filter(
+          (m) => !isPendingExcluded(pendingExcludes, it.className, m.methodSignature || m.methodName),
+        ),
+      }))
+      .filter((it) => (it.methods?.length ?? 0) > 0 || !items.find((x) => x.id === it.id)?.methods?.length);
+  }, [items, pendingExcludes]);
+
   const stats = useMemo(() => {
-    const totalClasses = items.length;
-    const totalMethods = items.reduce((sum, it) => sum + (it.methods?.length ?? 0), 0);
+    const totalClasses = visibleItems.length;
+    const totalMethods = visibleItems.reduce((sum, it) => sum + (it.methods?.length ?? 0), 0);
     const typeCounts: Record<string, number> = {};
-    items.forEach((it) => {
+    visibleItems.forEach((it) => {
       const t = it.entryType || 'UNKNOWN';
       typeCounts[t] = (typeCounts[t] || 0) + 1;
     });
     return { totalClasses, totalMethods, typeCounts };
-  }, [items]);
+  }, [visibleItems]);
+
+  const addExclude = (target: ExcludeTarget) => {
+    setPendingExcludes((prev) => {
+      const key = targetKey(target);
+      if (prev.some((p) => targetKey(p) === key)) return prev;
+      return [...prev, target];
+    });
+  };
+
+  const removeExclude = (target: ExcludeTarget) => {
+    const key = targetKey(target);
+    setPendingExcludes((prev) => prev.filter((p) => targetKey(p) !== key));
+  };
 
   const handleResume = async () => {
     setSubmitting('resume');
     try {
-      await resumeEntrypointReview(taskId);
+      await resumeEntrypointReview(taskId, pendingExcludes.length > 0 ? pendingExcludes : undefined);
       message.success('已确认，任务继续执行 AI 阶段');
       onSubmitted?.();
       navigate('/tasks/entrypoint-review');
@@ -134,10 +178,12 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
     }
   };
 
+  const canReview = task?.status === 'ENTRYPOINT_REVIEW';
+
   /** 树形视图数据：按入口类型分组 → 类 → 方法 */
   const treeData = useMemo<DataNode[]>(() => {
     const groups: Record<string, EntrypointReviewItem[]> = {};
-    items.forEach((it) => {
+    visibleItems.forEach((it) => {
       const t = it.entryType || 'UNKNOWN';
       if (!groups[t]) groups[t] = [];
       groups[t].push(it);
@@ -162,6 +208,18 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
           title: (
             <Space size={4}>
               <Text strong>{shortClassName(cls.className)}</Text>
+              {canReview && (
+                <Button
+                  type="text"
+                  size="small"
+                  danger
+                  icon={<CloseOutlined />}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    addExclude({ className: cls.className });
+                  }}
+                />
+              )}
               {cls.annotation && (
                 <Tag style={{ fontSize: 11 }}>
                   {cls.annotation.length > 24 ? cls.annotation.slice(0, 22) + '…' : cls.annotation}
@@ -185,15 +243,28 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
                   <Tag style={{ fontSize: 11, lineHeight: '16px' }}>{m.annotation}</Tag>
                 )}
                 <Text style={{ fontSize: 12 }}>{m.methodSignature || m.methodName}</Text>
+                {canReview && (
+                  <Button
+                    type="text"
+                    size="small"
+                    danger
+                    icon={<CloseOutlined />}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      addExclude({
+                        className: cls.className,
+                        methodSignature: m.methodSignature || m.methodName,
+                      });
+                    }}
+                  />
+                )}
               </Space>
             ),
           })),
         })),
       };
     });
-  }, [items]);
-
-  const canReview = task?.status === 'ENTRYPOINT_REVIEW';
+  }, [visibleItems, canReview]);
 
   return (
     <div className="ci-page ci-entrypoint-review-detail-page">
@@ -277,6 +348,29 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
           </div>
         ) : (
           <>
+            {pendingExcludes.length > 0 && (
+              <Alert
+                type="warning"
+                showIcon
+                style={{ marginBottom: 16 }}
+                message={`已排除 ${pendingExcludes.length} 项（确认继续时写入任务配置）`}
+                description={
+                  <Space wrap size={[8, 4]}>
+                    {pendingExcludes.map((t) => (
+                      <Tag
+                        key={targetKey(t)}
+                        closable
+                        onClose={() => removeExclude(t)}
+                      >
+                        {t.className.split('.').pop()}
+                        {t.methodSignature ? `#${t.methodSignature}` : ' (整类)'}
+                      </Tag>
+                    ))}
+                  </Space>
+                }
+              />
+            )}
+
             <Alert
               type="info"
               showIcon
@@ -285,11 +379,11 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
               description={
                 <ul style={{ margin: 0, paddingLeft: 18 }}>
                   <li>
-                    本页为<strong>只读视图</strong>：展示扫描规则下识别到的入口类与方法，不能直接增删改。
+                    可点击类/方法旁的 <CloseOutlined /> 临时排除；确认继续时写入任务级指定排除列表。
                   </li>
                   <li>确认后任务进入 AI 分析；驳回则任务终止（CANCELLED）。</li>
                   <li>
-                    若清单与预期不一致，请调整 <Text code>entry_scan_config</Text> 后重新创建任务。
+                    若规则本身有误，请调整 <Text code>entry_scan_config</Text> 后重新创建任务。
                   </li>
                 </ul>
               }
@@ -310,8 +404,8 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
               </Space>
             </Space>
 
-            {items.length === 0 ? (
-              <Empty description="未识别到任何入口。请调整 entry_scan_config 后重新创建任务。" />
+            {visibleItems.length === 0 ? (
+              <Empty description="无可见入口（已全部排除或未识别到入口）。" />
             ) : viewMode === 'tree' ? (
               <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12, background: '#fafafa' }}>
                 <Tree
@@ -324,7 +418,7 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
               </div>
             ) : (
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
-                {items.map((it) => {
+                {visibleItems.map((it) => {
                   const typeMeta = ENTRY_TYPE_LABEL[it.entryType || ''] || {
                     color: 'default',
                     label: it.entryType || 'UNKNOWN',
@@ -342,6 +436,16 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
                       <Space size={8} wrap style={{ marginBottom: 4 }}>
                         <Tag color={typeMeta.color}>{typeMeta.label}</Tag>
                         <Text strong>{it.className}</Text>
+                        {canReview && (
+                          <Button
+                            type="text"
+                            size="small"
+                            danger
+                            icon={<CloseOutlined />}
+                            title="排除整类"
+                            onClick={() => addExclude({ className: it.className })}
+                          />
+                        )}
                         {it.annotation && (
                           <Tag>
                             <Text type="secondary" style={{ fontSize: 12 }}>
@@ -406,6 +510,30 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
                                   <Text type="secondary">-</Text>
                                 ),
                             },
+                            ...(canReview
+                              ? [
+                                  {
+                                    title: '操作',
+                                    key: 'action',
+                                    width: 72,
+                                    render: (_: unknown, r: NonNullable<EntrypointReviewItem['methods']>[number]) => (
+                                      <Button
+                                        type="text"
+                                        size="small"
+                                        danger
+                                        icon={<CloseOutlined />}
+                                        title="排除此方法"
+                                        onClick={() =>
+                                          addExclude({
+                                            className: it.className,
+                                            methodSignature: r.methodSignature || r.methodName,
+                                          })
+                                        }
+                                      />
+                                    ),
+                                  },
+                                ]
+                              : []),
                           ]}
                         />
                       )}

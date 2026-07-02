@@ -43,6 +43,7 @@ public final class DraftFileUtil {
 
         if (t.startsWith("draft:")) return resolveDraftUri(t, props);
         if (t.startsWith("release:")) return resolveReleaseUri(t, props);
+        if (t.startsWith("file:") || t.startsWith("FILE:")) return Paths.get(URI.create(t));
 
         // 旧数据 fallback
         String root = props.getMode() == com.company.codeinsight.common.storage.StorageMode.SHARED

@@ -7,10 +7,6 @@ import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
 import com.company.codeinsight.modules.repository.service.CodeRepositoryService;
-import com.company.codeinsight.modules.system.entity.SystemApplication;
-import com.company.codeinsight.modules.system.enums.SystemState;
-import com.company.codeinsight.modules.system.mapper.SystemApplicationMapper;
-import com.company.codeinsight.modules.system.service.SystemStateMachineService;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -29,7 +25,7 @@ import java.util.Set;
 
 /**
  * 代码仓库管理服务实现类
- * 负责组装条件模糊分页查询代码库、JGit 连通性测试、创建/更新时触发系统状态机、软删除强校验。
+ * 负责组装条件模糊分页查询代码库、JGit 连通性测试、软删除强校验。
  */
 @Slf4j
 @Service
@@ -43,12 +39,6 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
 
     @Autowired
     private DecompileTaskMapper decompileTaskMapper;
-
-    @Autowired
-    private SystemApplicationMapper systemMapper;
-
-    @Autowired
-    private SystemStateMachineService stateMachineService;
 
     @Override
     public Page<CodeRepository> listRepositoriesPage(int current, int size, Long systemId, String gitUrl) {
@@ -95,22 +85,6 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
         }
         repository.setId(null);
         this.save(repository);
-
-        // 推进系统状态：DRAFT → REPO_CONFIGURED
-        if (repository.getSystemId() != null) {
-            SystemApplication sys = systemMapper.selectById(repository.getSystemId());
-            if (sys != null) {
-                SystemState current = SystemState.parse(sys.getState());
-                if (stateMachineService.canTransit(current, SystemState.REPO_CONFIGURED)) {
-                    stateMachineService.transitTo(sys, SystemState.REPO_CONFIGURED);
-                }
-                // 若创建时已带 entryScanConfig，直接推到 SCAN_CONFIGURED
-                if (StringUtils.hasText(repository.getEntryScanConfig())
-                        && stateMachineService.canTransit(current, SystemState.SCAN_CONFIGURED)) {
-                    stateMachineService.transitTo(sys, SystemState.SCAN_CONFIGURED);
-                }
-            }
-        }
         return repository;
     }
 
@@ -125,21 +99,8 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
         if ("******".equals(repository.getPassword())) {
             repository.setPassword(existing.getPassword());
         }
-        boolean scanBecameConfigured = !StringUtils.hasText(existing.getEntryScanConfig())
-                && StringUtils.hasText(repository.getEntryScanConfig());
         repository.setId(id);
         this.updateById(repository);
-
-        // entryScanConfig 由 null 变为非空：推进系统到 SCAN_CONFIGURED
-        if (scanBecameConfigured && repository.getSystemId() != null) {
-            SystemApplication sys = systemMapper.selectById(repository.getSystemId());
-            if (sys != null) {
-                SystemState current = SystemState.parse(sys.getState());
-                if (stateMachineService.canTransit(current, SystemState.SCAN_CONFIGURED)) {
-                    stateMachineService.transitTo(sys, SystemState.SCAN_CONFIGURED);
-                }
-            }
-        }
         return repository;
     }
 

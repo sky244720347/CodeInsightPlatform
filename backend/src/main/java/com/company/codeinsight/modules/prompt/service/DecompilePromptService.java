@@ -85,9 +85,8 @@ public interface DecompilePromptService extends IService<DecompilePrompt> {
     String requireTaskPromptContent(com.company.codeinsight.modules.task.entity.DecompileTask task, String promptType);
 
     /**
-     * 校验系统已绑定模块提取 + 文档生成提示词（均为 RELEASED 且类型匹配）。
+     * 校验仓库已绑定模块提取 + 文档生成提示词（均为 RELEASED 且类型匹配）。
      */
-    void validateSystemPromptBinding(Long systemId);
     void validateRepositoryPromptBinding(Long repositoryId);
 
     /**
@@ -96,14 +95,14 @@ public interface DecompilePromptService extends IService<DecompilePrompt> {
     void validateTaskPromptBinding(Long modularizePromptId, Long documentPromptId);
 
     /**
-     * 系统提示词是否已完整绑定（不抛异常，供就绪度 API 使用）。
+     * 仓库提示词是否已完整绑定（不抛异常，供就绪度 API 使用）。
      */
-    boolean isSystemPromptsConfigured(Long systemId);
+    boolean isRepositoryPromptsConfigured(Long repositoryId);
 
     /**
-     * 系统提示词未配置时的错误说明；已配置时返回 null。
+     * 仓库提示词未配置时的错误说明；已配置时返回 null。
      */
-    String getSystemPromptsConfigurationMessage(Long systemId);
+    String getRepositoryPromptsConfigurationMessage(Long repositoryId);
 
     /**
      * 流式试跑提示词模板，按内容增量和结束事件输出。

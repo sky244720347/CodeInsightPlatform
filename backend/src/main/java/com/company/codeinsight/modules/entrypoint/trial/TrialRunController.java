@@ -1,6 +1,7 @@
 package com.company.codeinsight.modules.entrypoint.trial;
 
 import com.company.codeinsight.common.response.ApiResponse;
+import com.company.codeinsight.common.response.PageResult;
 import com.company.codeinsight.modules.entrypoint.model.DiscoveredEntrypoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
 import io.swagger.v3.oas.annotations.Operation;
@@ -28,16 +29,37 @@ public class TrialRunController {
         return ApiResponse.success(trialRunService.trigger(systemId, repoId, config, operator));
     }
 
-    @Operation(summary = "查询试跑结果（含状态与入口列表）")
-    @GetMapping("/{trialId}")
-    public ApiResponse<EntryScanTrialEntity> get(@PathVariable Long repoId, @PathVariable Long trialId) {
-        return ApiResponse.success(trialRunService.get(trialId));
+    @Operation(summary = "查询仓库当前进行中的试跑")
+    @GetMapping("/active")
+    public ApiResponse<EntryScanTrialEntity> getActive(@PathVariable Long repoId) {
+        return ApiResponse.success(trialRunService.getActive(repoId));
+    }
+
+    @Operation(summary = "查询仓库最近一次试跑摘要")
+    @GetMapping("/latest")
+    public ApiResponse<EntryScanTrialSummary> getLatest(@PathVariable Long repoId) {
+        return ApiResponse.success(trialRunService.getLatestSummary(repoId));
+    }
+
+    @Operation(summary = "试跑历史分页")
+    @GetMapping("/history")
+    public ApiResponse<PageResult<EntryScanTrialSummary>> listHistory(
+            @PathVariable Long repoId,
+            @RequestParam(defaultValue = "1") long current,
+            @RequestParam(defaultValue = "20") long size) {
+        return ApiResponse.success(trialRunService.listHistory(repoId, current, size));
     }
 
     @Operation(summary = "查询仓库当前是否有进行中的试跑（用于按钮 disabled 控制）")
     @GetMapping("/lock")
     public ApiResponse<Boolean> isLocked(@PathVariable Long repoId) {
         return ApiResponse.success(trialRunService.isLocked(repoId));
+    }
+
+    @Operation(summary = "查询试跑结果（含状态与入口列表）")
+    @GetMapping("/{trialId}")
+    public ApiResponse<EntryScanTrialEntity> get(@PathVariable Long repoId, @PathVariable Long trialId) {
+        return ApiResponse.success(trialRunService.get(trialId));
     }
 
     @Operation(summary = "取消试跑")

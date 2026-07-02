@@ -20,6 +20,7 @@ import {
   AppstoreOutlined,
   ArrowLeftOutlined,
   ArrowRightOutlined,
+  CheckCircleOutlined,
   CheckOutlined,
   ClockCircleOutlined,
   CloseOutlined,
@@ -63,6 +64,8 @@ import {
   type DraftReviewComment,
   type DraftRevision,
   type DraftSourceReference,
+  approveDraft,
+  regenerateDraft,
   type DraftTreeNode,
   type DraftWorkspace,
   type KnowledgeDraft,
@@ -164,6 +167,11 @@ export interface DraftReviewWorkspaceProps {
 }
 
 /** 把 DraftSourceReference[] 按文件路径分组为 antd Tree 的 DataNode[] */
+function formatRefLineRange(startLine: number, endLine: number): string {
+  if (endLine === 0 || endLine < startLine) return '整文件';
+  return `L${startLine} — L${endLine}`;
+}
+
 function buildRefTree(refs: DraftSourceReference[]): import('antd/es/tree').DataNode[] {
   const groups: Record<string, DraftSourceReference[]> = {};
   refs.forEach((r) => {
@@ -173,11 +181,30 @@ function buildRefTree(refs: DraftSourceReference[]): import('antd/es/tree').Data
   });
   return Object.entries(groups).map(([path, items]) => ({
     key: path,
-    title: <span style={{ fontSize: 13 }}><FileTextOutlined style={{ marginRight: 6 }} />{path} · {items.length} 条</span>,
+    title: (
+      <span style={{ fontSize: 13 }}>
+        <FileTextOutlined style={{ marginRight: 6 }} />
+        {path} · {items.length} 条
+      </span>
+    ),
     children: items.map((r, i) => ({
       key: `${path}-${i}`,
       isLeaf: true,
-      title: <span style={{ fontSize: 12, color: '#667085' }}>L{r.startLine} — L{r.endLine}</span>,
+      title: (
+        <span style={{ fontSize: 12, color: '#667085' }}>
+          {r.className && (
+            <Text code style={{ fontSize: 11, marginRight: 6 }}>
+              {r.className.split('.').pop()}
+            </Text>
+          )}
+          {r.methodSignature && (
+            <Text code style={{ fontSize: 11, marginRight: 6 }}>
+              {r.methodSignature}
+            </Text>
+          )}
+          {formatRefLineRange(r.startLine, r.endLine)}
+        </span>
+      ),
     })),
   }));
 }
@@ -570,6 +597,33 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     }
   };
 
+  const handleApprove = async () => {
+    if (!selectedDraftId) return;
+    try {
+      await approveDraft(selectedDraftId);
+      message.success("已审核通过，文档已锁定");
+      // 更新本地选中草稿状态
+      if (selectedDraft) setSelectedDraft({ ...selectedDraft, status: "CONFIRMED" });
+      // 更新左侧树节点状态
+      setTreeData((prev) => updateDraftStatusInTree(prev, selectedDraftId, "CONFIRMED"));
+      // 通过后自动跳转到下一个文档
+      if (currentLeafIndex >= 0 && currentLeafIndex < documentLeaves.length - 1) {
+        setSelectedDraftId(documentLeaves[currentLeafIndex + 1].draftId);
+      } else {
+        message.info("已是最后一个文档");
+      }
+    } catch (e) { message.error("审核通过失败"); }
+  };
+
+  const handleRegenerate = async () => {
+    if (!selectedDraftId) return;
+    try {
+      await regenerateDraft(selectedDraftId);
+      message.success("已重跑，文档已重置");
+      if (selectedDraft) setSelectedDraft({ ...selectedDraft, status: "EDITING" });
+    } catch (e) { message.error("重跑失败"); }
+  };
+
   const handleSave = () => {
     if (!selectedDraftId || editLockStatus !== 'held') return;
     // 内容未改动时直接同步状态，避免无意义的修订记录
@@ -952,6 +1006,16 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
             保存
           </Button>
         </Tooltip>
+        <Tooltip title="审核通过此文档（锁定，不可再编辑）">
+          <Button icon={<CheckCircleOutlined />} onClick={handleApprove} disabled={isTaskLocked}>
+            通过
+          </Button>
+        </Tooltip>
+        <Tooltip title="重跑此文档（重置为可编辑）">
+          <Button icon={<ReloadOutlined />} onClick={handleRegenerate} disabled={isTaskLocked}>
+            重跑此篇
+          </Button>
+        </Tooltip>
       </div>
     ) : null;
 
@@ -1089,11 +1153,21 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                       <div className="ci-info-timeline-meta">
                         <FileTextOutlined />
                         <span>源码引用</span>
-                        <span className="ci-info-timeline-meta-sep">·</span>
-                        <span>命中行区间</span>
+                        {ref.className && (
+                          <>
+                            <span className="ci-info-timeline-meta-sep">·</span>
+                            <Text code style={{ fontSize: 11 }}>{ref.className}</Text>
+                          </>
+                        )}
+                        {ref.methodSignature && (
+                          <>
+                            <span className="ci-info-timeline-meta-sep">·</span>
+                            <Text code style={{ fontSize: 11 }}>{ref.methodSignature}</Text>
+                          </>
+                        )}
                       </div>
                       <div className="ci-info-timeline-line">
-                        L{ref.startLine} — L{ref.endLine}
+                        {formatRefLineRange(ref.startLine, ref.endLine)}
                       </div>
                     </div>
                   </div>
@@ -1906,6 +1980,21 @@ function findDraftInTree(nodes: DraftTreeNode[], id: number): KnowledgeDraft | n
     if (found) return found;
   }
   return null;
+}
+
+/**
+ * 递归更新树中指定草稿节点的状态。
+ */
+function updateDraftStatusInTree(nodes: DraftTreeNode[], draftId: number, newStatus: string): DraftTreeNode[] {
+  return nodes.map((n) => {
+    if (n.id === draftId) {
+      return { ...n, status: newStatus };
+    }
+    if (n.children && n.children.length > 0) {
+      return { ...n, children: updateDraftStatusInTree(n.children, draftId, newStatus) };
+    }
+    return n;
+  });
 }
 
 /**

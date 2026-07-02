@@ -42,8 +42,11 @@ public class KnowledgeBrowseItem {
     /** 更新时间（ISO 字符串；index/manifest 用文件 lastModified） */
     private String updatedAt;
 
-    /** 数据源标识：DB（draft 行）/ TEMP_REPOS（index/manifest 文件） */
+    /** 数据源标识：DB（draft 行）/ TEMP_REPOS（index/manifest 文件）/ RELEASE（已发布产物） */
     private String source;
+
+    /** 已发布产物 content_uri（source=RELEASE 时有值） */
+    private String contentUri;
 
     /** 所属系统 ID（列表跨系统展示） */
     private Long systemId;

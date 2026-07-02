@@ -1,16 +1,15 @@
 package com.company.codeinsight.modules.entrypoint.model;
 
-import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 
 /**
- * EntryPointConfig JSON 编解码工具
- * 序列化失败一律回退 null/空对象（走默认行为），保证任务创建链路不会因 JSON 异常而失败。
+ * EntryPointConfig JSON 编解码。
+ * 旧版 flat JSON（根级 includeAnnotations）视为无效，回退四套默认预置。
  */
 public final class EntryPointConfigCodec {
 
     private static final ObjectMapper MAPPER = new ObjectMapper();
-    private static final TypeReference<EntryPointConfig> TYPE = new TypeReference<>() {};
 
     private EntryPointConfigCodec() {
     }
@@ -20,7 +19,7 @@ public final class EntryPointConfigCodec {
             return null;
         }
         try {
-            return MAPPER.writeValueAsString(config);
+            return MAPPER.writeValueAsString(EntryPointConfig.normalize(config));
         } catch (Exception e) {
             return null;
         }
@@ -28,12 +27,17 @@ public final class EntryPointConfigCodec {
 
     public static EntryPointConfig decode(String json) {
         if (json == null || json.isBlank()) {
-            return new EntryPointConfig();
+            return EntryPointConfig.defaults();
         }
         try {
-            return MAPPER.readValue(json, TYPE);
+            JsonNode root = MAPPER.readTree(json);
+            if (root.isObject() && root.has("includeAnnotations") && !root.has("includesByType")) {
+                return EntryPointConfig.defaults();
+            }
+            EntryPointConfig cfg = MAPPER.treeToValue(root, EntryPointConfig.class);
+            return EntryPointConfig.normalize(cfg);
         } catch (Exception e) {
-            return new EntryPointConfig();
+            return EntryPointConfig.defaults();
         }
     }
 }

@@ -64,6 +64,7 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
     /** 数据源标识 */
     public static final String SOURCE_DB = "DB";
     public static final String SOURCE_TEMP_REPOS = "TEMP_REPOS";
+    public static final String SOURCE_RELEASE = "RELEASE";
 
     @Autowired
     private KnowledgeDraftMapper draftMapper;
@@ -98,6 +99,12 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
     @Autowired
     private KnowledgeBrowseTreeService treeService;
 
+    @Autowired
+    private RepositoryActiveKnowledgeResolver activeKnowledgeResolver;
+
+    @Autowired
+    private ReleaseKnowledgeBrowseHelper releaseBrowseHelper;
+
     private static final DateTimeFormatter ISO_FORMATTER = DateTimeFormatter.ISO_LOCAL_DATE_TIME;
 
     @Override
@@ -109,6 +116,10 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
         long size = query.getSize() == null || query.getSize() < 1 ? 20L : Math.min(query.getSize(), 200L);
 
         String type = StringUtils.hasText(query.getType()) ? query.getType().toUpperCase(Locale.ROOT) : TYPE_ALL;
+
+        if (query.getRepositoryId() != null) {
+            return listPublishedPage(query, type, current, size);
+        }
 
         List<DecompileTask> tasks = collectTasks(query);
         if (tasks.isEmpty()) {
@@ -151,7 +162,27 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
 
     @Override
     public String readContent(KnowledgeBrowseContentRequest req) {
-        if (req == null || !StringUtils.hasText(req.getType())) {
+        if (req == null) {
+            throw new BusinessException("请求不能为空");
+        }
+        if (StringUtils.hasText(req.getContentUri())) {
+            try {
+                Path p = DraftFileUtil.resolve(req.getContentUri(), storageProperties);
+                if (!Files.isRegularFile(p)) {
+                    throw new BusinessException("文件不存在");
+                }
+                long size = Files.size(p);
+                if (size > ReleaseKnowledgeBrowseHelper.SIZE_LIMIT_BYTES) {
+                    throw new BusinessException("文件过大（" + size + " 字节），超过 5 MB 上限");
+                }
+                return Files.readString(p);
+            } catch (BusinessException e) {
+                throw e;
+            } catch (Exception e) {
+                throw new BusinessException("读取发布产物失败：" + e.getMessage());
+            }
+        }
+        if (!StringUtils.hasText(req.getType())) {
             throw new BusinessException("type 不能为空");
         }
         String type = req.getType().toUpperCase(Locale.ROOT);
@@ -164,6 +195,65 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
             default:
                 throw new BusinessException("不支持的文件类型：" + type);
         }
+    }
+
+    private PageResult<KnowledgeBrowseItem> listPublishedPage(KnowledgeBrowseQuery query, String type,
+                                                              long current, long size) {
+        ActiveKnowledgeContext ctx = activeKnowledgeResolver.require(query.getRepositoryId());
+        if (query.getSystemId() != null && !query.getSystemId().equals(ctx.getSystemId())) {
+            return new PageResult<>(0, size, current, Collections.emptyList());
+        }
+        if (query.getVersionId() != null && !query.getVersionId().equals(ctx.getVersionId())) {
+            return new PageResult<>(0, size, current, Collections.emptyList());
+        }
+        if (query.getTaskId() != null && !query.getTaskId().equals(ctx.getTaskId())) {
+            return new PageResult<>(0, size, current, Collections.emptyList());
+        }
+
+        List<KnowledgeBrowseItem> items = new ArrayList<>();
+        if (TYPE_ALL.equals(type) || TYPE_INDEX.equals(type) || TYPE_MANIFEST.equals(type)) {
+            for (KnowledgeBrowseSource.IndexFileEntry e : releaseBrowseHelper.listFiles(ctx)) {
+                if (!typeMatches(e.type(), type)) {
+                    continue;
+                }
+                KnowledgeBrowseItem item = new KnowledgeBrowseItem();
+                item.setId(e.type().toLowerCase(Locale.ROOT) + ":release:" + ctx.getVersionId() + ":" + e.relativePath());
+                item.setName(basename(e.relativePath()));
+                item.setType(e.type());
+                item.setTaskId(ctx.getTaskId());
+                item.setVersionId(ctx.getVersionId());
+                item.setVersionNum(ctx.getVersionNum());
+                item.setFilePath(e.relativePath());
+                item.setSize(e.size());
+                item.setStatus(STATUS_GENERATED);
+                item.setUpdatedAt(formatDate(e.updatedAt()));
+                item.setSource(SOURCE_RELEASE);
+                item.setContentUri(releaseBrowseHelper.buildContentUri(ctx, e.relativePath()));
+                item.setSystemId(ctx.getSystemId());
+                item.setRepositoryId(ctx.getRepositoryId());
+                items.add(item);
+            }
+        }
+
+        SystemApplication sys = systemMapper.selectById(ctx.getSystemId());
+        CodeRepository repo = repositoryMapper.selectById(ctx.getRepositoryId());
+        for (KnowledgeBrowseItem item : items) {
+            item.setSystemName(KnowledgeBrowseTreeService.formatSystemName(sys));
+            item.setRepositoryName(KnowledgeBrowseTreeService.formatRepositoryName(repo));
+        }
+
+        items = applyClientSideFilters(items, query);
+        items.sort((a, b) -> {
+            String ua = a.getUpdatedAt() == null ? "" : a.getUpdatedAt();
+            String ub = b.getUpdatedAt() == null ? "" : b.getUpdatedAt();
+            return ub.compareTo(ua);
+        });
+
+        long total = items.size();
+        int from = (int) Math.min((current - 1) * size, total);
+        int to = (int) Math.min(from + size, total);
+        List<KnowledgeBrowseItem> page = from >= to ? Collections.emptyList() : items.subList(from, to);
+        return new PageResult<>(total, size, current, page);
     }
 
     // ============================ private helpers ============================

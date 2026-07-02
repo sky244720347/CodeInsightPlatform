@@ -1,20 +1,9 @@
-export type SystemState =
-  | 'DRAFT'
-  | 'REPO_CONFIGURED'
-  | 'SCAN_CONFIGURED'
-  | 'PROMPT_CONFIGURED'
-  | 'ACTIVE'
-  | 'DISABLED';
-
 export interface System {
   id: number;
   name: string;
   nameCn?: string;
   description: string;
   owner: string;
-  status: number; // 0-停用, 1-启用（已废弃，请使用 state）
-  /** 状态机：DRAFT / REPO_CONFIGURED / SCAN_CONFIGURED / PROMPT_CONFIGURED / ACTIVE / DISABLED */
-  state?: SystemState;
   /** 系统级模块提取提示词 ID（FK → ci_prompt.id） */
   /** @deprecated 提示词绑定已迁移到仓库级 ci_repository.modularize_prompt_id */ modularizePromptId?: number | null;
   /** 系统级文档生成提示词 ID（FK → ci_prompt.id） */
@@ -39,8 +28,8 @@ export interface Repository {
   excludeFileTypes?: string;
   lastCommitId?: string;
   lastDecompileAt?: string;
-  /** 仓库级入口扫描配置，新建任务时默认带出，任务可单独覆盖 */
-  entryScanConfig?: EntryScanConfig;
+  /** 仓库级入口扫描配置（API 可能返回 JSON 字符串或已解析对象） */
+  entryScanConfig?: EntryScanConfig | string | null;
   /** 仓库级模块提取提示词 ID（FK → ci_prompt.id） */
   modularizePromptId?: number | null;
   /** 仓库级文档生成提示词 ID（FK → ci_prompt.id） */
@@ -155,23 +144,27 @@ export interface TaskLogSummary {
 }
 
 /**
- * 任务级入口扫描配置（仅在该任务创建时生效，不影响仓库）
- * include 规则"或"逻辑：任一列表非空即视为启用配置驱动，全部为空走默认 Controller/JOB/MQ 兜底
- * exclude 规则"或"逻辑：任一命中即从候选中排除
+ * 任务级入口扫描配置
  */
-export interface EntryScanConfig {
-  /** 入口识别 - 注解（类的 annotations 含任一即匹配） */
+export type EntryScanTypeKey = 'CONTROLLER' | 'SCHEDULED_JOB' | 'MQ_LISTENER' | 'OTHER';
+
+export interface TypeIncludeRules {
   includeAnnotations?: string[];
-  /** 入口识别 - 类路径 Ant 模式（FQ 与任一模式匹配即识别） */
   includeClasspaths?: string[];
-  /** 入口识别 - 继承/实现（extendsClass 或 implementsList 含任一即识别） */
   includeExtends?: string[];
-  /** 排除 - 类路径 Ant 模式 */
+}
+
+export interface ExcludeTarget {
+  className: string;
+  methodSignature?: string;
+}
+
+export interface EntryScanConfig {
+  includesByType: Record<EntryScanTypeKey, TypeIncludeRules>;
   excludeClasspaths?: string[];
-  /** 排除 - 包路径（FQ 点分隔前缀匹配） */
   excludePackages?: string[];
-  /** 排除 - 注解 */
   excludeAnnotations?: string[];
+  excludeTargets?: ExcludeTarget[];
 }
 
 /** 模块层级（人工复核断点编辑对象），与后端 ModuleHierarchy DTO 对应 */
@@ -226,8 +219,10 @@ export interface SubModuleNode {
 export interface FunctionNode {
   id: string;
   functionName: string;
-  /** 入口类全限定名集合（仅在内存维护，不会写入提示词） */
+  /** 入口类全限定名集合 */
   classPaths?: string[];
+  /** 方法签名 methodName(ParamTypes)，不含返回类型 */
+  methodSignatures?: string[];
   /** 人工逐项复核确认标记 */
   confirmed?: boolean;
 }
@@ -269,8 +264,10 @@ export interface KnowledgeBrowseItem {
   status: string;
   /** ISO timestamp */
   updatedAt: string;
-  /** 数据源标识：DB（draft 行）/ TEMP_REPOS（index/manifest 文件） */
-  source: 'DB' | 'TEMP_REPOS';
+  /** 数据源标识：DB（draft 行）/ TEMP_REPOS（index/manifest 文件）/ RELEASE（已发布产物） */
+  source: 'DB' | 'TEMP_REPOS' | 'RELEASE';
+  /** 已发布产物 URI（source=RELEASE 时有值） */
+  contentUri?: string;
   systemId?: number;
   systemName?: string;
   repositoryId?: number;
@@ -298,6 +295,8 @@ export interface KnowledgeBrowseTreeNode {
   nodeType: 'MODULE' | 'SUB_MODULE' | 'FUNCTION';
   title: string;
   draftId?: number;
+  contentUri?: string;
+  documentPath?: string;
   hasDocument?: boolean;
   draftStatus?: string;
   documentGranularity?: 'module' | 'function';
@@ -310,8 +309,10 @@ export interface KnowledgeBrowseTreeResult {
   systemName?: string;
   repositoryId: number;
   repositoryName?: string;
-  taskId: number;
-  taskAutoResolved?: boolean;
+  versionId?: number;
+  versionNum?: string;
+  activeVersion?: boolean;
+  taskId?: number;
   documentGranularity?: 'module' | 'function';
   nodes: KnowledgeBrowseTreeNode[];
 }

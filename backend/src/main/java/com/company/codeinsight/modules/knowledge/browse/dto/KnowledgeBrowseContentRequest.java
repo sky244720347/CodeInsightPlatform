@@ -8,6 +8,7 @@ import lombok.Data;
  * <ul>
  *   <li>DRAFT：通过 {@code draftId} 读取 {@code ci_knowledge_draft.content_uri} 指向的物理 Markdown</li>
  *   <li>INDEX / MANIFEST：通过 {@code taskId + filePath}（相对 docs/code-insight/）读取 temp_repos 下的文件</li>
+ *   <li>已发布产物：通过 {@code contentUri}（release:...）直接读取 NAS / 本地 releases 目录</li>
  * </ul>
  */
 @Data
@@ -18,6 +19,9 @@ public class KnowledgeBrowseContentRequest {
 
     /** type=DRAFT 时必填：草稿 ID（ci_knowledge_draft.id） */
     private Long id;
+
+    /** 已发布产物 URI（release:sys:repo:ver/path），优先于 taskId+filePath */
+    private String contentUri;
 
     /** type=INDEX/MANIFEST 时必填：任务 ID（temp_repos/task_{id}） */
     private Long taskId;

@@ -8,6 +8,8 @@ export interface DraftHierarchyTreeNode {
   draftId?: number;
   hasDocument: boolean;
   draftStatus?: string;
+  classPaths?: string[];
+  methodSignatures?: string[];
   children?: DraftHierarchyTreeNode[];
 }
 
@@ -149,6 +151,8 @@ function buildFunctionNode(
     key: `fn:${fn.id}`,
     nodeType: 'FUNCTION',
     title: fn.functionName,
+    classPaths: fn.classPaths,
+    methodSignatures: fn.methodSignatures,
     ...(draft ? fromDraftNode(draft) : { hasDocument: false }),
   };
 }

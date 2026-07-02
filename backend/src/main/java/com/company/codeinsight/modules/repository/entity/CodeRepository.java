@@ -118,6 +118,18 @@ public class CodeRepository extends BaseEntity {
     /** 仓库级文档生成提示词 ID（FK → ci_prompt.id） */
     private Long documentPromptId;
 
+    /** 最近一次成功发布到仓库的来源任务 ID */
+    private Long lastPublishedTaskId;
+
+    /** 最近一次成功发布到仓库的知识版本 ID */
+    private Long lastPublishedVersionId;
+
+    /** 最近一次成功发布到仓库的时间 */
+    private LocalDateTime publishedAt;
+
+    /** 最近一次成功发布到仓库的操作人 */
+    private String publishedBy;
+
     @TableLogic(value = "null", delval = "now()")
     private LocalDateTime deletedAt;
 }

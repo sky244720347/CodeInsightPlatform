@@ -1,11 +1,22 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Alert, Button, Card, Descriptions, Form, Input, Modal, Select, Space, Table, Tag, Typography, message } from 'antd';
-import { CloudUploadOutlined, DownloadOutlined, PlusOutlined, PullRequestOutlined, ReloadOutlined } from '@ant-design/icons';
-import { createVersion, listVersions, pushVersion, listPushTasks, type KnowledgeVersion, type PushTask } from '../../api/knowledge';
+import { Alert, Button, Card, Descriptions, Form, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { CloudUploadOutlined, DownloadOutlined, HistoryOutlined, PlusOutlined, PullRequestOutlined, ReloadOutlined, RollbackOutlined } from '@ant-design/icons';
+import {
+  createVersion,
+  listVersions,
+  pushVersion,
+  listPushTasks,
+  rollbackRepositoryPublish,
+  listRepositoryPublishSnapshots,
+  type KnowledgeVersion,
+  type PushTask,
+  type RepositoryPublishSnapshotView,
+} from '../../api/knowledge';
 import { listSystems } from '../../api/system';
+import { listRepositories } from '../../api/repository';
 import { listTasks } from '../../api/task';
-import type { System, Task } from '../../types';
+import type { Repository, System, Task } from '../../types';
 import { getCurrentOperator } from '../../api/auth';
 
 const { Text } = Typography;
@@ -25,9 +36,12 @@ const pushTaskStatusMeta: Record<string, { color: string; label: string }> = {
 };
 
 const pushMethodLabel: Record<string, string> = {
+  NAS: 'NAS 发布',
   GIT: 'Git 推送',
   S3: 'S3 推送',
 };
+
+const DEFAULT_PUSH_METHOD = 'NAS';
 
 const taskStatusLabel: Record<string, string> = {
   PENDING_REVIEW: '待复核',
@@ -47,6 +61,11 @@ const Push: React.FC = () => {
   const [selectedSystemId, setSelectedSystemId] = useState<number | undefined>(
     location.state?.systemId ? Number(location.state.systemId) : undefined
   );
+  const [selectedRepositoryId, setSelectedRepositoryId] = useState<number | undefined>(
+    location.state?.repositoryId ? Number(location.state.repositoryId) : undefined
+  );
+  const [repositories, setRepositories] = useState<Repository[]>([]);
+  const [publishSnapshots, setPublishSnapshots] = useState<RepositoryPublishSnapshotView[]>([]);
   const [tasks, setTasks] = useState<Task[]>([]);
 
   const [versionModalOpen, setVersionModalOpen] = useState(false);
@@ -61,18 +80,50 @@ const Push: React.FC = () => {
     listSystems({ current: 1, size: 100, status: 1 }).then((data) => setSystems(data.records));
   }, []);
 
+  useEffect(() => {
+    if (selectedSystemId == null) {
+      setRepositories([]);
+      setSelectedRepositoryId(undefined);
+      return;
+    }
+    listRepositories({ current: 1, size: 200, systemId: selectedSystemId })
+      .then((data) => setRepositories(data.records ?? []))
+      .catch(() => setRepositories([]));
+  }, [selectedSystemId]);
+
+  useEffect(() => {
+    if (selectedRepositoryId == null) {
+      setPublishSnapshots([]);
+      return;
+    }
+    listRepositoryPublishSnapshots(selectedRepositoryId)
+      .then(setPublishSnapshots)
+      .catch(() => setPublishSnapshots([]));
+  }, [selectedRepositoryId]);
+
+  const snapshotByVersionId = React.useMemo(() => {
+    const map = new Map<number, RepositoryPublishSnapshotView>();
+    publishSnapshots.forEach((s) => map.set(s.versionId, s));
+    return map;
+  }, [publishSnapshots]);
+
   const fetchVersions = useCallback(
     async (page = current, pageSize = size) => {
       setLoading(true);
       try {
-        const data = await listVersions({ current: page, size: pageSize, systemId: selectedSystemId });
+        const data = await listVersions({
+          current: page,
+          size: pageSize,
+          systemId: selectedSystemId,
+          repositoryId: selectedRepositoryId,
+        });
         setVersions(data.records);
         setTotal(data.total);
       } finally {
         setLoading(false);
       }
     },
-    [current, selectedSystemId, size],
+    [current, selectedRepositoryId, selectedSystemId, size],
   );
 
   useEffect(() => {
@@ -126,23 +177,26 @@ const Push: React.FC = () => {
     fetchVersions();
   };
 
-  const handlePush = async (versionId: number, method: string = 'GIT') => {
+  const handlePush = async (versionId: number, method: string = DEFAULT_PUSH_METHOD) => {
     const version = versions.find((v) => v.id === versionId);
     const methodLabel = pushMethodLabel[method] || method;
     Modal.confirm({
-      title: `推送版本（${methodLabel}）？`,
+      title: `发布版本（${methodLabel}）？`,
       content: (
         <div>
           <p style={{ marginBottom: 6 }}>
-            即将通过 <Text strong>{methodLabel}</Text> 推送版本 <Text strong>{version?.versionNum ?? `#${versionId}`}</Text>。
-            此操作不可撤销。
+            即将通过 <Text strong>{methodLabel}</Text> 发布版本{' '}
+            <Text strong>{version?.versionNum ?? `#${versionId}`}</Text>。
+          </p>
+          <p style={{ marginBottom: 6, fontSize: 13 }}>
+            发布成功后将<strong>强制同步</strong>到仓库：扫描配置快照、提示词绑定、入口复核结果、模块层级复核结果。
           </p>
           <p style={{ marginBottom: 0, fontSize: 12, color: '#818aa0' }}>
-            推送任务将进入队列异步执行。推送后该任务将被锁定，无法继续修改。
+            任务将进入队列异步执行；成功后任务锁定。可通过「回滚到该版本」切换仓库生效配置与知识浏览版本。
           </p>
         </div>
       ),
-      okText: '加入推送队列',
+      okText: '加入发布队列',
       cancelText: '取消',
       onOk: async () => {
         message.loading({ content: '推送任务加入队列...', key: 'pushing' });
@@ -154,6 +208,33 @@ const Push: React.FC = () => {
         } catch {
           message.error({ content: '推送任务提交失败', key: 'pushing' });
         }
+      },
+    });
+  };
+
+  const handleRollbackRepository = (versionId: number, versionNum?: string) => {
+    Modal.confirm({
+      title: '回滚到该版本？',
+      content: (
+        <div>
+          <p style={{ marginBottom: 6 }}>
+            将把仓库的扫描配置、提示词、入口清单、模块层级，以及知识浏览的生效版本指针恢复为版本{' '}
+            <Text strong>{versionNum ?? `#${versionId}`}</Text> 发布时的状态。
+          </p>
+          <p style={{ marginBottom: 0, fontSize: 12, color: '#818aa0' }}>
+            NAS 上各版本的发布产物文件不会被删除；回滚仅切换当前生效指针，知识查看将读取该版本目录。
+          </p>
+        </div>
+      ),
+      okText: '确认回滚',
+      okButtonProps: { danger: true },
+      onOk: async () => {
+        await rollbackRepositoryPublish(versionId);
+        message.success('已回滚到该版本，仓库配置与知识浏览生效版本已切换');
+        if (selectedRepositoryId != null) {
+          listRepositoryPublishSnapshots(selectedRepositoryId).then(setPublishSnapshots).catch(() => undefined);
+        }
+        fetchVersions();
       },
     });
   };
@@ -171,13 +252,31 @@ const Push: React.FC = () => {
     mrForm.resetFields();
   };
 
+  const rollbackDisabledReason = (record: KnowledgeVersion): string | null => {
+    if (record.status !== 'PUSHED') return null;
+    if (record.activePublished) return '已是当前生效版本';
+    const snap = snapshotByVersionId.get(record.id);
+    if (selectedRepositoryId != null) {
+      if (!snap) return '未找到该版本的发布快照';
+      if (!snap.releaseDirExists) return 'NAS 发布产物目录缺失，无法回滚';
+    }
+    return null;
+  };
+
   const columns = [
     {
       title: '版本',
       dataIndex: 'versionNum',
       key: 'versionNum',
-      width: 100,
-      render: (text: string) => <Text strong>{text}</Text>,
+      width: 120,
+      render: (text: string, record: KnowledgeVersion) => (
+        <Space size={4}>
+          <Text strong>{text}</Text>
+          {record.activePublished && (
+            <Tag color="processing">当前生效</Tag>
+          )}
+        </Space>
+      ),
     },
     {
       title: '版本状态',
@@ -194,7 +293,7 @@ const Push: React.FC = () => {
       dataIndex: 'pushMethod',
       key: 'pushMethod',
       width: 90,
-      render: (method: string) => pushMethodLabel[method] || method || 'GIT',
+      render: (method: string) => pushMethodLabel[method] || method || DEFAULT_PUSH_METHOD,
     },
     {
       title: '队列状态',
@@ -243,26 +342,64 @@ const Push: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 260,
+      width: 340,
       fixed: 'right' as const,
       render: (_: unknown, record: KnowledgeVersion) => {
         const isPushing = pushingVersions.has(record.id);
         return (
-          <Space size={8}>
+          <Space size={8} wrap>
             {record.status === 'DRAFT' || record.status === 'FAILED' ? (
-              <Button
-                type="primary"
-                size="small"
-                icon={<CloudUploadOutlined />}
-                loading={isPushing}
-                onClick={() => handlePush(record.id, 'GIT')}
-              >
-                推送 Git
-              </Button>
+              <>
+                <Button
+                  type="primary"
+                  size="small"
+                  icon={<CloudUploadOutlined />}
+                  loading={isPushing}
+                  onClick={() => handlePush(record.id, DEFAULT_PUSH_METHOD)}
+                >
+                  发布到 NAS
+                </Button>
+                <Button
+                  size="small"
+                  icon={<HistoryOutlined />}
+                  loading={isPushing}
+                  onClick={() => handlePush(record.id, 'GIT')}
+                >
+                  Git
+                </Button>
+              </>
             ) : record.status === 'PUSHING' ? (
               <Button size="small" loading disabled>
-                推送中...
+                发布中...
               </Button>
+            ) : record.status === 'PUSHED' ? (
+              <>
+                {record.activePublished ? (
+                  <Tag color="processing">当前生效</Tag>
+                ) : (
+                  <Tooltip title={rollbackDisabledReason(record) ?? undefined}>
+                    <Button
+                      size="small"
+                      danger
+                      icon={<RollbackOutlined />}
+                      disabled={rollbackDisabledReason(record) != null}
+                      onClick={() => handleRollbackRepository(record.id, record.versionNum)}
+                    >
+                      回滚到该版本
+                    </Button>
+                  </Tooltip>
+                )}
+                <Button
+                  size="small"
+                  icon={<PullRequestOutlined />}
+                  onClick={() => {
+                    setActiveVersion(record);
+                    setMrModalOpen(true);
+                  }}
+                >
+                  创建 MR
+                </Button>
+              </>
             ) : (
               <Button
                 size="small"
@@ -290,22 +427,41 @@ const Push: React.FC = () => {
         className="ci-guardrail-alert"
         type="info"
         showIcon
-        message="推送防线"
-        description="只有经过人工复核确认的知识才能推送。推送前校验会检查任务状态、草稿状态、生成元数据和导出包完整性。"
+        message="知识发布说明"
+        description="发布成功后将知识文档写入 NAS（或 Git），并强制把任务的扫描配置、提示词、入口复核、模块层级同步到仓库维度。已发布版本支持「回滚到该版本」切换生效配置与知识浏览版本。"
       />
 
       <Card
         className="ci-workspace-card ci-push-console"
-        title="版本推送控制台"
+        title="知识发布控制台"
         extra={
           <Space wrap>
             <Select
               style={{ width: 220 }}
               placeholder="筛选系统"
               value={selectedSystemId}
-              onChange={setSelectedSystemId}
+              onChange={(v) => {
+                setSelectedSystemId(v);
+                setSelectedRepositoryId(undefined);
+                setCurrent(1);
+              }}
               allowClear
               options={systems.map((system) => ({ value: system.id, label: system.name }))}
+            />
+            <Select
+              style={{ width: 240 }}
+              placeholder="筛选仓库"
+              value={selectedRepositoryId}
+              onChange={(v) => {
+                setSelectedRepositoryId(v);
+                setCurrent(1);
+              }}
+              allowClear
+              disabled={selectedSystemId == null}
+              options={repositories.map((repo) => {
+                const base = repo.gitUrl?.split('/').pop()?.replace(/\.git$/, '') ?? `仓库 #${repo.id}`;
+                return { value: repo.id, label: `${base} (${repo.branch})` };
+              })}
             />
             <Button type="primary" icon={<PlusOutlined />} onClick={openVersionModal}>
               新建版本
@@ -358,9 +514,27 @@ const Push: React.FC = () => {
           <Form.Item
             name="versionNum"
             label="版本号"
+            dependencies={['taskId']}
             rules={[
               { required: true, message: '请输入版本号' },
               { pattern: /^v\d+\.\d+\.\d+$/, message: '请使用语义化版本格式，例如 v1.0.0' },
+              ({ getFieldValue }) => ({
+                validator(_, value) {
+                  const taskId = getFieldValue('taskId');
+                  const task = tasks.find((item) => item.id === taskId);
+                  const trimmed = value?.trim();
+                  if (!task || !trimmed) {
+                    return Promise.resolve();
+                  }
+                  const duplicate = versions.some(
+                    (item) => item.repositoryId === task.repositoryId && item.versionNum === trimmed,
+                  );
+                  if (duplicate) {
+                    return Promise.reject(new Error('该仓库已存在相同版本号，请使用不同的 versionNum'));
+                  }
+                  return Promise.resolve();
+                },
+              }),
             ]}
           >
             <Input placeholder="v1.0.0" />

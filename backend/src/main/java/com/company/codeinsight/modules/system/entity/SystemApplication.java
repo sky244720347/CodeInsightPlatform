@@ -47,18 +47,6 @@ public class SystemApplication extends BaseEntity {
     private String owner;
 
     /**
-     * 系统的启用状态：0-停用, 1-启用
-     * @deprecated 请改用 {@link #state}；本字段保留为历史兼容，由 state 字段同步更新
-     */
-    @Deprecated
-    private Integer status;
-
-    /**
-     * 系统状态机：DRAFT / REPO_CONFIGURED / SCAN_CONFIGURED / PROMPT_CONFIGURED / ACTIVE / DISABLED
-     */
-    private String state;
-
-    /**
      * 系统级模块提取提示词 ID（FK → ci_prompt.id）。运行时未设置则回退到默认提示词（is_default=1）。
      */
     private Long modularizePromptId;

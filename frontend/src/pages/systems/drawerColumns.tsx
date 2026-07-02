@@ -146,5 +146,6 @@ export function useRepositoryColumns(handlers: RepositoryColumnHandlers) {
     handlers.onDelete,
     handlers.onScan,
     handlers.onScanConfig,
+    handlers.onBindPrompts,
   ]);
 }

@@ -258,6 +258,12 @@ function validateFunction(fnVal: unknown): string | null {
       if (typeof cp !== 'string') return 'classPaths 中存在非字符串元素';
     }
   }
+  if (fn.methodSignatures != null) {
+    if (!Array.isArray(fn.methodSignatures)) return 'methodSignatures 必须为字符串数组';
+    for (const sig of fn.methodSignatures) {
+      if (typeof sig !== 'string') return 'methodSignatures 中存在非字符串元素';
+    }
+  }
   return null;
 }
 

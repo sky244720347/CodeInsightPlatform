@@ -41,7 +41,7 @@ public class PushController {
     @PostMapping("/version/{versionId}")
     public ApiResponse<Void> push(
             @PathVariable Long versionId,
-            @RequestParam(defaultValue = "GIT") String method) {
+            @RequestParam(defaultValue = "NAS") String method) {
         PushMethod pushMethod = PushMethod.valueOf(method.toUpperCase());
         pushService.enqueuePush(versionId, pushMethod);
         return ApiResponse.success();

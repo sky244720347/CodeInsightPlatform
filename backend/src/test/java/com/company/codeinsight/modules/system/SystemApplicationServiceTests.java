@@ -27,7 +27,6 @@ public class SystemApplicationServiceTests {
         system.setName("测试系统");
         system.setDescription("测试描述");
         system.setOwner("Tester");
-        system.setStatus(1);
 
         // Save
         boolean saved = systemApplicationService.save(system);
@@ -39,8 +38,8 @@ public class SystemApplicationServiceTests {
         Assertions.assertEquals("测试系统", fetched.getName());
         Assertions.assertEquals("Tester", fetched.getOwner());
 
-        // Page list
-        Page<SystemSummaryVO> page = systemApplicationService.listSystemsPage(1, 10, "测试", null, null);
+        // Page list（仅按 name / owner 过滤）
+        Page<SystemSummaryVO> page = systemApplicationService.listSystemsPage(1, 10, "测试", null);
         Assertions.assertTrue(page.getTotal() > 0);
 
         // Update
@@ -48,11 +47,6 @@ public class SystemApplicationServiceTests {
         systemApplicationService.updateById(fetched);
         SystemApplication updated = systemApplicationService.getById(system.getId());
         Assertions.assertEquals("更新测试系统", updated.getName());
-
-        // Status change
-        systemApplicationService.changeStatus(system.getId(), 0);
-        SystemApplication statusChanged = systemApplicationService.getById(system.getId());
-        Assertions.assertEquals(0, statusChanged.getStatus());
 
         // Delete
         boolean removed = systemApplicationService.removeById(system.getId());

@@ -31,7 +31,10 @@ export const PATH_META: Record<string, PathMeta> = {
   '/push': { title: '知识推送' },
   '/audit': { title: 'Token 审计' },
   '/logs': { title: '操作日志' },
-  '/knowledge/browse': { title: '知识查看' },
+  '/knowledge/entrypoints': { title: '扫描入口', parent: '知识查询' },
+  '/knowledge/hierarchy': { title: '模块层级', parent: '知识查询' },
+  '/knowledge/documents': { title: '知识文档', parent: '知识查询' },
+  '/knowledge/browse': { title: '知识文档', parent: '知识查询' },
 };
 
 /**

@@ -30,6 +30,9 @@ public class KnowledgeController {
     @Autowired
     private PushService pushService;
 
+    @Autowired
+    private com.company.codeinsight.modules.repository.publish.service.RepositoryPublishService repositoryPublishService;
+
     /**
      * 根据复核通过的任务创建知识版本记录
      *
@@ -51,15 +54,25 @@ public class KnowledgeController {
      * 提交推送当前版本到目标 Git 代码库（异步队列）
      * 任务进入 Redis 队列后立即返回，由后台调度器异步执行实际推送。
      */
-    @Operation(summary = "提交推送至 Git 代码库（异步队列）")
+    @Operation(summary = "提交发布至 NAS / Git（异步队列，默认 NAS）")
     @PostMapping("/{versionId}/push")
     public ApiResponse<Void> push(
             @PathVariable Long versionId,
-            @RequestParam(defaultValue = "GIT") String method) {
+            @RequestParam(defaultValue = "NAS") String method) {
         PushMethod pushMethod = PushMethod.valueOf(method.toUpperCase());
         pushService.enqueuePush(versionId, pushMethod);
         return ApiResponse.success();
     }
+
+    @Operation(summary = "按版本回滚仓库发布态")
+    @PostMapping("/{versionId}/rollback-repository")
+    public ApiResponse<com.company.codeinsight.modules.repository.publish.entity.RepositoryPublishSnapshot> rollbackRepository(
+            @PathVariable Long versionId) {
+        return ApiResponse.success(
+                repositoryPublishService.rollbackToVersionByVersionId(
+                        versionId, com.company.codeinsight.common.auth.OperatorContext.get()));
+    }
+
 
     /**
      * 导出当前版本的所有文档为 ZIP 格式的二进制数据流进行本地下载
@@ -82,8 +95,9 @@ public class KnowledgeController {
     public ApiResponse<PageResult<KnowledgeVersion>> getPage(
             @RequestParam(defaultValue = "1") int current,
             @RequestParam(defaultValue = "10") int size,
-            @RequestParam(required = false) Long systemId) {
-        Page<KnowledgeVersion> page = knowledgeService.listVersionsPage(current, size, systemId);
+            @RequestParam(required = false) Long systemId,
+            @RequestParam(required = false) Long repositoryId) {
+        Page<KnowledgeVersion> page = knowledgeService.listVersionsPage(current, size, systemId, repositoryId);
         PageResult<KnowledgeVersion> result = new PageResult<>(page.getTotal(), page.getSize(), page.getCurrent(), page.getRecords());
         return ApiResponse.success(result);
     }

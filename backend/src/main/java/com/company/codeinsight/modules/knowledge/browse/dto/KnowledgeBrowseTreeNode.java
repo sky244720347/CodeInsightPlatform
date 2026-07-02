@@ -20,13 +20,19 @@ public class KnowledgeBrowseTreeNode {
     /** 展示标题 */
     private String title;
 
-    /** 关联草稿 ID（叶子且 hasDocument=true 时有值） */
+    /** 关联草稿 ID（未发布草稿模式时有值） */
     private Long draftId;
+
+    /** 发布产物 content_uri（release:...，已发布模式时有值） */
+    private String contentUri;
+
+    /** 相对 releases 根目录的路径（如 modules/UserModule.md） */
+    private String documentPath;
 
     /** 是否已有可查看的知识文档 */
     private Boolean hasDocument;
 
-    /** 草稿状态（DRAFT / CONFIRMED 等） */
+    /** 文档状态（PUSHED / CONFIRMED 等） */
     private String draftStatus;
 
     /**

@@ -6,6 +6,7 @@ import {
   Empty,
   Input,
   Popconfirm,
+  Popover,
   Select,
   Space,
   Tabs,
@@ -19,6 +20,8 @@ import {
   DeleteOutlined,
   HolderOutlined,
   LoadingOutlined,
+  NodeCollapseOutlined,
+  NodeExpandOutlined,
   PlusOutlined,
 } from '@ant-design/icons';
 import Tree from 'antd/es/tree';
@@ -28,10 +31,73 @@ import {
   replaceModuleHierarchy,
   resumeModuleHierarchyReview,
 } from '../api/task';
+import { collectExpandableKeys } from '../utils/treeExpandKeys';
 import type { FunctionNode, ModuleHierarchy, ModuleNode, SubModuleNode } from '../types';
 import ModuleHierarchyJsonEditor from './ModuleHierarchyJsonEditor';
 
 const { Text } = Typography;
+
+const EDIT_NODE_TAG = {
+  MODULE: { color: 'geekblue', label: '模块' },
+  SUB_MODULE: { color: 'cyan', label: '子模块' },
+  FUNCTION: { color: 'green', label: '功能' },
+} as const;
+
+function stopTreeEvent(e: React.SyntheticEvent) {
+  e.stopPropagation();
+}
+
+function ConfirmedCheckbox({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) {
+  return (
+    <Tooltip title={checked ? '已确认（点击取消）' : '未确认（点击标记为已确认）'}>
+      <Checkbox checked={checked} onChange={(e) => onChange(e.target.checked)} onClick={stopTreeEvent} />
+    </Tooltip>
+  );
+}
+
+function TagsFieldPopover({
+  label,
+  value,
+  onChange,
+  placeholder,
+  title,
+}: {
+  label: string;
+  value: string[];
+  onChange: (v: string[]) => void;
+  placeholder: string;
+  title?: string;
+}) {
+  const count = value?.length ?? 0;
+  return (
+    <Popover
+      trigger="click"
+      title={title ?? label}
+      content={
+        <Select
+          mode="tags"
+          value={value}
+          onChange={onChange}
+          placeholder={placeholder}
+          style={{ width: 280 }}
+          tokenSeparators={[',', ' ']}
+          open={false}
+          suffixIcon={null}
+        />
+      }
+    >
+      <Button type="link" size="small" className="ci-tree-meta-btn" onClick={stopTreeEvent}>
+        {count > 0 ? `${label}·${count}` : label}
+      </Button>
+    </Popover>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Types
@@ -76,21 +142,6 @@ function yonHierarchyFromDisplay(obj: unknown): any {
     return result;
   }
   return obj;
-}
-
-/** 收集 hierarchy 中所有节点 id（用于新增时避让） */
-function collectAllNodeIds(h: ModuleHierarchy): string[] {
-  const ids: string[] = [];
-  for (const mod of Object.values(h.modules ?? {})) {
-    ids.push(mod.id);
-    for (const sub of Object.values(mod.subModules ?? {})) {
-      ids.push(sub.id);
-      for (const fn of Object.values(sub.functions ?? {})) {
-        ids.push(fn.id);
-      }
-    }
-  }
-  return ids;
 }
 
 /** 根据 nodeKey 在 hierarchy 中定位节点，返回其所在容器引用信息 */
@@ -498,6 +549,8 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
     });
   }, [hierarchy]);
 
+  const allExpandableKeys = useMemo(() => collectExpandableKeys(treeData), [treeData]);
+
   // --------------- titleRender ---------------
   // 直接使用 hierarchy state（非 ref），确保渲染期间读到最新值
 
@@ -509,46 +562,30 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
         const mod = hierarchy.modules?.[nd.key as string];
         if (!mod) return <Text type="secondary">—</Text>;
         return (
-          <div
-            className="ci-tree-node-title"
-            onMouseDown={(e) => {
-              // 阻止输入框点击冒泡触发树节点拖拽
-              e.stopPropagation();
-            }}
-          >
+          <div className="ci-knowledge-tree-node ci-tree-node-edit" onMouseDown={stopTreeEvent}>
             <HolderOutlined className="ci-tree-drag-handle" />
-            <Tag color="purple" className="ci-tree-node-tag">
-              模块
+            <Tag color={EDIT_NODE_TAG.MODULE.color} className="ci-tree-node-tag">
+              {EDIT_NODE_TAG.MODULE.label}
             </Tag>
             <Input
               size="small"
-              className="ci-tree-name-input"
+              variant="borderless"
+              className="ci-tree-edit-name"
               value={mod.moduleName}
               onChange={(e) => updateModule(mod.id, { ...mod, moduleName: e.target.value })}
-              placeholder="模块名（业务领域/场景）"
-              onClick={(e) => e.stopPropagation()}
+              placeholder="模块名"
+              onClick={stopTreeEvent}
             />
-            <Select
-              mode="tags"
-              size="small"
-              className="ci-tree-keyword-select"
-              placeholder="关键词"
+            <ConfirmedCheckbox
+              checked={!!mod.confirmed}
+              onChange={(confirmed) => updateModule(mod.id, { ...mod, confirmed })}
+            />
+            <TagsFieldPopover
+              label="关键词"
               value={mod.keywords ?? []}
               onChange={(keywords) => updateModule(mod.id, { ...mod, keywords })}
-              onClick={(e) => e.stopPropagation()}
-              maxTagCount={3}
-              popupMatchSelectWidth={false}
+              placeholder="输入关键词后回车"
             />
-            <Tooltip title={mod.confirmed ? '已确认（点击取消）' : '未确认（点击标记为已确认）'}>
-              <Checkbox
-                checked={!!mod.confirmed}
-                onChange={(e) => updateModule(mod.id, { ...mod, confirmed: e.target.checked })}
-                onClick={(e) => e.stopPropagation()}
-                style={{ marginLeft: 4 }}
-              >
-                {mod.confirmed ? '已确认' : '未确认'}
-              </Checkbox>
-            </Tooltip>
             <span className="ci-tree-node-actions">
               <Tooltip title="新增子模块">
                 <Button
@@ -574,7 +611,7 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
                   type="link"
                   danger
                   icon={<DeleteOutlined />}
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={stopTreeEvent}
                 />
               </Popconfirm>
             </span>
@@ -587,44 +624,32 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
         const sub = hierarchy.modules?.[modId]?.subModules?.[nd.key as string];
         if (!sub) return <Text type="secondary">—</Text>;
         return (
-          <div className="ci-tree-node-title" onMouseDown={(e) => e.stopPropagation()}>
+          <div className="ci-knowledge-tree-node ci-tree-node-edit" onMouseDown={stopTreeEvent}>
             <HolderOutlined className="ci-tree-drag-handle" />
-            <Tag color="cyan" className="ci-tree-node-tag">
-              子模块
+            <Tag color={EDIT_NODE_TAG.SUB_MODULE.color} className="ci-tree-node-tag">
+              {EDIT_NODE_TAG.SUB_MODULE.label}
             </Tag>
             <Input
               size="small"
-              className="ci-tree-name-input"
+              variant="borderless"
+              className="ci-tree-edit-name"
               value={sub.subModuleName}
               onChange={(e) =>
                 updateSubModule(modId, sub.id, { ...sub, subModuleName: e.target.value })
               }
-              placeholder="子模块名（具体业务功能）"
-              onClick={(e) => e.stopPropagation()}
+              placeholder="子模块名"
+              onClick={stopTreeEvent}
             />
-            <Select
-              mode="tags"
-              size="small"
-              className="ci-tree-keyword-select"
-              placeholder="关键词"
+            <ConfirmedCheckbox
+              checked={!!sub.confirmed}
+              onChange={(confirmed) => updateSubModule(modId, sub.id, { ...sub, confirmed })}
+            />
+            <TagsFieldPopover
+              label="关键词"
               value={sub.keywords ?? []}
               onChange={(keywords) => updateSubModule(modId, sub.id, { ...sub, keywords })}
-              onClick={(e) => e.stopPropagation()}
-              maxTagCount={3}
-              popupMatchSelectWidth={false}
+              placeholder="输入关键词后回车"
             />
-            <Tooltip title={sub.confirmed ? '已确认（点击取消）' : '未确认（点击标记为已确认）'}>
-              <Checkbox
-                checked={!!sub.confirmed}
-                onChange={(e) =>
-                  updateSubModule(modId, sub.id, { ...sub, confirmed: e.target.checked })
-                }
-                onClick={(e) => e.stopPropagation()}
-                style={{ marginLeft: 4 }}
-              >
-                {sub.confirmed ? '已确认' : '未确认'}
-              </Checkbox>
-            </Tooltip>
             <span className="ci-tree-node-actions">
               <Tooltip title="新增功能">
                 <Button
@@ -650,7 +675,7 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
                   type="link"
                   danger
                   icon={<DeleteOutlined />}
-                  onClick={(e) => e.stopPropagation()}
+                  onClick={stopTreeEvent}
                 />
               </Popconfirm>
             </span>
@@ -664,46 +689,44 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
       const fn = hierarchy.modules?.[modId]?.subModules?.[subId]?.functions?.[nd.key as string];
       if (!fn) return <Text type="secondary">—</Text>;
       return (
-        <div className="ci-tree-node-title" onMouseDown={(e) => e.stopPropagation()}>
+        <div className="ci-knowledge-tree-node ci-tree-node-edit" onMouseDown={stopTreeEvent}>
           <HolderOutlined className="ci-tree-drag-handle" />
-          <Tag color="green" className="ci-tree-node-tag">
-            功能
+          <Tag color={EDIT_NODE_TAG.FUNCTION.color} className="ci-tree-node-tag">
+            {EDIT_NODE_TAG.FUNCTION.label}
           </Tag>
           <Input
             size="small"
-            className="ci-tree-name-input"
+            variant="borderless"
+            className="ci-tree-edit-name"
             value={fn.functionName}
             onChange={(e) =>
               updateFunction(modId, subId, fn.id, { ...fn, functionName: e.target.value })
             }
-            placeholder="业务功能名（动词短语，如「白名单查询」）"
-            onClick={(e) => e.stopPropagation()}
+            placeholder="功能名"
+            onClick={stopTreeEvent}
           />
-          <Tooltip title="入口类全限定名集合；与其它字段一起落表，重启不会丢失。仅在提示词中被剥离。">
-            <Select
-              mode="tags"
-              size="small"
-              className="ci-tree-classpath-select"
-              placeholder="类路径（如 com.example.Controller）"
-              value={fn.classPaths ?? []}
-              onChange={(classPaths) => updateFunction(modId, subId, fn.id, { ...fn, classPaths })}
-              onClick={(e) => e.stopPropagation()}
-              maxTagCount={2}
-              popupMatchSelectWidth={false}
-            />
-          </Tooltip>
-          <Tooltip title={fn.confirmed ? '已确认（点击取消）' : '未确认（点击标记为已确认）'}>
-            <Checkbox
-              checked={!!fn.confirmed}
-              onChange={(e) =>
-                updateFunction(modId, subId, fn.id, { ...fn, confirmed: e.target.checked })
-              }
-              onClick={(e) => e.stopPropagation()}
-              style={{ marginLeft: 4 }}
-            >
-              {fn.confirmed ? '已确认' : '未确认'}
-            </Checkbox>
-          </Tooltip>
+          <ConfirmedCheckbox
+            checked={!!fn.confirmed}
+            onChange={(confirmed) =>
+              updateFunction(modId, subId, fn.id, { ...fn, confirmed })
+            }
+          />
+          <TagsFieldPopover
+            label="类路径"
+            title="入口类全限定名（落表保存，提示词中剥离）"
+            value={fn.classPaths ?? []}
+            onChange={(classPaths) => updateFunction(modId, subId, fn.id, { ...fn, classPaths })}
+            placeholder="如 com.example.Controller"
+          />
+          <TagsFieldPopover
+            label="方法签名"
+            title="methodName(ParamTypes)，不含返回类型；用于文档生成与代码来源"
+            value={fn.methodSignatures ?? []}
+            onChange={(methodSignatures) =>
+              updateFunction(modId, subId, fn.id, { ...fn, methodSignatures })
+            }
+            placeholder="如 listUsers(Integer, Integer)"
+          />
           <span className="ci-tree-node-actions">
             <Popconfirm
               title="确认删除该功能节点？"
@@ -718,7 +741,7 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
                 type="link"
                 danger
                 icon={<DeleteOutlined />}
-                onClick={(e) => e.stopPropagation()}
+                onClick={stopTreeEvent}
               />
             </Popconfirm>
           </span>
@@ -840,20 +863,26 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
             新增模块
           </Button>
           {moduleCount > 0 && (
-            <Button
-              size="small"
-              onClick={() => {
-                // 全部展开
-                setExpandedKeys(collectAllNodeIds(hierarchy).filter((id) => !id.startsWith('f')));
-              }}
-            >
-              全部展开
-            </Button>
-          )}
-          {expandedKeys.length > 0 && (
-            <Button size="small" onClick={() => setExpandedKeys([])}>
-              全部折叠
-            </Button>
+            <>
+              <Tooltip title="全部展开">
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<NodeExpandOutlined />}
+                  disabled={treeData.length === 0}
+                  onClick={() => setExpandedKeys(allExpandableKeys)}
+                />
+              </Tooltip>
+              <Tooltip title="全部折叠">
+                <Button
+                  size="small"
+                  type="text"
+                  icon={<NodeCollapseOutlined />}
+                  disabled={treeData.length === 0}
+                  onClick={() => setExpandedKeys([])}
+                />
+              </Tooltip>
+            </>
           )}
           {moduleCount > 0 && (
             <>
@@ -885,9 +914,9 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
                 {moduleCount === 0 ? (
                   <Empty description="尚无模块，点击上方「新增模块」按钮添加" />
                 ) : (
-                  <div className="ci-hierarchy-tree-container">
+                  <div className="ci-hierarchy-tree-panel ci-hierarchy-tree-edit-panel">
                     <Tree
-                      className="ci-hierarchy-tree"
+                      className="ci-hierarchy-tree ci-hierarchy-tree--compact"
                       treeData={treeData}
                       titleRender={titleRender}
                       draggable={{
@@ -900,6 +929,7 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
                       onExpand={(keys) => setExpandedKeys(keys)}
                       blockNode
                       showLine={{ showLeafIcon: false }}
+                      style={{ fontSize: 13 }}
                       motion={{
                         motionName: '',
                         motionAppear: false,

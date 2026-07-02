@@ -37,7 +37,9 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.time.LocalDateTime;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
 
@@ -107,6 +109,8 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         if (repo == null) {
             throw new BusinessException("未找到关联的代码库配置");
         }
+
+        String normalizedVersionNum = requireUniqueVersionNum(task.getRepositoryId(), versionNum);
 
         DraftWorkspace ws = workspaceMapper.selectOne(
                 new LambdaQueryWrapper<DraftWorkspace>().eq(DraftWorkspace::getTaskId, taskId)
@@ -336,7 +340,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
 
             // 10. 保存发布版本控制及提示词使用历史数据至 meta 文件夹下做离线审计
             ObjectNode versionJson = objectMapper.createObjectNode();
-            versionJson.put("version", versionNum);
+            versionJson.put("version", normalizedVersionNum);
             versionJson.put("systemId", task.getSystemId());
             versionJson.put("commitId", repo.getLastCommitId());
             versionJson.put("generatedAt", LocalDateTime.now().toString());
@@ -361,7 +365,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         version.setSystemId(task.getSystemId());
         version.setRepositoryId(task.getRepositoryId());
         version.setTaskId(taskId);
-        version.setVersionNum(versionNum);
+        version.setVersionNum(normalizedVersionNum);
         version.setSourceBranch(repo.getBranch());
         version.setSourceCommit(repo.getLastCommitId());
         version.setTargetBranch(
@@ -411,12 +415,49 @@ public class KnowledgeServiceImpl implements KnowledgeService {
      * 分页多条件查询已发布的版本记录
      */
     @Override
-    public Page<KnowledgeVersion> listVersionsPage(int current, int size, Long systemId) {
+    public Page<KnowledgeVersion> listVersionsPage(int current, int size, Long systemId, Long repositoryId) {
         Page<KnowledgeVersion> page = new Page<>(current, size);
         LambdaQueryWrapper<KnowledgeVersion> qw = new LambdaQueryWrapper<>();
         qw.eq(systemId != null, KnowledgeVersion::getSystemId, systemId)
+          .eq(repositoryId != null, KnowledgeVersion::getRepositoryId, repositoryId)
           .orderByDesc(KnowledgeVersion::getCreatedAt);
-        return versionMapper.selectPage(page, qw);
+        Page<KnowledgeVersion> result = versionMapper.selectPage(page, qw);
+        enrichActivePublished(result.getRecords());
+        return result;
+    }
+
+    private void enrichActivePublished(List<KnowledgeVersion> records) {
+        if (records == null || records.isEmpty()) {
+            return;
+        }
+        Map<Long, Long> activeVersionByRepo = new HashMap<>();
+        for (KnowledgeVersion record : records) {
+            Long repoId = record.getRepositoryId();
+            if (repoId == null || activeVersionByRepo.containsKey(repoId)) {
+                continue;
+            }
+            CodeRepository repo = repositoryMapper.selectById(repoId);
+            activeVersionByRepo.put(repoId, repo != null ? repo.getLastPublishedVersionId() : null);
+        }
+        for (KnowledgeVersion record : records) {
+            Long activeVersionId = activeVersionByRepo.get(record.getRepositoryId());
+            record.setActivePublished(activeVersionId != null && activeVersionId.equals(record.getId()));
+        }
+    }
+
+    private String requireUniqueVersionNum(Long repositoryId, String versionNum) {
+        if (!StringUtils.hasText(versionNum)) {
+            throw new BusinessException("版本号不能为空");
+        }
+        String normalized = versionNum.trim();
+        Long existing = versionMapper.selectCount(
+                new LambdaQueryWrapper<KnowledgeVersion>()
+                        .eq(KnowledgeVersion::getRepositoryId, repositoryId)
+                        .eq(KnowledgeVersion::getVersionNum, normalized));
+        if (existing != null && existing > 0) {
+            throw new BusinessException("该仓库已存在版本号 " + normalized + "，请使用不同的 versionNum");
+        }
+        return normalized;
     }
 
     /**

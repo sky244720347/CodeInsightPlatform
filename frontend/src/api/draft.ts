@@ -20,6 +20,18 @@ import {
   setMockEnabled,
 } from './mock/drafts.mock';
 
+const DEMO_MODE_KEY = 'ci-draft-demo-mode';
+
+/** 复核工作区演示模式：读 localStorage，与 mock store 联动 */
+export function getDemoMode(): boolean {
+  return localStorage.getItem(DEMO_MODE_KEY) === 'true';
+}
+
+export function toggleDemoMode(enabled: boolean): void {
+  localStorage.setItem(DEMO_MODE_KEY, String(enabled));
+  setMockEnabled(enabled);
+}
+
 export interface DraftWorkspace {
   id: number;
   taskId: number;
@@ -104,6 +116,8 @@ export interface DraftSourceReference {
   filePath: string;
   startLine: number;
   endLine: number;
+  className?: string;
+  methodSignature?: string;
   createdAt: string;
 }
 
@@ -257,7 +271,7 @@ export async function listAllTasksBySystem(systemId: number): Promise<import('..
 
 /** 单文档审核通过（锁定） */
 export const approveDraft = (id: number, author?: string): Promise<void> => {
-  return request.post(`/drafts/${id}/approve`, { author });
+  return request.post(`/drafts/${id}/confirm`, { author });
 };
 /** 单文档重跑（调用 AI 重新生成） */
 export const regenerateDraft = (id: number): Promise<void> => {

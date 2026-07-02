@@ -6,8 +6,10 @@ import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.common.util.Base62Generator;
 import com.company.codeinsight.common.util.PromptTemplateLoader;
 import com.company.codeinsight.modules.ai.service.AiSummaryService;
+import com.company.codeinsight.modules.businessknowledge.service.BusinessKnowledgeService;
 import com.company.codeinsight.modules.entrypoint.model.EntryPoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
+import com.company.codeinsight.modules.entrypoint.model.EntrypointMethodView;
 import com.company.codeinsight.modules.entrypoint.service.EntrypointReviewService;
 import com.company.codeinsight.modules.entrypoint.service.EntryPointDiscoveryService;
 import com.company.codeinsight.modules.hierarchy.entity.ModuleHierarchyNode;
@@ -95,6 +97,9 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     private com.company.codeinsight.modules.prompt.service.DecompilePromptService decompilePromptService;
 
     @Autowired
+    private BusinessKnowledgeService businessKnowledgeService;
+
+    @Autowired
     private TaskWorkspacePaths taskWorkspacePaths;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -140,6 +145,7 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         // 2. 读取已落表的入口（用户在 ENTRYPOINT_REVIEW 阶段确认后的快照）；
         //    这里不再做入口识别与 EntryPointConfig 解析——由 ENTRYPOINT_REVIEW 阶段统一负责并落表。
         List<EntryPoint> entries = entrypointReviewService.loadEnabledEntries(taskId);
+        Map<String, List<EntrypointMethodView>> methodsByClass = entrypointReviewService.loadMethodsByClassName(taskId);
         log.info("ModuleHierarchyService.buildAndPersist taskId={} entries={} ctx={}", taskId, entries.size(), effective);
 
         // 3. 加载 prompt 模板（仅一次，必须来自任务快照的提示词绑定）
@@ -175,11 +181,13 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
             for (int i = 0; i < futures.size(); i++) {
                 JsonNode inc = futures.get(i).join();
                 if (inc != null) {
-                    mergeEntryResult(hierarchy, toProcess.get(i), inc);
+                    mergeEntryResult(hierarchy, toProcess.get(i), inc, methodsByClass);
                     processedByAi++;
                 }
             }
         }
+
+        backfillMethodSignaturesFromEntrypoints(hierarchy, methodsByClass);
 
         // 5. 增量模式：清理被删除文件对应的 classPath 引用
         if (effective.isIncremental() && !effective.getDeletedPaths().isEmpty()) {
@@ -340,9 +348,9 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                 return null;
             }
 
-            String businessKnowledge = readOptionalFile(
-                    taskWorkspacePaths.taskDocsCodeInsight(task.getId()).resolve("meta/business_knowledge.md")
-            );
+            // 业务知识按系统维度维护：task→systemId→库表查 Markdown 正文；
+            // 未配置时 getContentBySystemId 返回空串，PromptTemplateLoader 替换占位符为空，与历史兜底行为一致。
+            String businessKnowledge = businessKnowledgeService.getContentBySystemId(task.getSystemId());
             // 注意：并行阶段不传 hierarchy JSON——各入口无法看到其他入口的并发写入，
             // AI 本身已通过 prompt 中的入口源码即可判定业务领域归属，缺失上下文不影响模块归属准确性
             String promptInput = promptTemplateLoader.render(promptTemplate, javaCode, businessKnowledge, "{}");
@@ -392,11 +400,8 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         return null;
     }
 
-    /**
-     * 顺序阶段：把 AI 返回的增量 JSON 合并到 DTO 并注入当前入口的 classPath。
-     * 必须单线程调用以保护 {@code hierarchy} 的线程安全。
-     */
-    private void mergeEntryResult(ModuleHierarchy hierarchy, EntryPoint entry, JsonNode inc) {
+    private void mergeEntryResult(ModuleHierarchy hierarchy, EntryPoint entry, JsonNode inc,
+                                  Map<String, List<EntrypointMethodView>> methodsByClass) {
         Set<String> newlyCreatedFunctionIds = new LinkedHashSet<>();
         mergeIncrementIntoHierarchy(hierarchy, inc, newlyCreatedFunctionIds);
 
@@ -404,8 +409,63 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
             FunctionDto fn = findFunctionById(hierarchy, fnId);
             if (fn != null) {
                 fn.getClassPaths().add(entry.getClassName());
+                backfillFunctionMethodSignatures(fn, methodsByClass);
             }
         }
+    }
+
+    /**
+     * 对 method_signatures 为空的功能节点，从 ci_entrypoint.methods_json 按 class_paths 兜底注入。
+     */
+    private void backfillMethodSignaturesFromEntrypoints(ModuleHierarchy hierarchy,
+                                                         Map<String, List<EntrypointMethodView>> methodsByClass) {
+        if (hierarchy == null || methodsByClass == null || methodsByClass.isEmpty()) return;
+        for (ModuleDto m : hierarchy.getModules().values()) {
+            for (SubModuleDto sm : m.getSubModules().values()) {
+                for (FunctionDto fn : sm.getFunctions().values()) {
+                    if (fn.getMethodSignatures() == null || fn.getMethodSignatures().isEmpty()) {
+                        backfillFunctionMethodSignatures(fn, methodsByClass);
+                    }
+                }
+            }
+        }
+    }
+
+    private void backfillFunctionMethodSignatures(FunctionDto fn,
+                                                  Map<String, List<EntrypointMethodView>> methodsByClass) {
+        if (fn == null || methodsByClass == null) return;
+        if (fn.getMethodSignatures() == null) {
+            fn.setMethodSignatures(new LinkedHashSet<>());
+        }
+        if (!fn.getMethodSignatures().isEmpty()) return;
+        if (fn.getClassPaths() == null || fn.getClassPaths().isEmpty()) return;
+        for (String classPath : fn.getClassPaths()) {
+            List<EntrypointMethodView> methods = methodsByClass.get(classPath);
+            if (methods == null) continue;
+            for (EntrypointMethodView mv : methods) {
+                String sig = toFunctionMethodSignature(mv, classPath);
+                if (StringUtils.hasText(sig)) {
+                    fn.getMethodSignatures().add(sig.trim());
+                }
+            }
+        }
+    }
+
+    /** 将入口复核 methods_json 中的签名转为 FunctionDto 格式：methodName(ParamTypes) */
+    private String toFunctionMethodSignature(EntrypointMethodView mv, String classPath) {
+        if (mv == null) return null;
+        if (StringUtils.hasText(mv.getMethodSignature())) {
+            String raw = mv.getMethodSignature().trim();
+            int hash = raw.indexOf('#');
+            if (hash >= 0 && hash < raw.length() - 1) {
+                return raw.substring(hash + 1);
+            }
+            return raw;
+        }
+        if (StringUtils.hasText(mv.getMethodName())) {
+            return mv.getMethodName().trim();
+        }
+        return null;
     }
 
     /**

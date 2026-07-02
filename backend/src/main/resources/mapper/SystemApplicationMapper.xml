@@ -31,9 +31,6 @@
             <if test="owner != null and owner != ''">
                 AND s.owner = #{owner}
             </if>
-            <if test="state != null and state != ''">
-                AND s.state = #{state}
-            </if>
         </where>
         ORDER BY s.created_at DESC
     </select>

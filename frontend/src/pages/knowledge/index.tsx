@@ -8,6 +8,7 @@ import {
   Drawer,
   Empty,
   Input,
+  Modal,
   Segmented,
   Select,
   Skeleton,
@@ -25,16 +26,25 @@ import {
   ClearOutlined,
   CopyOutlined,
   DownloadOutlined,
+  EditOutlined,
   EyeOutlined,
   FilterOutlined,
   ReloadOutlined,
   SearchOutlined,
+  SyncOutlined,
   UnorderedListOutlined,
 } from '@ant-design/icons';
 import { Dayjs } from 'dayjs';
-import { listSystems } from '../../api/system';
-import { listRepositories } from '../../api/repository';
+import { useNavigate } from 'react-router-dom';
+import { getCurrentOperator } from '../../api/auth';
+import {
+  approveReleaseDocumentEdit,
+  remediateDocuments,
+  submitReleaseDocumentEdit,
+} from '../../api/knowledge-remediation';
 import { listTasks } from '../../api/task';
+import KnowledgeContextBar from './KnowledgeContextBar';
+import { useKnowledgeQueryContext } from './useKnowledgeQueryContext';
 import {
   getKnowledgeBrowseContent,
   getKnowledgeBrowseTree,
@@ -47,8 +57,6 @@ import type {
   KnowledgeBrowseQuery,
   KnowledgeBrowseTreeNode,
   KnowledgeBrowseTreeResult,
-  Repository,
-  System,
   Task,
 } from '../../types';
 
@@ -157,13 +165,39 @@ function countFunctionLeaves(nodes: KnowledgeBrowseTreeNode[]): number {
   return n;
 }
 
+function collectModuleOptions(nodes: KnowledgeBrowseTreeNode[]): { value: string; label: string }[] {
+  const out: { value: string; label: string }[] = [];
+  const walk = (list: KnowledgeBrowseTreeNode[]) => {
+    for (const n of list) {
+      if (n.nodeType === 'MODULE' && n.key.startsWith('module:')) {
+        out.push({ value: n.key.slice('module:'.length), label: n.title });
+      }
+      if (n.children?.length) walk(n.children);
+    }
+  };
+  walk(nodes);
+  return out;
+}
+
+function moduleIdFromKey(key: string): string | null {
+  return key.startsWith('module:') ? key.slice('module:'.length) : null;
+}
+
 const KnowledgeBrowse: React.FC = () => {
+  const navigate = useNavigate();
   const [viewMode, setViewMode] = useState<ViewMode>(readStoredViewMode);
 
-  const [systems, setSystems] = useState<System[]>([]);
-  const [repositories, setRepositories] = useState<Repository[]>([]);
-  const [systemId, setSystemId] = useState<number | undefined>(undefined);
-  const [repositoryId, setRepositoryId] = useState<number | undefined>(undefined);
+  const {
+    systems,
+    repositories,
+    systemId,
+    setSystemId,
+    repositoryId,
+    setRepositoryId,
+    context,
+    contextLoading,
+    refreshContext,
+  } = useKnowledgeQueryContext();
 
   const [type, setType] = useState<KnowledgeBrowseFileType | 'ALL'>('ALL');
   const [keyword, setKeyword] = useState('');
@@ -189,23 +223,15 @@ const KnowledgeBrowse: React.FC = () => {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [previewText, setPreviewText] = useState('');
   const [previewItem, setPreviewItem] = useState<KnowledgeBrowseItem | null>(null);
+  const [previewEditing, setPreviewEditing] = useState(false);
+  const [editDraftText, setEditDraftText] = useState('');
+  const [editSubmitting, setEditSubmitting] = useState(false);
+  const [docRerunOpen, setDocRerunOpen] = useState(false);
+  const [docRerunModuleIds, setDocRerunModuleIds] = useState<string[]>([]);
+  const [docRerunSubmitting, setDocRerunSubmitting] = useState(false);
 
-  useEffect(() => {
-    listSystems({ current: 1, size: 200 })
-      .then((data) => setSystems(data.records ?? []))
-      .catch(() => undefined);
-  }, []);
-
-  useEffect(() => {
-    if (systemId == null) {
-      setRepositories([]);
-      setRepositoryId(undefined);
-      return;
-    }
-    listRepositories({ current: 1, size: 200, systemId })
-      .then((data) => setRepositories(data.records ?? []))
-      .catch(() => setRepositories([]));
-  }, [systemId]);
+  const remediationReady =
+    repositoryId != null && context?.versionId != null && context.releaseDirExists;
 
   useEffect(() => {
     if (systemId == null) {
@@ -262,7 +288,6 @@ const KnowledgeBrowse: React.FC = () => {
       const data = await getKnowledgeBrowseTree({
         systemId,
         repositoryId,
-        taskId,
       });
       setTreeResult(data);
     } catch {
@@ -270,7 +295,7 @@ const KnowledgeBrowse: React.FC = () => {
     } finally {
       setTreeLoading(false);
     }
-  }, [systemId, repositoryId, taskId]);
+  }, [systemId, repositoryId]);
 
   useEffect(() => {
     if (viewMode === 'list') {
@@ -291,7 +316,9 @@ const KnowledgeBrowse: React.FC = () => {
     setPreviewLoading(true);
     try {
       const params =
-        it.type === 'DRAFT'
+        it.contentUri
+          ? { contentUri: it.contentUri }
+          : it.type === 'DRAFT'
           ? { type: it.type, id: Number(it.id.split(':')[1]) }
           : {
               type: it.type,
@@ -308,26 +335,32 @@ const KnowledgeBrowse: React.FC = () => {
   };
 
   const openPreviewFromTree = useCallback((node: KnowledgeBrowseTreeNode) => {
-    if (!node.hasDocument || node.draftId == null) return;
+    if (!node.hasDocument) return;
     setPreviewItem({
-      id: `draft:${node.draftId}`,
+      id: node.contentUri ?? `draft:${node.draftId}`,
       name: node.title,
       type: 'DRAFT',
       taskId: treeResult?.taskId,
-      filePath: '',
+      filePath: node.documentPath ?? '',
       size: 0,
-      status: node.draftStatus ?? 'DRAFT',
+      status: node.draftStatus ?? 'PUSHED',
       updatedAt: '',
-      source: 'DB',
+      source: node.contentUri ? 'RELEASE' : 'DB',
+      contentUri: node.contentUri,
       systemId: treeResult?.systemId,
       systemName: treeResult?.systemName,
       repositoryId: treeResult?.repositoryId,
       repositoryName: treeResult?.repositoryName,
+      versionId: treeResult?.versionId,
+      versionNum: treeResult?.versionNum,
     });
     setPreviewText('');
     setPreviewOpen(true);
     setPreviewLoading(true);
-    getKnowledgeBrowseContent({ type: 'DRAFT', id: node.draftId })
+    const params = node.contentUri
+      ? { contentUri: node.contentUri }
+      : { type: 'DRAFT' as const, id: node.draftId! };
+    getKnowledgeBrowseContent(params)
       .then((text) => setPreviewText(text ?? ''))
       .catch(() => setPreviewText(''))
       .finally(() => setPreviewLoading(false));
@@ -337,6 +370,68 @@ const KnowledgeBrowse: React.FC = () => {
     setPreviewOpen(false);
     setPreviewItem(null);
     setPreviewText('');
+    setPreviewEditing(false);
+    setEditDraftText('');
+  };
+
+  const canEditReleaseDoc =
+    previewItem?.type === 'DRAFT' &&
+    previewItem.source === 'RELEASE' &&
+    !!previewItem.filePath &&
+    repositoryId != null;
+
+  const startPreviewEdit = () => {
+    setEditDraftText(previewText);
+    setPreviewEditing(true);
+  };
+
+  const submitReleaseEdit = async (autoApprove: boolean) => {
+    if (!repositoryId || !previewItem?.filePath) return;
+    setEditSubmitting(true);
+    try {
+      const { editId } = await submitReleaseDocumentEdit({
+        repositoryId,
+        relativePath: previewItem.filePath,
+        content: editDraftText,
+        operator: getCurrentOperator(),
+      });
+      if (autoApprove) {
+        await approveReleaseDocumentEdit(editId, getCurrentOperator());
+        message.success('修订已批准并写入 NAS');
+        setPreviewText(editDraftText);
+        setPreviewEditing(false);
+      } else {
+        message.success(`修订已提交，待批准（#${editId}）`);
+      }
+    } finally {
+      setEditSubmitting(false);
+    }
+  };
+
+  const rerunModuleDocs = (moduleIds: string[]) => {
+    if (!repositoryId || moduleIds.length === 0) return;
+    Modal.confirm({
+      title: '确认重跑文档生成？',
+      content: `将对 ${moduleIds.length} 个模块从文档生成阶段重跑 AI。`,
+      okText: '确认重跑',
+      onOk: async () => {
+        setDocRerunSubmitting(true);
+        try {
+          const resp = await remediateDocuments({
+            repositoryId,
+            systemId: systemId ?? undefined,
+            moduleIds,
+            operator: getCurrentOperator(),
+          });
+          message.success(`纠错任务已创建 #${resp.taskId}`);
+          setDocRerunOpen(false);
+          setDocRerunModuleIds([]);
+          navigate(`/tasks/${resp.taskId}`);
+        } finally {
+          setDocRerunSubmitting(false);
+        }
+      },
+    });
   };
 
   const copyPreview = async () => {
@@ -375,15 +470,35 @@ const KnowledgeBrowse: React.FC = () => {
     return n;
   }, [status, taskId, dateRange]);
 
+  const listTypeOptions = useMemo(
+    () => (repositoryId != null
+      ? TYPE_OPTIONS.filter((o) => o.value !== 'DRAFT')
+      : TYPE_OPTIONS),
+    [repositoryId],
+  );
+
+  useEffect(() => {
+    if (repositoryId != null && type === 'DRAFT') {
+      setType('ALL');
+    }
+  }, [repositoryId, type]);
+
   const filteredTreeNodes = useMemo(
     () => filterTreeNodes(treeResult?.nodes ?? [], treeKeyword),
     [treeResult, treeKeyword],
+  );
+
+  const moduleOptions = useMemo(
+    () => collectModuleOptions(treeResult?.nodes ?? []),
+    [treeResult],
   );
 
   const treeAntData = useMemo<DataNode[]>(() => {
     const mapNode = (node: KnowledgeBrowseTreeNode): DataNode => {
       const typeMeta = NODE_TYPE_TAG[node.nodeType] ?? { color: 'default', label: node.nodeType };
       const isFunction = node.nodeType === 'FUNCTION';
+      const isModule = node.nodeType === 'MODULE';
+      const moduleId = moduleIdFromKey(node.key);
       const title = (
         <div className="ci-knowledge-tree-node" style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
           <Tag color={typeMeta.color} style={{ margin: 0 }}>
@@ -397,6 +512,19 @@ const KnowledgeBrowse: React.FC = () => {
           )}
           {isFunction && node.hasDocument && node.draftStatus && (
             <Tag style={{ margin: 0 }}>{node.draftStatus}</Tag>
+          )}
+          {isModule && remediationReady && moduleId && (
+            <Button
+              type="link"
+              size="small"
+              icon={<SyncOutlined />}
+              onClick={(e) => {
+                e.stopPropagation();
+                rerunModuleDocs([moduleId]);
+              }}
+            >
+              重跑
+            </Button>
           )}
           {isFunction && (
             node.hasDocument ? (
@@ -427,7 +555,7 @@ const KnowledgeBrowse: React.FC = () => {
       };
     };
     return filteredTreeNodes.map(mapNode);
-  }, [filteredTreeNodes, openPreviewFromTree]);
+  }, [filteredTreeNodes, openPreviewFromTree, remediationReady]);
 
   const listColumns = [
     {
@@ -521,18 +649,39 @@ const KnowledgeBrowse: React.FC = () => {
     },
   ];
 
-  const systemOptions = systems.map((s) => ({
-    value: s.id,
-    label: s.name,
-  }));
-
-  const repoOptions = repositories.map((r) => {
-    const base = r.gitUrl?.split('/').pop()?.replace(/\.git$/, '') ?? `仓库 #${r.id}`;
-    return { value: r.id, label: `${base} (${r.branch})` };
-  });
-
   return (
     <div className="ci-page ci-knowledge-browse-page">
+      <KnowledgeContextBar
+        pageTitle="知识文档"
+        pageDescription="浏览当前生效发布版的 Markdown 文档、索引与清单文件。"
+        remediationHint="可批量选择模块重跑文档生成；预览发布版 Markdown 时可人工修订并直写 NAS。"
+        systems={systems}
+        repositories={repositories}
+        systemId={systemId}
+        repositoryId={repositoryId}
+        onSystemChange={(v) => {
+          setSystemId(v);
+          setListPage(1);
+        }}
+        onRepositoryChange={(v) => {
+          setRepositoryId(v);
+          setListPage(1);
+        }}
+        context={context}
+        contextLoading={contextLoading}
+        onRefresh={() => {
+          refreshContext();
+          if (viewMode === 'list') fetchList();
+          else fetchTree();
+        }}
+        requireRepository={viewMode === 'tree'}
+        remediationEnabled={remediationReady && viewMode === 'tree' && moduleOptions.length > 0}
+        onRemediate={() => {
+          setDocRerunModuleIds([]);
+          setDocRerunOpen(true);
+        }}
+      />
+
       <Card>
         <Space size={12} wrap style={{ width: '100%', justifyContent: 'space-between' }}>
           <Space size={12} wrap>
@@ -545,43 +694,9 @@ const KnowledgeBrowse: React.FC = () => {
                 { value: 'list', label: '列表视图', icon: <UnorderedListOutlined /> },
               ]}
             />
-            <Space size={4}>
-              <Text type="secondary">系统</Text>
-              <Select
-                placeholder={viewMode === 'tree' ? '请选择系统（必填）' : '全部系统'}
-                value={systemId}
-                onChange={(v) => {
-                  setSystemId(v);
-                  setRepositoryId(undefined);
-                  setListPage(1);
-                }}
-                style={{ width: 220 }}
-                showSearch
-                optionFilterProp="label"
-                options={systemOptions}
-                allowClear={viewMode === 'list'}
-              />
-            </Space>
-            <Space size={4}>
-              <Text type="secondary">仓库</Text>
-              <Select
-                placeholder={viewMode === 'tree' ? '请选择仓库（必填）' : '全部仓库'}
-                value={repositoryId}
-                onChange={(v) => {
-                  setRepositoryId(v);
-                  setListPage(1);
-                }}
-                style={{ width: 240 }}
-                showSearch
-                optionFilterProp="label"
-                options={repoOptions}
-                allowClear={viewMode === 'list'}
-                disabled={systemId == null}
-              />
-            </Space>
             {viewMode === 'list' && (
               <Segmented
-                options={TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label }))}
+                options={listTypeOptions.map((o) => ({ value: o.value, label: o.label }))}
                 value={type}
                 onChange={(v) => {
                   setType(v as KnowledgeBrowseFileType | 'ALL');
@@ -591,6 +706,14 @@ const KnowledgeBrowse: React.FC = () => {
             )}
           </Space>
           <Space size={8} wrap>
+            {viewMode === 'list' && repositoryId != null && (
+              <Alert
+                type="info"
+                showIcon
+                message="已选仓库：列表展示当前生效发布版（INDEX / MANIFEST），不含任务草稿"
+                style={{ marginBottom: 0, padding: '4px 12px' }}
+              />
+            )}
             <Input
               placeholder={viewMode === 'tree' ? '过滤树节点…' : '搜索文件名 / 系统 / 仓库…'}
               prefix={<SearchOutlined />}
@@ -638,9 +761,9 @@ const KnowledgeBrowse: React.FC = () => {
           ) : treeLoading ? (
             <Skeleton active paragraph={{ rows: 10 }} />
           ) : !treeResult ? (
-            <Empty description="加载失败或该仓库尚无已生成文档的任务" />
+            <Empty description="加载失败或该仓库尚无已发布的生效知识版本" />
           ) : treeResult.nodes.length === 0 ? (
-            <Empty description="该任务尚无模块层级数据" />
+            <Empty description="该仓库尚无已发布的模块层级数据" />
           ) : (
             <>
               <Alert
@@ -650,9 +773,16 @@ const KnowledgeBrowse: React.FC = () => {
                 message={
                   <Space wrap>
                     <span>
-                      基准任务 <Text code>#{treeResult.taskId}</Text>
-                      {treeResult.taskAutoResolved ? '（自动选取）' : '（手动指定）'}
+                      当前生效版本{' '}
+                      <Text code strong>
+                        {treeResult.versionNum ?? `#${treeResult.versionId}`}
+                      </Text>
                     </span>
+                    {treeResult.taskId != null && (
+                      <span>
+                        源任务 <Text code>#{treeResult.taskId}</Text>
+                      </span>
+                    )}
                     <Tag>
                       {countFunctionLeaves(treeResult.nodes)} 个功能
                     </Tag>
@@ -820,6 +950,29 @@ const KnowledgeBrowse: React.FC = () => {
         destroyOnClose
         extra={
           <Space>
+            {canEditReleaseDoc && !previewEditing && (
+              <Button icon={<EditOutlined />} onClick={startPreviewEdit}>
+                编辑
+              </Button>
+            )}
+            {previewEditing && (
+              <>
+                <Button onClick={() => setPreviewEditing(false)}>取消编辑</Button>
+                <Button
+                  loading={editSubmitting}
+                  onClick={() => submitReleaseEdit(false)}
+                >
+                  提交待审
+                </Button>
+                <Button
+                  type="primary"
+                  loading={editSubmitting}
+                  onClick={() => submitReleaseEdit(true)}
+                >
+                  批准并写入
+                </Button>
+              </>
+            )}
             <Button icon={<CopyOutlined />} onClick={copyPreview} disabled={!previewText}>
               复制
             </Button>
@@ -831,8 +984,23 @@ const KnowledgeBrowse: React.FC = () => {
       >
         {previewLoading ? (
           <Skeleton active paragraph={{ rows: 12 }} />
-        ) : !previewItem ? null : !previewText ? (
+        ) : !previewItem ? null : !previewText && !previewEditing ? (
           <Empty description="无可显示内容（文件可能为空或读取失败）" />
+        ) : previewEditing ? (
+          <>
+            <Alert
+              type="warning"
+              showIcon
+              style={{ marginBottom: 12 }}
+              message="人工修订将直写当前生效发布版 NAS 文件，不创建新版本或推送任务。"
+            />
+            <Input.TextArea
+              value={editDraftText}
+              onChange={(e) => setEditDraftText(e.target.value)}
+              autoSize={{ minRows: 16, maxRows: 40 }}
+              style={{ fontFamily: 'monospace', fontSize: 13 }}
+            />
+          </>
         ) : (
           <>
             {previewItem.filePath && (
@@ -842,12 +1010,36 @@ const KnowledgeBrowse: React.FC = () => {
                 copyable={{ text: previewItem.filePath }}
               >
                 路径：{previewItem.filePath} · {formatBytes(previewItem.size)}
+                {previewItem.source === 'RELEASE' && (
+                  <Tag color="green" style={{ marginLeft: 8 }}>
+                    发布版
+                  </Tag>
+                )}
               </Paragraph>
             )}
             <PreviewContent text={previewText} type={previewItem.type} />
           </>
         )}
       </Drawer>
+
+      <Modal
+        title="选择模块并重跑文档"
+        open={docRerunOpen}
+        onCancel={() => setDocRerunOpen(false)}
+        onOk={() => rerunModuleDocs(docRerunModuleIds)}
+        okText="确认重跑"
+        confirmLoading={docRerunSubmitting}
+        okButtonProps={{ disabled: docRerunModuleIds.length === 0 }}
+      >
+        <Select
+          mode="multiple"
+          style={{ width: '100%' }}
+          placeholder="选择 moduleId"
+          value={docRerunModuleIds}
+          onChange={setDocRerunModuleIds}
+          options={moduleOptions}
+        />
+      </Modal>
     </div>
   );
 };

@@ -2426,3 +2426,100 @@ body {
     opacity: 1;
   }
 }
+
+/* ---------- 知识查看 / 复核树 — 共享紧凑行 ---------- */
+
+.ci-knowledge-tree-node {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: nowrap;
+  min-width: 0;
+  font-size: 13px;
+  line-height: 1.35;
+}
+
+.ci-knowledge-tree-node .ant-tag {
+  margin: 0 !important;
+  flex-shrink: 0;
+}
+
+/* ---------- 知识模块复核 — 紧凑可编辑树（对齐知识查看密度） ---------- */
+
+.ci-hierarchy-tree-panel {
+  min-width: 0;
+}
+
+.ci-hierarchy-tree-edit-panel {
+  border: 1px solid #f0f0f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  background: #fafafa;
+}
+
+.ci-hierarchy-tree--compact.ant-tree {
+  font-size: 13px;
+  background: transparent;
+  padding: 0;
+}
+
+.ci-hierarchy-tree--compact .ant-tree-treenode {
+  padding: 1px 0;
+  align-items: center;
+}
+
+.ci-hierarchy-tree--compact .ant-tree-node-content-wrapper {
+  flex: 1;
+  min-width: 0;
+  padding: 0 2px;
+  min-height: 26px;
+  line-height: 26px;
+}
+
+.ci-hierarchy-tree--compact .ant-tree-treenode:hover {
+  border-radius: 4px;
+}
+
+.ci-tree-node-edit {
+  width: 100%;
+  min-height: 26px;
+  padding: 0;
+  gap: 4px;
+}
+
+.ci-tree-node-edit .ci-tree-drag-handle {
+  font-size: 11px;
+  padding: 0;
+}
+
+.ci-tree-edit-name {
+  flex: 1 1 0;
+  min-width: 72px;
+  max-width: 200px;
+}
+
+.ci-tree-edit-name.ant-input,
+.ci-tree-node-edit .ci-tree-edit-name .ant-input {
+  height: 22px;
+  font-size: 12px;
+  line-height: 22px;
+  padding: 0 4px;
+}
+
+.ci-tree-meta-btn.ant-btn {
+  flex-shrink: 0;
+  padding: 0 4px;
+  height: 22px;
+  font-size: 11px;
+  color: #64748b;
+}
+
+.ci-tree-meta-btn.ant-btn:hover {
+  color: var(--ci-blue);
+}
+
+.ci-tree-node-edit .ant-checkbox-wrapper {
+  flex-shrink: 0;
+  margin-inline-end: 0;
+  line-height: 1;
+}

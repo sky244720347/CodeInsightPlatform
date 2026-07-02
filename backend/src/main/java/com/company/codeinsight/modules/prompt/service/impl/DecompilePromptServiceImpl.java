@@ -13,7 +13,6 @@ import com.company.codeinsight.modules.prompt.mapper.DecompilePromptMapper;
 import com.company.codeinsight.modules.prompt.service.DecompilePromptService;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
-import com.company.codeinsight.modules.system.mapper.SystemApplicationMapper;
 import com.company.codeinsight.modules.model.mapper.AiModelMapper;
 import com.company.codeinsight.modules.token.service.TokenAuditService;
 import com.fasterxml.jackson.databind.JsonNode;
@@ -69,8 +68,6 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
     @Autowired
     private TokenAuditService tokenAuditService;
 
-    @Autowired
-    private SystemApplicationMapper systemMapper;
     @Autowired
     private CodeRepositoryMapper codeRepositoryMapper;
 
@@ -243,18 +240,6 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
     }
 
     @Override
-    public void validateSystemPromptBinding(Long systemId) {
-        if (systemId == null) {
-            throw new BusinessException("系统不存在");
-        }
-        com.company.codeinsight.modules.system.entity.SystemApplication system = systemMapper.selectById(systemId);
-        if (system == null) {
-            throw new BusinessException("系统不存在");
-        }
-        validatePromptPair(system.getModularizePromptId(), system.getDocumentPromptId(), "系统");
-    }
-
-    @Override
     public void validateRepositoryPromptBinding(Long repositoryId) {
         if (repositoryId == null) {
             throw new BusinessException("代码库不存在");
@@ -272,14 +257,14 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
     }
 
     @Override
-    public boolean isSystemPromptsConfigured(Long systemId) {
-        return getSystemPromptsConfigurationMessage(systemId) == null;
+    public boolean isRepositoryPromptsConfigured(Long repositoryId) {
+        return getRepositoryPromptsConfigurationMessage(repositoryId) == null;
     }
 
     @Override
-    public String getSystemPromptsConfigurationMessage(Long systemId) {
+    public String getRepositoryPromptsConfigurationMessage(Long repositoryId) {
         try {
-            validateSystemPromptBinding(systemId);
+            validateRepositoryPromptBinding(repositoryId);
             return null;
         } catch (BusinessException ex) {
             return ex.getMessage();

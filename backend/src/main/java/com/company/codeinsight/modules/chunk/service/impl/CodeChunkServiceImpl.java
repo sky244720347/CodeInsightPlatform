@@ -119,7 +119,10 @@ public class CodeChunkServiceImpl implements CodeChunkService {
      */
     private void chunkOneSnapshot(Long taskId, CodeFileSnapshot snapshot) {
         try {
-            File file = new File(URI.create(snapshot.getContentUri()));
+            String uri = snapshot.getContentUri();
+            File file = (uri.startsWith("file:") || uri.startsWith("FILE:"))
+                    ? new File(URI.create(uri))
+                    : new File(uri);
             if (!file.exists()) {
                 saveFailedChunk(taskId, snapshot.getFilePath(), "Snapshot file does not exist: " + snapshot.getContentUri());
                 return;

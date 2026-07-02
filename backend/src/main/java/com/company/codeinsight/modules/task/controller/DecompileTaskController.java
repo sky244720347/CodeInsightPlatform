@@ -297,9 +297,12 @@ public class DecompileTaskController {
      */
     @Operation(summary = "恢复知识入口复核后流水线")
     @PostMapping("/{id}/entrypoints/resume")
-    public ApiResponse<Void> resumeEntrypointReview(@PathVariable Long id) {
+    public ApiResponse<Void> resumeEntrypointReview(
+            @PathVariable Long id,
+            @RequestBody(required = false) ResumeEntrypointRequest body) {
         DecompileTask task = decompileTaskService.getById(id);
-        decompileTaskService.resumeAfterEntrypointReview(id);
+        decompileTaskService.resumeAfterEntrypointReview(
+                id, body == null ? null : body.getExcludeTargets());
         operationLogService.logOperation(
                 task == null ? null : task.getSystemId(),
                 id,
@@ -337,6 +340,11 @@ public class DecompileTaskController {
     @Data
     public static class RejectRequest {
         private String reason;
+    }
+
+    @Data
+    public static class ResumeEntrypointRequest {
+        private java.util.List<com.company.codeinsight.modules.entrypoint.model.ExcludeTarget> excludeTargets;
     }
 
     // ========== 任务队列管控 ==========

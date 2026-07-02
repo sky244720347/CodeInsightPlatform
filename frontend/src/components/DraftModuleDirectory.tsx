@@ -8,6 +8,7 @@ import {
   PushpinFilled,
   PushpinOutlined,
 } from '@ant-design/icons';
+import { collectExpandableKeys } from '../utils/treeExpandKeys';
 
 const { Text } = Typography;
 
@@ -31,20 +32,6 @@ export interface DraftModuleDirectoryProps {
   onMouseEnter?: () => void;
   onMouseLeave?: () => void;
   fullscreen?: boolean;
-}
-
-function collectExpandableKeys(nodes: DataNode[]): string[] {
-  const keys: string[] = [];
-  const walk = (list: DataNode[]) => {
-    for (const n of list) {
-      if (n.children?.length) {
-        if (n.key != null) keys.push(String(n.key));
-        walk(n.children);
-      }
-    }
-  };
-  walk(nodes);
-  return keys;
 }
 
 const DraftModuleDirectory: React.FC<DraftModuleDirectoryProps> = ({

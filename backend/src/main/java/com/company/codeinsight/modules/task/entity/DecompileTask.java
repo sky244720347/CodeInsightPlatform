@@ -144,5 +144,22 @@ public class DecompileTask extends BaseEntity {
     /** 认领租约到期时间；过期后其他节点可重新认领 PENDING 预留 */
     @TableField("lease_until")
     private LocalDateTime leaseUntil;
+
+    /** 知识纠错类型：ENTRYPOINT / HIERARCHY / DOCUMENT */
+    @TableField("remediation_kind")
+    private String remediationKind;
+
+    @TableField("base_version_id")
+    private Long baseVersionId;
+
+    @TableField("base_task_id")
+    private Long baseTaskId;
+
+    /** 纠错续跑起点：AI_ANALYZING / GENERATING_DOC */
+    @TableField("resume_from")
+    private String resumeFrom;
+
+    @TableField("remediation_scope_json")
+    private String remediationScopeJson;
 }
 

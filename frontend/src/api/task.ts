@@ -184,8 +184,11 @@ export const getEntrypointReview = (id: number): Promise<EntrypointReviewItem[]>
 };
 
 /** 知识入口复核完成后恢复流水线（确认并继续） */
-export const resumeEntrypointReview = (id: number): Promise<void> => {
-  return request.post(`/tasks/${id}/entrypoints/resume`);
+export const resumeEntrypointReview = (
+  id: number,
+  excludeTargets?: import('../types').ExcludeTarget[],
+): Promise<void> => {
+  return request.post(`/tasks/${id}/entrypoints/resume`, excludeTargets?.length ? { excludeTargets } : undefined);
 };
 
 /** 知识入口复核驳回（终止任务） */

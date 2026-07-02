@@ -710,9 +710,16 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             int moduleTotal = hierarchy.getModules().size();
             int regenerated = 0;
             int skipped = 0;
+            java.util.Set<String> remediationModuleIds = parseRemediationModuleIds(task);
             for (com.company.codeinsight.modules.hierarchy.model.ModuleDto moduleDto : hierarchy.getModules().values()) {
                 moduleIndex++;
-                if (changedFqSet != null && !moduleTouchedByChange(moduleDto, changedFqSet)) {
+                if (remediationModuleIds != null) {
+                    if (!remediationModuleIds.contains(moduleDto.getId())) {
+                        skipped++;
+                        execLog.log(taskId, "  [module " + moduleIndex + "/" + moduleTotal + "] " + moduleDto.getModuleName() + " — 不在纠错范围，跳过");
+                        continue;
+                    }
+                } else if (changedFqSet != null && !moduleTouchedByChange(moduleDto, changedFqSet)) {
                     skipped++;
                     execLog.log(taskId, "  [module " + moduleIndex + "/" + moduleTotal + "] " + moduleDto.getModuleName() + " — 未受本次变更影响，跳过");
                     continue;
@@ -828,7 +835,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         if (promptTemplateLoader.hasUnresolvedModuleDocPlaceholders(promptInput)) {
             log.warn("Function {} prompt 有未替换占位符，回退占位文档", funcName);
             upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto,
-                    buildPlaceholderDoc(moduleDto), "PENDING_REVIEW");
+                    buildPlaceholderDoc(moduleDto), "PENDING_REVIEW", projectDir);
             return;
         }
 
@@ -854,7 +861,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 initialStatus = "AI_GENERATED";
             }
         }
-        upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto, finalMarkdown, initialStatus);
+            upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto, finalMarkdown, initialStatus, projectDir);
     }
 
     /** 收集单个 Function 的可达源码（从 methodSignatures BFS） */
@@ -936,7 +943,8 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                                       com.company.codeinsight.modules.hierarchy.model.ModuleDto m,
                                       com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm,
                                       com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
-                                      String markdown, String initialStatus) {
+                                      String markdown, String initialStatus,
+                                      File projectDir) {
         Long taskId = task.getId();
         String safeModule = m.getModuleName().replaceAll("[\\s/\\(\\)]", "_");
         String safeSub = sm.getSubModuleName().replaceAll("[\\s/\\(\\)]", "_");
@@ -979,6 +987,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             draft.setUpdatedAt(LocalDateTime.now());
             knowledgeDraftMapper.updateById(draft);
         }
+        replaceDraftSourceReferencesForFunction(draft.getId(), taskId, fn, projectDir);
         log.info("Function draft: {} → {}", relativeDocPath, initialStatus);
     }
 
@@ -1017,7 +1026,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 promptTemplate, moduleName, moduleHierarchyJson, moduleSource);
         if (promptTemplateLoader.hasUnresolvedModuleDocPlaceholders(promptInput)) {
             log.warn("模块 {} prompt 仍有未替换占位符，回退到占位文档", moduleName);
-            upsertModuleDraft(task, ws, moduleDto, buildPlaceholderDoc(moduleDto), "PENDING_REVIEW");
+            upsertModuleDraft(task, ws, moduleDto, buildPlaceholderDoc(moduleDto), "PENDING_REVIEW", projectDir);
             return;
         }
 
@@ -1048,7 +1057,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         }
 
         // 4. 落库（写文件 + 写 KnowledgeDraft + 写 source references）
-        upsertModuleDraft(task, ws, moduleDto, finalMarkdown, initialStatus);
+        upsertModuleDraft(task, ws, moduleDto, finalMarkdown, initialStatus, projectDir);
     }
 
     /**
@@ -1274,7 +1283,8 @@ public class AiSummaryServiceImpl implements AiSummaryService {
      */
     private void upsertModuleDraft(DecompileTask task, DraftWorkspace ws,
                                    com.company.codeinsight.modules.hierarchy.model.ModuleDto moduleDto,
-                                   String markdown, String initialStatus) {
+                                   String markdown, String initialStatus,
+                                   File projectDir) {
         Long taskId = task.getId();
         String moduleName = moduleDto.getModuleName();
         String safeModuleName = moduleName.replaceAll("[\\s/\\(\\)]", "_");
@@ -1335,24 +1345,99 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             knowledgeDraftMapper.updateById(draft);
         }
 
-        // 清旧 source references
+        // 清旧 source references，按功能节点写入类 + 方法签名引用
         draftSourceReferenceMapper.delete(
                 new LambdaQueryWrapper<DraftSourceReference>().eq(DraftSourceReference::getDraftId, draft.getId())
         );
-        // 每个 FunctionDto.classPaths 写一条 ref（start_line=1, end_line=0 表示整文件）
         for (com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm : moduleDto.getSubModules().values()) {
             for (com.company.codeinsight.modules.hierarchy.model.FunctionDto fn : sm.getFunctions().values()) {
-                for (String entryClass : fn.getClassPaths()) {
+                insertDraftSourceReferences(draft.getId(), taskId, fn, projectDir);
+            }
+        }
+    }
+
+    private void replaceDraftSourceReferencesForFunction(Long draftId, Long taskId,
+                                                       com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
+                                                       File projectDir) {
+        draftSourceReferenceMapper.delete(
+                new LambdaQueryWrapper<DraftSourceReference>().eq(DraftSourceReference::getDraftId, draftId)
+        );
+        insertDraftSourceReferences(draftId, taskId, fn, projectDir);
+    }
+
+    private void insertDraftSourceReferences(Long draftId, Long taskId,
+                                           com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
+                                           File projectDir) {
+        if (fn == null || draftId == null) return;
+        java.util.Set<String> seen = new java.util.LinkedHashSet<>();
+        if (fn.getMethodSignatures() != null && !fn.getMethodSignatures().isEmpty()
+                && fn.getClassPaths() != null && !fn.getClassPaths().isEmpty()) {
+            for (String classPath : fn.getClassPaths()) {
+                String filePath = lookupClassFilePath(taskId, classPath);
+                if (!StringUtils.hasText(filePath)) {
+                    filePath = entryClassToFilePath(taskId, classPath);
+                }
+                if (!StringUtils.hasText(filePath)) continue;
+                File classFile = projectDir != null ? new File(projectDir, filePath) : null;
+                for (String methodSig : fn.getMethodSignatures()) {
+                    if (!StringUtils.hasText(methodSig)) continue;
+                    String dedupeKey = filePath + "|" + classPath + "|" + methodSig;
+                    if (!seen.add(dedupeKey)) continue;
+                    int[] lines = resolveMethodLineRange(classFile, methodSig);
                     DraftSourceReference ref = new DraftSourceReference();
-                    ref.setDraftId(draft.getId());
-                    ref.setFilePath(entryClassToFilePath(taskId, entryClass));
-                    ref.setStartLine(1);
-                    ref.setEndLine(0);
+                    ref.setDraftId(draftId);
+                    ref.setFilePath(filePath);
+                    ref.setClassName(classPath);
+                    ref.setMethodSignature(methodSig.trim());
+                    if (lines != null) {
+                        ref.setStartLine(lines[0]);
+                        ref.setEndLine(lines[1]);
+                    } else {
+                        ref.setStartLine(1);
+                        ref.setEndLine(0);
+                    }
                     ref.setCreatedAt(LocalDateTime.now());
                     draftSourceReferenceMapper.insert(ref);
                 }
             }
+            return;
         }
+        if (fn.getClassPaths() == null) return;
+        for (String classPath : fn.getClassPaths()) {
+            if (!StringUtils.hasText(classPath)) continue;
+            String filePath = entryClassToFilePath(taskId, classPath);
+            if (!StringUtils.hasText(filePath)) continue;
+            String dedupeKey = filePath + "|" + classPath;
+            if (!seen.add(dedupeKey)) continue;
+            DraftSourceReference ref = new DraftSourceReference();
+            ref.setDraftId(draftId);
+            ref.setFilePath(filePath);
+            ref.setClassName(classPath);
+            ref.setStartLine(1);
+            ref.setEndLine(0);
+            ref.setCreatedAt(LocalDateTime.now());
+            draftSourceReferenceMapper.insert(ref);
+        }
+    }
+
+    private int[] resolveMethodLineRange(File classFile, String methodSig) {
+        if (classFile == null || !classFile.exists() || !StringUtils.hasText(methodSig)) {
+            return null;
+        }
+        try {
+            com.company.codeinsight.modules.parser.model.ParsedClassInfo info = javaParserService.parseFile(classFile);
+            if (info == null || info.getMethods() == null) return null;
+            int parenIdx = methodSig.indexOf('(');
+            String methodName = (parenIdx >= 0 ? methodSig.substring(0, parenIdx) : methodSig).trim();
+            for (com.company.codeinsight.modules.parser.model.ParsedClassInfo.MethodInfo mi : info.getMethods()) {
+                if (methodName.equals(mi.getName()) && mi.getStartLine() != null && mi.getEndLine() != null) {
+                    return new int[]{mi.getStartLine(), mi.getEndLine()};
+                }
+            }
+        } catch (Exception e) {
+            log.warn("resolveMethodLineRange failed for {}: {}", classFile, e.getMessage());
+        }
+        return null;
     }
 
     /**
@@ -1918,6 +2003,32 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             } else {
                 return "该方法定义了特定的核心业务计算或协调流程。结合入参执行状态判断，并在关键节点写入操作流水日志，确保操作的幂等性与可追溯性。";
             }
+        }
+    }
+
+    private java.util.Set<String> parseRemediationModuleIds(DecompileTask task) {
+        if (task == null
+                || !com.company.codeinsight.modules.knowledge.remediation.KnowledgeRemediationConstants.TRIGGER_SOURCE
+                .equals(task.getTriggerSource())
+                || !org.springframework.util.StringUtils.hasText(task.getRemediationScopeJson())) {
+            return null;
+        }
+        try {
+            com.fasterxml.jackson.databind.JsonNode root = objectMapper.readTree(task.getRemediationScopeJson());
+            com.fasterxml.jackson.databind.JsonNode arr = root.get("moduleIds");
+            if (arr == null || !arr.isArray()) {
+                return null;
+            }
+            java.util.Set<String> ids = new java.util.LinkedHashSet<>();
+            arr.forEach(node -> {
+                if (node != null && org.springframework.util.StringUtils.hasText(node.asText())) {
+                    ids.add(node.asText().trim());
+                }
+            });
+            return ids.isEmpty() ? null : ids;
+        } catch (Exception e) {
+            log.warn("parseRemediationModuleIds failed taskId={}: {}", task.getId(), e.getMessage());
+            return null;
         }
     }
 }

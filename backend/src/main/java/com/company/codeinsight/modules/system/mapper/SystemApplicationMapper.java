@@ -20,7 +20,6 @@ public interface SystemApplicationMapper extends BaseMapper<SystemApplication> {
      * 对应 XML：SystemApplicationMapper.xml
      */
     List<SystemSummaryVO> listSystemsWithSummary(@Param("name") String name,
-                                                 @Param("owner") String owner,
-                                                 @Param("state") String state);
+                                                 @Param("owner") String owner);
 }
 

@@ -24,6 +24,7 @@ import {
   SettingOutlined,
   SwapOutlined,
   ThunderboltOutlined,
+  UnorderedListOutlined,
   UserOutlined,
 } from '@ant-design/icons';
 import { useAuthStore } from '../stores/auth';
@@ -124,12 +125,19 @@ const knowledgeNav: NavItem[] = [
     description: '维护业务系统、负责人、Git 仓库、扫描范围和排除规则。',
   },
   {
-    key: '/tasks/query',
+    key: '/tasks',
     icon: <PlayCircleOutlined />,
-    label: <TabLink to="/tasks/query">知识任务构建</TabLink>,
+    label: '知识任务构建',
     title: '知识任务构建',
     description: '任务查询 / 任务队列 / JOB配置 / 手动下发及复核断点。',
     children: [
+      {
+        key: '/tasks/query',
+        icon: <UnorderedListOutlined />,
+        label: <TabLink to="/tasks/query">任务列表</TabLink>,
+        title: '任务列表',
+        description: '查询全部知识构建任务，按状态、类型、系统等条件过滤。',
+      },
       {
         key: '/tasks/entrypoint-review',
         icon: <ApartmentOutlined />,
@@ -161,11 +169,34 @@ const knowledgeNav: NavItem[] = [
     ],
   },
   {
-    key: '/knowledge/browse',
+    key: 'knowledge-query',
     icon: <FileSearchOutlined />,
-    label: <TabLink to="/knowledge/browse">知识查询</TabLink>,
+    label: '知识查询',
     title: '知识查询',
-    description: '按系统聚合浏览知识文档、索引文件与清单文件（只读，不修改任何资产）。',
+    description: '按仓库浏览已发布的扫描入口、模块层级与知识文档。',
+    children: [
+      {
+        key: '/knowledge/entrypoints',
+        icon: <ApartmentOutlined />,
+        label: <TabLink to="/knowledge/entrypoints">扫描入口</TabLink>,
+        title: '扫描入口',
+        description: '查看当前生效发布版的仓库级入口清单（只读）。',
+      },
+      {
+        key: '/knowledge/hierarchy',
+        icon: <SwapOutlined />,
+        label: <TabLink to="/knowledge/hierarchy">模块层级</TabLink>,
+        title: '模块层级',
+        description: '查看当前生效发布版的模块层级树（只读）。',
+      },
+      {
+        key: '/knowledge/documents',
+        icon: <FileTextOutlined />,
+        label: <TabLink to="/knowledge/documents">知识文档</TabLink>,
+        title: '知识文档',
+        description: '浏览当前生效发布版的 Markdown 文档、索引与清单文件。',
+      },
+    ],
   },
 ];
 

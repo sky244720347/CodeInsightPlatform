@@ -708,6 +708,19 @@ button, input, textarea, select { font: inherit; }
   line-height: 24px;
 }
 
+/* 入口扫描配置：上下两框 + 中间断点 */
+.ci-scan-config-box {
+  margin-bottom: 0;
+}
+.ci-scan-config-box .ant-card-body {
+  padding: 12px;
+}
+.ci-scan-config-divider {
+  height: 12px;
+  border-left: 2px dashed #d9d9d9;
+  margin: 4px 0 4px 14px;
+}
+
 /* 创建任务弹窗整体紧凑：标签字号略小，间距略小 */
 .ant-modal-body .ant-form-item-label > label {
   font-size: 13px;

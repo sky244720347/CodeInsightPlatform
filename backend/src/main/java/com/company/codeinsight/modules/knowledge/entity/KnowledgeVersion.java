@@ -1,6 +1,7 @@
 package com.company.codeinsight.modules.knowledge.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
 import lombok.Data;
@@ -100,5 +101,9 @@ public class KnowledgeVersion {
      * 版本创建时间
      */
     private LocalDateTime createdAt;
+
+    /** 是否为仓库当前生效的已发布版本（API 计算字段，非表列） */
+    @TableField(exist = false)
+    private Boolean activePublished;
 }
 

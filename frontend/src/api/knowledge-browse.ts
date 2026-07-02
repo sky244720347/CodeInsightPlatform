@@ -24,7 +24,6 @@ export const listKnowledgeBrowse = (
 export const getKnowledgeBrowseTree = (params: {
   systemId: number;
   repositoryId: number;
-  taskId?: number;
 }): Promise<KnowledgeBrowseTreeResult> => {
   return request.get('/knowledge/browse/tree', { params });
 };
@@ -34,10 +33,11 @@ export const getKnowledgeBrowseTree = (params: {
  * 后端：GET /api/knowledge/browse/content
  */
 export const getKnowledgeBrowseContent = (params: {
-  type: KnowledgeBrowseFileType;
+  type?: KnowledgeBrowseFileType;
   id?: number;
   taskId?: number;
   filePath?: string;
+  contentUri?: string;
 }): Promise<string> => {
   return request.get('/knowledge/browse/content', { params });
 };

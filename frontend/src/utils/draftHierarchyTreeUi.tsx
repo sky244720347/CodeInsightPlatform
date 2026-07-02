@@ -39,6 +39,20 @@ export function buildHierarchyAntTreeNodes(nodes: DraftHierarchyTreeNode[]): Hie
           {typeMeta.label}
         </Tag>
         <Text style={{ fontSize: 13 }}>{n.title}</Text>
+        {isFunction && n.classPaths && n.classPaths.length > 0 && (
+          <Text type="secondary" style={{ fontSize: 11 }} title={n.classPaths.join('\n')}>
+            {n.classPaths.length === 1
+              ? n.classPaths[0].split('.').pop()
+              : `${n.classPaths.length} 类`}
+          </Text>
+        )}
+        {isFunction && n.methodSignatures && n.methodSignatures.length > 0 && (
+          <Tag style={{ margin: 0, fontSize: 11 }}>
+            {n.methodSignatures.length === 1
+              ? n.methodSignatures[0]
+              : `${n.methodSignatures.length} 个方法`}
+          </Tag>
+        )}
         {isFunction && (
           n.hasDocument ? (
             n.draftStatus ? (

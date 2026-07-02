@@ -48,13 +48,12 @@ const TYPE_NAME: Record<'MODULARIZE' | 'DOCUMENT_GENERATION', string> = {
   DOCUMENT_GENERATION: '文档生成',
 };
 
-/** 生成系统专属的提示词名称:{系统名} - {类型} - {yyyyMMdd-HHmmss} */
-const buildDefaultName = (systemName: string, typeLabel: string) => {
+/** 生成自定义提示词默认名称:{类型} - {yyyyMMdd-HHmmss}（不带仓库/系统标识） */
+const buildDefaultName = (typeLabel: string) => {
   const now = new Date();
   const pad = (n: number) => String(n).padStart(2, '0');
   const ts = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
-  const sysName = systemName || '新系统';
-  return `${sysName} - ${typeLabel} - ${ts}`;
+  return `${typeLabel} - ${ts}`;
 };
 
 /**
@@ -85,7 +84,7 @@ const SystemPromptEditorModal: React.FC<Props> = ({
   // 弹窗打开时,根据 mode 初始化表单
   useEffect(() => {
     if (!open) return;
-    const defaultName = buildDefaultName(systemName ?? '', TYPE_NAME[promptType]);
+    const defaultName = buildDefaultName(TYPE_NAME[promptType]);
     const initialContent =
       mode === 'clone-default' && sourcePrompt ? sourcePrompt.content ?? '' : '';
     form.setFieldsValue({ name: defaultName, content: initialContent });
@@ -150,8 +149,8 @@ const SystemPromptEditorModal: React.FC<Props> = ({
   const title = mode === 'custom' ? '自定义提示词' : '复制默认后修改';
   const desc =
     mode === 'custom'
-      ? '从空白开始编写。提交后作为 DRAFT 草稿保存,系统会绑定此提示词;后续可在「基础配置 → 提示词」中发布。'
-      : '已预填默认提示词内容,可在其基础上修改。提交后保存为新的 DRAFT 草稿,系统会绑定此提示词。';
+      ? '从空白开始编写。提交后保存为 DRAFT 草稿，可在当前页面的下拉框中选择使用。'
+      : '已预填默认提示词内容,可在其基础上修改。提交后保存为新的 DRAFT 草稿。';
 
   return (
     <>
@@ -188,7 +187,7 @@ const SystemPromptEditorModal: React.FC<Props> = ({
             试跑
           </Button>,
           <Button key="submit" type="primary" loading={submitting} onClick={handleSubmit}>
-            创建并绑定
+            创建
           </Button>,
         ]}
       >
@@ -203,7 +202,7 @@ const SystemPromptEditorModal: React.FC<Props> = ({
           layout="vertical"
           // 用 Form 的 initialValues 兜底
           initialValues={{
-            name: buildDefaultName(systemName ?? '', TYPE_NAME[promptType]),
+            name: buildDefaultName(TYPE_NAME[promptType]),
             content: mode === 'clone-default' ? sourcePrompt?.content ?? '' : '',
           }}
         >
@@ -212,7 +211,7 @@ const SystemPromptEditorModal: React.FC<Props> = ({
             label="提示词名称"
             rules={[{ required: true, message: '请输入提示词名称' }]}
           >
-            <Input placeholder={buildDefaultName(systemName ?? '', TYPE_NAME[promptType])} />
+            <Input placeholder={buildDefaultName(TYPE_NAME[promptType])} />
           </Form.Item>
           <Form.Item
             name="content"
@@ -220,7 +219,7 @@ const SystemPromptEditorModal: React.FC<Props> = ({
             rules={[{ required: true, message: '请输入提示词内容' }]}
             extra={
               <Text type="secondary" style={{ fontSize: 12 }}>
-                命名规则:{systemName || '新系统'} - {TYPE_NAME[promptType]} - 时间戳
+                命名规则:{TYPE_NAME[promptType]} - 时间戳
               </Text>
             }
           >

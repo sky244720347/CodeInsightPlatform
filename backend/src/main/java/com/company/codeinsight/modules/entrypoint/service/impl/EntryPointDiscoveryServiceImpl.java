@@ -6,6 +6,8 @@ import com.company.codeinsight.modules.entrypoint.model.DiscoveredEntrypoint;
 import com.company.codeinsight.modules.entrypoint.model.DiscoveredMethod;
 import com.company.codeinsight.modules.entrypoint.model.EntryPoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
+import com.company.codeinsight.modules.entrypoint.model.ExcludeTarget;
+import com.company.codeinsight.modules.entrypoint.model.TypeIncludeRules;
 import com.company.codeinsight.modules.entrypoint.service.EntryPointDiscoveryService;
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo;
 import com.company.codeinsight.modules.parser.service.JavaParserService;
@@ -59,15 +61,21 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
 
     @Override
     public List<DiscoveredEntrypoint> discoverEntriesWithMethods(Long taskId, File projectDir, EntryPointConfig config) {
-        List<EntryPoint> baseEntries = discoverEntriesInternal(taskId, projectDir, config);
+        EntryPointConfig effective = normalizeConfig(config);
+        List<EntryPoint> baseEntries = discoverEntriesInternal(taskId, projectDir, effective);
         if (baseEntries == null || baseEntries.isEmpty()) {
             return java.util.Collections.emptyList();
         }
         List<DiscoveredEntrypoint> result = new java.util.ArrayList<>(baseEntries.size());
         for (EntryPoint ep : baseEntries) {
+            List<DiscoveredMethod> methods = filterMethodsByExcludeTargets(
+                    extractMethodsForEntry(projectDir, ep), ep.getClassName(), effective);
+            if (methods.isEmpty()) {
+                continue;
+            }
             DiscoveredEntrypoint dep = new DiscoveredEntrypoint();
             dep.setBase(ep);
-            dep.setMethods(extractMethodsForEntry(projectDir, ep));
+            dep.setMethods(methods);
             result.add(dep);
         }
         log.info("EntryPointDiscoveryService.discoverEntriesWithMethods done. taskId={} entries={}", taskId, result.size());
@@ -141,6 +149,7 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
         if (taskId == null || projectDir == null || !projectDir.exists()) {
             return Collections.emptyList();
         }
+        EntryPointConfig cfg = normalizeConfig(config);
 
         // 1. 解析全项目
         List<ParsedClassInfo> parsed;
@@ -163,67 +172,108 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
                 shortNameToFilePath.putIfAbsent(mc.getClassName(), mc.getFilePath());
             }
         }
-        Set<String> calledDependencies = depNameToFilePath.keySet();
 
-        boolean useDefault = (config == null) || config.isIncludeAllEmpty();
-
-        // 3. 主路：默认行为 OR 配置驱动
+        // 3. 按四类 include 规则 + 优先级识别
         Map<String, EntryPoint> entries = new LinkedHashMap<>();
-        Map<String, ParsedClassInfo> classNameToInfo = new HashMap<>();
         for (ParsedClassInfo info : parsed) {
             if (info == null || !StringUtils.hasText(info.getClassName())) {
                 continue;
             }
             String fq = fqName(info);
-            classNameToInfo.put(fq, info);
 
-            // 排除优先：命中任一排除规则即跳过
-            if (isExcluded(fq, info, config)) {
+            if (isExcluded(fq, info, cfg)) {
+                continue;
+            }
+            if (isClassExcludedByTarget(fq, cfg)) {
                 continue;
             }
 
-            if (useDefault) {
-                String type = info.getType();
-                String entryType = mapTypeToEntryType(type);
-                if (entryType != null) {
-                    addEntry(entries, fq, info, entryType, extractTriggerAnnotation(info.getAnnotations(), entryType), shortNameToFilePath);
-                } else if (info.isHasMainMethod()) {
-                    addEntry(entries, fq, info, "APPLICATION", "main", shortNameToFilePath);
-                }
-            } else {
-                // 配置驱动：三 include"或"逻辑
-                boolean hit = matchesIncludeAnnotation(info, config)
-                        || matchesIncludeClasspath(fq, config)
-                        || matchesIncludeExtends(info, config);
-                if (hit) {
-                    String entryType = mapTypeToEntryType(info.getType());
-                    if (entryType == null) {
-                        entryType = "CUSTOM";
-                    }
-                    addEntry(entries, fq, info, entryType, firstHitAnnotation(info, config), shortNameToFilePath);
-                }
+            String matchedType = matchEntryType(fq, info, cfg);
+            if (matchedType == null) {
+                continue;
             }
+            String annotation = extractTriggerAnnotation(info.getAnnotations(), matchedType);
+            if (annotation == null) {
+                annotation = firstHitAnnotation(info, cfg.rulesFor(matchedType));
+            }
+            addEntry(entries, fq, info, matchedType, annotation, shortNameToFilePath);
         }
 
-        // 4. 辅路：调用链反查（仅默认行为 + 带 main 的入口，避免配置驱动时把 main() 漏掉）
-        if (useDefault) {
-            Set<String> allClasses = new HashSet<>(classNameToInfo.keySet());
-            Set<String> zeroRefClasses = new HashSet<>(allClasses);
-            zeroRefClasses.removeAll(calledDependencies);
-
-            for (String fq : zeroRefClasses) {
-                if (entries.containsKey(fq)) {
-                    continue;
-                }
-                ParsedClassInfo info = classNameToInfo.get(fq);
-                if (info != null && info.isHasMainMethod()) {
-                    addEntry(entries, fq, info, "MAIN", "main (zero-reference)", shortNameToFilePath);
-                }
-            }
-        }
-
-        log.info("Entry point discovery done. taskId={}, entriesFound={}, useDefault={}", taskId, entries.size(), useDefault);
+        log.info("Entry point discovery done. taskId={}, entriesFound={}", taskId, entries.size());
         return new ArrayList<>(entries.values());
+    }
+
+    private EntryPointConfig normalizeConfig(EntryPointConfig config) {
+        return EntryPointConfig.normalize(config == null ? EntryPointConfig.defaults() : config);
+    }
+
+    /** Controller → Job → MQ → Other，首个命中类型生效 */
+    private String matchEntryType(String fq, ParsedClassInfo info, EntryPointConfig cfg) {
+        for (String type : EntryPointConfig.TYPE_MATCH_ORDER) {
+            TypeIncludeRules rules = cfg.rulesFor(type);
+            if (rules.isEmpty()) {
+                continue;
+            }
+            if (matchesTypeRules(fq, info, rules)) {
+                return type;
+            }
+        }
+        return null;
+    }
+
+    private boolean matchesTypeRules(String fq, ParsedClassInfo info, TypeIncludeRules rules) {
+        return matchesIncludeAnnotation(info, rules)
+                || matchesIncludeClasspath(fq, rules)
+                || matchesIncludeExtends(info, rules);
+    }
+
+    private boolean isClassExcludedByTarget(String fq, EntryPointConfig cfg) {
+        for (ExcludeTarget t : cfg.getEffectiveExcludeTargets()) {
+            if (t == null || !StringUtils.hasText(t.getClassName())) {
+                continue;
+            }
+            if (t.isClassLevel() && fq.equals(t.getClassName().trim())) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private List<DiscoveredMethod> filterMethodsByExcludeTargets(
+            List<DiscoveredMethod> methods, String className, EntryPointConfig cfg) {
+        if (methods == null || methods.isEmpty()) {
+            return java.util.Collections.emptyList();
+        }
+        List<DiscoveredMethod> out = new java.util.ArrayList<>(methods.size());
+        for (DiscoveredMethod m : methods) {
+            if (isMethodExcludedByTarget(className, m.getMethodSignature(), cfg)) {
+                continue;
+            }
+            out.add(m);
+        }
+        return out;
+    }
+
+    private boolean isMethodExcludedByTarget(String className, String methodSignature, EntryPointConfig cfg) {
+        if (!StringUtils.hasText(className)) {
+            return false;
+        }
+        for (ExcludeTarget t : cfg.getEffectiveExcludeTargets()) {
+            if (t == null || !StringUtils.hasText(t.getClassName())) {
+                continue;
+            }
+            if (!className.equals(t.getClassName().trim())) {
+                continue;
+            }
+            if (t.isClassLevel()) {
+                return true;
+            }
+            if (StringUtils.hasText(methodSignature)
+                    && methodSignature.equals(t.getMethodSignature().trim())) {
+                return true;
+            }
+        }
+        return false;
     }
 
     private String collectReachableSourceInternal(Long taskId, String entryClassName, File projectDir, EntryPointConfig config) {
@@ -369,7 +419,8 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
                     break;
                 }
             }
-        } else if ("SCHEDULED_JOB".equals(entryType) || "MQ_LISTENER".equals(entryType) || "COMPONENT".equals(entryType)) {
+        } else if ("SCHEDULED_JOB".equals(entryType) || "MQ_LISTENER".equals(entryType)
+                || "COMPONENT".equals(entryType) || EntryPointConfig.TYPE_OTHER.equals(entryType)) {
             // parser 当前不抽方法级注解，回退为所有非 private 方法 + class-level annotation 标记
             String classLevelAnn = pickClassLevelAnnotation(info, entryType);
             for (ParsedClassInfo.MethodInfo m : info.getMethods()) {
@@ -450,33 +501,33 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
 
     // ============================ rule helpers ============================
 
-    private boolean matchesIncludeAnnotation(ParsedClassInfo info, EntryPointConfig cfg) {
-        List<String> rules = cfg.getEffectiveIncludeAnnotations();
-        if (rules.isEmpty() || info.getAnnotations() == null) return false;
+    private boolean matchesIncludeAnnotation(ParsedClassInfo info, TypeIncludeRules rules) {
+        List<String> ruleList = rules.getEffectiveIncludeAnnotations();
+        if (ruleList.isEmpty() || info.getAnnotations() == null) return false;
         for (String ann : info.getAnnotations()) {
-            for (String rule : rules) {
+            for (String rule : ruleList) {
                 if (ann != null && rule != null && ann.contains(rule)) return true;
             }
         }
         return false;
     }
 
-    private boolean matchesIncludeClasspath(String fq, EntryPointConfig cfg) {
-        for (String pattern : cfg.getEffectiveIncludeClasspaths()) {
+    private boolean matchesIncludeClasspath(String fq, TypeIncludeRules rules) {
+        for (String pattern : rules.getEffectiveIncludeClasspaths()) {
             if (StringUtils.hasText(pattern) && pathMatcher.match(pattern, fq)) return true;
         }
         return false;
     }
 
-    private boolean matchesIncludeExtends(ParsedClassInfo info, EntryPointConfig cfg) {
-        List<String> rules = cfg.getEffectiveIncludeExtends();
-        if (rules.isEmpty()) return false;
+    private boolean matchesIncludeExtends(ParsedClassInfo info, TypeIncludeRules rules) {
+        List<String> ruleList = rules.getEffectiveIncludeExtends();
+        if (ruleList.isEmpty()) return false;
         if (StringUtils.hasText(info.getExtendsClass())) {
-            for (String r : rules) if (r != null && r.equals(info.getExtendsClass())) return true;
+            for (String r : ruleList) if (r != null && r.equals(info.getExtendsClass())) return true;
         }
         if (info.getImplementsList() != null) {
             for (String impl : info.getImplementsList()) {
-                for (String r : rules) if (r != null && r.equals(impl)) return true;
+                for (String r : ruleList) if (r != null && r.equals(impl)) return true;
             }
         }
         return false;
@@ -507,10 +558,10 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
         return false;
     }
 
-    private String firstHitAnnotation(ParsedClassInfo info, EntryPointConfig cfg) {
+    private String firstHitAnnotation(ParsedClassInfo info, TypeIncludeRules rules) {
         if (info.getAnnotations() == null) return null;
         for (String ann : info.getAnnotations()) {
-            for (String rule : cfg.getEffectiveIncludeAnnotations()) {
+            for (String rule : rules.getEffectiveIncludeAnnotations()) {
                 if (ann != null && rule != null && ann.contains(rule)) return ann;
             }
         }
@@ -531,18 +582,6 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
         entries.put(fq, ep);
     }
 
-    private String mapTypeToEntryType(String type) {
-        if (type == null) return null;
-        return switch (type) {
-            case "CONTROLLER" -> "CONTROLLER";
-            case "JOB" -> "SCHEDULED_JOB";
-            case "MESSAGE_LISTENER" -> "MQ_LISTENER";
-            case "COMPONENT" -> "COMPONENT";
-            case "APPLICATION" -> "APPLICATION";
-            default -> null;
-        };
-    }
-
     private String extractTriggerAnnotation(List<String> annotations, String entryType) {
         if (annotations == null || annotations.isEmpty()) return null;
         return switch (entryType) {
@@ -550,7 +589,7 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
             case "SCHEDULED_JOB" -> annotations.stream().filter(a -> a.contains("Scheduled") || a.contains("EnableScheduling")).findFirst().orElse(null);
             case "MQ_LISTENER" -> annotations.stream().filter(a -> a.contains("Listener")).findFirst().orElse(null);
             case "COMPONENT" -> annotations.stream().filter(a -> a.equals("Component")).findFirst().orElse(null);
-            case "APPLICATION" -> annotations.stream().filter(a -> a.contains("SpringBootApplication")).findFirst().orElse(null);
+            case EntryPointConfig.TYPE_OTHER -> annotations.stream().findFirst().orElse(null);
             default -> null;
         };
     }

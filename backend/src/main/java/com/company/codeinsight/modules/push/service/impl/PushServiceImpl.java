@@ -16,7 +16,11 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.company.codeinsight.common.auth.OperatorContext;
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.common.storage.StorageProperties;
+import com.company.codeinsight.modules.repository.publish.entity.RepositoryPublishSnapshot;
+import com.company.codeinsight.modules.repository.publish.service.RepositoryPublishService;
 import com.company.codeinsight.common.util.DraftFileUtil;
 import com.company.codeinsight.modules.draft.entity.DraftWorkspace;
 import com.company.codeinsight.modules.draft.entity.KnowledgeDraft;
@@ -89,6 +93,9 @@ public class PushServiceImpl implements PushService {
 
     @Autowired
     private com.company.codeinsight.common.storage.StorageProperties storageProperties;
+
+    @Autowired
+    private RepositoryPublishService repositoryPublishService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -309,12 +316,14 @@ public class PushServiceImpl implements PushService {
 
             try {
                 String result = strategy.execute(version, pushTask);
-                // 成功
+                // 重新加载版本（Git 策略可能已更新 status/targetCommit）
+                version = versionMapper.selectById(versionId);
+                applyRepositoryPublish(version);
+
                 pushTask.setStatus(PushTaskStatus.SUCCESS.name());
                 pushTask.setCompletedAt(LocalDateTime.now());
                 pushTaskMapper.updateById(pushTask);
 
-                // 更新 DecompileTask 状态
                 stateMachineService.transitTo(version.getTaskId(), TaskStatus.PUSHED, null);
 
                 log.info("推送任务执行成功: pushTaskId={}, result={}", pushTaskId, result);
@@ -370,6 +379,21 @@ public class PushServiceImpl implements PushService {
         pushTask.setErrorMessage(errorMessage);
         pushTask.setCompletedAt(LocalDateTime.now());
         pushTaskMapper.updateById(pushTask);
+    }
+
+    private void applyRepositoryPublish(KnowledgeVersion version) {
+        String operator = OperatorContext.get();
+        RepositoryPublishSnapshot snapshot = repositoryPublishService.applyFromTask(
+                version.getTaskId(), version.getId(), operator);
+        DecompileTask task = taskMapper.selectById(version.getTaskId());
+        if (task != null) {
+            java.nio.file.Path releaseDir = storageProperties.releaseDir(
+                    task.getSystemId(), task.getRepositoryId(), version.getVersionNum());
+            repositoryPublishService.exportArtifactsToRelease(releaseDir, snapshot);
+        }
+        if (!"PUSHED".equals(version.getStatus())) {
+            updateVersionStatus(version, "PUSHED");
+        }
     }
 
     private void updateVersionStatus(KnowledgeVersion version, String status) {

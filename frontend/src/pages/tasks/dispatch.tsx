@@ -38,6 +38,7 @@ import {
   buildScanConfigWithDefaults,
   parseRepoEntryScanConfig,
 } from '../systems/repositoryUtils';
+import EntryScanConfigEditor from '../../components/EntryScanConfigEditor';
 import type {
   AiModel,
   EntryScanConfig,
@@ -47,8 +48,6 @@ import type {
 } from '../../types';
 
 const { Text } = Typography;
-
-const DEFAULT_EXCLUDE_CLASSPATHS = ['**/*Test', '**/*Tests', '**/*TestCase'];
 
 /**
  * 「手动下发」全屏页签
@@ -146,7 +145,7 @@ const TaskDispatchPage: React.FC = () => {
     const needDocument = repo.documentPromptId;
     const fetchOne = async (type: 'MODULARIZE' | 'DOCUMENT_GENERATION', id?: number | null) => {
       if (id == null) return null;
-      const all = await listPrompts({ current: 1, size: 200, lifecycle: 'RELEASED', promptType: type });
+      const all = await listPrompts({ current: 1, size: 200, lifecycle: 'RELEASED', promptType: type, isDefault: 1 });
       return all.records.find((p) => p.id === id) || null;
     };
     if (needModularize != null) {
@@ -357,7 +356,7 @@ const TaskDispatchPage: React.FC = () => {
           preserve
           initialValues={{
             taskType: 'INITIAL',
-            entryScanConfig: { excludeClasspaths: DEFAULT_EXCLUDE_CLASSPATHS },
+            entryScanConfig: buildScanConfigWithDefaults(undefined),
             requireEntrypointReview: false,
             requireHierarchyReview: false,
           }}
@@ -441,9 +440,13 @@ const TaskDispatchPage: React.FC = () => {
                       <Button
                         type="link"
                         size="small"
-                        onClick={() =>
-                          navigate(`/systems?systemId=${selectedSystemId}&action=prompts`)
-                        }
+                        onClick={() => {
+                          const params = new URLSearchParams();
+                          params.set('systemId', String(selectedSystemId));
+                          if (selectedRepositoryId) params.set('repositoryId', String(selectedRepositoryId));
+                          params.set('action', 'prompts');
+                          navigate(`/systems?${params.toString()}`);
+                        }}
                       >
                         前往「系统与仓库」绑定提示词
                       </Button>
@@ -487,15 +490,15 @@ const TaskDispatchPage: React.FC = () => {
               <div className="ci-scan-config">
                 <div
                   className="ci-scan-config-title"
-                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}
+                  style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 }}
                 >
                   <div>
-                    <Text type="secondary" style={{ fontSize: 12 }}>扫描规则</Text>
-                    <Tooltip title="选中仓库时,扫描规则会自动带出仓库的 entryScanConfig；点击「重置」可恢复为仓库默认配置。">
+                    <Text type="secondary" style={{ fontSize: 12 }}>扫描规则（任务快照）</Text>
+                    <Tooltip title="选中仓库时会自动继承仓库配置；此处修改仅写入本任务快照，不影响仓库。复核阶段追加的排除也写入任务快照。">
                       <ExclamationCircleOutlined style={{ color: '#faad14', marginLeft: 6, fontSize: 12 }} />
                     </Tooltip>
                   </div>
-                  <Tooltip title="重置为仓库配置">
+                  <Tooltip title="重新从仓库拉取并覆盖表单（尚未提交前）">
                     <Button
                       size="small"
                       icon={<SyncOutlined />}
@@ -506,54 +509,7 @@ const TaskDispatchPage: React.FC = () => {
                     </Button>
                   </Tooltip>
                 </div>
-                <Row gutter={[8, 6]}>
-                  <Col xs={24} md={12}>
-                    <div className="ci-scan-config-col">
-                      <div className="ci-scan-config-col-title">入口识别（满足任一即视为入口）</div>
-                      <div className="ci-scan-config-row">
-                        <span className="ci-scan-config-label">注解</span>
-                        <Form.Item name={['entryScanConfig', 'includeAnnotations']} noStyle>
-                          <Select mode="tags" placeholder="RestController / Service / ..." style={{ width: '100%' }} />
-                        </Form.Item>
-                      </div>
-                      <div className="ci-scan-config-row">
-                        <span className="ci-scan-config-label">类路径</span>
-                        <Form.Item name={['entryScanConfig', 'includeClasspaths']} noStyle>
-                          <Select mode="tags" placeholder="com.demo.controller.**" style={{ width: '100%' }} />
-                        </Form.Item>
-                      </div>
-                      <div className="ci-scan-config-row">
-                        <span className="ci-scan-config-label">继承/实现</span>
-                        <Form.Item name={['entryScanConfig', 'includeExtends']} noStyle>
-                          <Select mode="tags" placeholder="BaseEntry / CommandLineRunner" style={{ width: '100%' }} />
-                        </Form.Item>
-                      </div>
-                    </div>
-                  </Col>
-                  <Col xs={24} md={12}>
-                    <div className="ci-scan-config-col">
-                      <div className="ci-scan-config-col-title">排除规则（满足任一即从候选中排除）</div>
-                      <div className="ci-scan-config-row">
-                        <span className="ci-scan-config-label">类路径</span>
-                        <Form.Item name={['entryScanConfig', 'excludeClasspaths']} noStyle>
-                          <Select mode="tags" placeholder="*.test.*" style={{ width: '100%' }} />
-                        </Form.Item>
-                      </div>
-                      <div className="ci-scan-config-row">
-                        <span className="ci-scan-config-label">包路径</span>
-                        <Form.Item name={['entryScanConfig', 'excludePackages']} noStyle>
-                          <Select mode="tags" placeholder="com.legacy.config" style={{ width: '100%' }} />
-                        </Form.Item>
-                      </div>
-                      <div className="ci-scan-config-row">
-                        <span className="ci-scan-config-label">注解</span>
-                        <Form.Item name={['entryScanConfig', 'excludeAnnotations']} noStyle>
-                          <Select mode="tags" placeholder="Internal / Deprecated" style={{ width: '100%' }} />
-                        </Form.Item>
-                      </div>
-                    </div>
-                  </Col>
-                </Row>
+                <EntryScanConfigEditor />
               </div>
 
               <Alert
@@ -606,21 +562,21 @@ const TaskDispatchPage: React.FC = () => {
                 扫描规则：
                 <b>
                   {(() => {
-                    const c = (summaryScan ?? {}) as Record<string, unknown>;
-                    const labels: Array<[string, unknown]> = [
-                      ['入口注解', c.includeAnnotations],
-                      ['入口类路径', c.includeClasspaths],
-                      ['入口继承/实现', c.includeExtends],
-                      ['排除类路径', c.excludeClasspaths],
-                      ['排除包路径', c.excludePackages],
-                      ['排除注解', c.excludeAnnotations],
-                    ];
-                    const configured = labels.filter(
-                      ([, v]) => Array.isArray(v) && (v as unknown[]).length > 0,
-                    );
-                    return configured.length === 0
-                      ? '使用默认（Controller/JOB/MQ 兜底）'
-                      : configured.map(([k, v]) => `${k} ${(v as unknown[]).length} 条`).join('，');
+                    const c = (summaryScan ?? buildScanConfigWithDefaults(undefined)) as EntryScanConfig;
+                    const typeCounts = Object.entries(c.includesByType ?? {})
+                      .map(([k, v]) => {
+                        const n =
+                          (v.includeAnnotations?.length ?? 0)
+                          + (v.includeClasspaths?.length ?? 0)
+                          + (v.includeExtends?.length ?? 0);
+                        return n > 0 ? `${k} ${n} 条规则` : null;
+                      })
+                      .filter(Boolean);
+                    const ex = (c.excludeTargets?.length ?? 0)
+                      + (c.excludeClasspaths?.length ?? 0)
+                      + (c.excludePackages?.length ?? 0)
+                      + (c.excludeAnnotations?.length ?? 0);
+                    return `${typeCounts.join('，') || '默认四类预置'}；排除 ${ex} 条`;
                   })()}
                 </b>
               </p>
@@ -676,7 +632,7 @@ const TaskDispatchPage: React.FC = () => {
             <CloseCircleOutlined style={{ color: '#ff4d4f' }} />
             <span>
               {readiness?.promptsConfigured === false
-                ? '无法新建任务：系统未绑定提示词'
+                ? '无法新建任务：仓库未绑定提示词'
                 : '无法新建任务：尚有未确认的草稿'}
             </span>
           </Space>
@@ -694,8 +650,13 @@ const TaskDispatchPage: React.FC = () => {
                     onClick={() => {
                       setReadinessModalOpen(false);
                       const sid = form.getFieldValue('systemId') as number | undefined;
+                      const rid = form.getFieldValue('repositoryId') as number | undefined;
                       if (sid) {
-                        navigate(`/systems?systemId=${sid}&action=prompts`);
+                        const params = new URLSearchParams();
+                        params.set('systemId', String(sid));
+                        if (rid) params.set('repositoryId', String(rid));
+                        params.set('action', 'prompts');
+                        navigate(`/systems?${params.toString()}`);
                       } else {
                         navigate('/systems');
                       }

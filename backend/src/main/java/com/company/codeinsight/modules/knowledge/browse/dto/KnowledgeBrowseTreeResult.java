@@ -16,11 +16,17 @@ public class KnowledgeBrowseTreeResult {
     private Long repositoryId;
     private String repositoryName;
 
-    /** 实际用于组树的基准任务 ID（自动或手动指定） */
-    private Long taskId;
+    /** 当前生效的已发布知识版本 ID */
+    private Long versionId;
 
-    /** 是否自动解析的基准任务 */
-    private Boolean taskAutoResolved;
+    /** 当前生效的已发布知识版本号 */
+    private String versionNum;
+
+    /** 是否读取仓库当前生效的已发布版本（默认 true） */
+    private Boolean activeVersion;
+
+    /** 关联的源任务 ID（来自发布版本） */
+    private Long taskId;
 
     /** 文档生成粒度：function / module */
     private String documentGranularity;

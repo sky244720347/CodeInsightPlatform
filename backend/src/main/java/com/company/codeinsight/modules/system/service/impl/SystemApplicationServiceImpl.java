@@ -7,10 +7,8 @@ import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
 import com.company.codeinsight.modules.system.entity.SystemApplication;
-import com.company.codeinsight.modules.system.enums.SystemState;
 import com.company.codeinsight.modules.system.mapper.SystemApplicationMapper;
 import com.company.codeinsight.modules.system.service.SystemApplicationService;
-import com.company.codeinsight.modules.system.service.SystemStateMachineService;
 import com.company.codeinsight.modules.system.vo.SystemSummaryVO;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
@@ -41,27 +39,13 @@ public class SystemApplicationServiceImpl extends ServiceImpl<SystemApplicationM
     @Autowired
     private DecompileTaskMapper decompileTaskMapper;
 
-    @Autowired
-    private SystemStateMachineService stateMachineService;
-
     /**
      * 条件分页查询接入的业务系统列表（带聚合指标）
-     * <p>state 优先；旧 status 参数（0/1）作为兼容输入。</p>
+     * <p>仅按 name / owner 模糊过滤。</p>
      */
     @Override
-    public Page<SystemSummaryVO> listSystemsPage(int current, int size, String name, String owner, Integer status, String state) {
-        // 优先使用新 state 过滤；否则按旧 status 转换（status=1 → ACTIVE, status=0 → 其他未启用态）
-        String effectiveState = state;
-        if (!StringUtils.hasText(effectiveState) && status != null) {
-            // 旧 status=0 表示「未启用」，含 DRAFT/REPO/SCAN/PROMPT/DISABLED；status=1 仅 ACTIVE
-            // 在 mapper 层用 IN 过滤；这里把单值映射成单值：status=1 → ACTIVE；status=0 → 不传（视为全部）
-            if (status == 1) {
-                effectiveState = SystemState.ACTIVE.name();
-            } else {
-                effectiveState = null;
-            }
-        }
-        List<SystemSummaryVO> all = baseMapper.listSystemsWithSummary(name, owner, effectiveState);
+    public Page<SystemSummaryVO> listSystemsPage(int current, int size, String name, String owner) {
+        List<SystemSummaryVO> all = baseMapper.listSystemsWithSummary(name, owner);
         long total = all.size();
         int from = Math.max(0, (current - 1) * size);
         int to = Math.min(all.size(), from + size);
@@ -72,43 +56,9 @@ public class SystemApplicationServiceImpl extends ServiceImpl<SystemApplicationM
     }
 
     /**
-     * 变更系统应用状态（0/1 二态兼容）。
-     * 0 → DISABLED（任何非 ACTIVE 都可）；1 → ACTIVE（仅 PROMPT_CONFIGURED 可启）
-     * @deprecated 请改用 {@link #changeState}
+     * 新建系统。
      */
     @Override
-    @Deprecated
-    public void changeStatus(Long id, Integer status) {
-        if (id == null || status == null) {
-            throw new BusinessException("id/status 不能为空");
-        }
-        if (status == 1) {
-            changeState(id, SystemState.ACTIVE.name());
-        } else if (status == 0) {
-            changeState(id, SystemState.DISABLED.name());
-        } else {
-            throw new BusinessException("状态非法");
-        }
-    }
-
-    /**
-     * 状态机切换。传入字符串目标态（非合法值抛错）。
-     */
-    @Override
-    public void changeState(Long id, String targetStateName) {
-        if (id == null) {
-            throw new BusinessException("系统 id 不能为空");
-        }
-        SystemState target = SystemState.parse(targetStateName);
-        if (target != SystemState.ACTIVE && target != SystemState.DISABLED) {
-            throw new BusinessException("仅支持手动切换 ACTIVE / DISABLED");
-        }
-        stateMachineService.transitTo(id, target);
-    }
-
-    /**
-     * 新建系统：状态写 DRAFT（旧 status 字段保持 null，向后兼容）。
-     */
     public SystemApplication createSystemDraft(SystemApplication system) {
         if (system == null) {
             throw new BusinessException("系统数据不能为空");
@@ -120,9 +70,6 @@ public class SystemApplicationServiceImpl extends ServiceImpl<SystemApplicationM
             throw new BusinessException("负责人(owner)必填");
         }
         system.setId(null);
-        system.setState(SystemState.DRAFT.name());
-        // state=DRAFT 不是 ACTIVE，所以 status 同步为 0（仅作兼容）
-        system.setStatus(0);
         this.save(system);
         return system;
     }

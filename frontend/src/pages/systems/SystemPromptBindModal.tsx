@@ -10,12 +10,11 @@ import {
   Typography,
   message,
 } from 'antd';
-import { PlayCircleOutlined, PlusOutlined } from '@ant-design/icons';
+import { PlusOutlined } from '@ant-design/icons';
 import { listPrompts, getPrompt, deletePrompt } from '../../api/prompt';
-import { updateRepository } from '../../api/repository';
+import { listRepositories, updateRepository } from '../../api/repository';
 import type { Prompt, Repository, System } from '../../types';
 import SystemPromptEditorModal from './SystemPromptEditorModal';
-import SystemPromptTrialModal from './SystemPromptTrialModal';
 
 const { Text } = Typography;
 
@@ -50,18 +49,45 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
     open: boolean;
     promptType: 'MODULARIZE' | 'DOCUMENT_GENERATION';
   } | null>(null);
-  const [trialPrompt, setTrialPrompt] = useState<Prompt | null>(null);
-  const [trialOpen, setTrialOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  /**
+   * 待保存的提示词绑定(下拉切换、自定义创建均只更新 pending,需点底部「保存」才落库)
+   * - undefined: 用户尚未修改该字段,沿用 repository 的当前绑定
+   * - number | null: 用户显式选择(含清空)
+   */
+  const [pendingModularizeId, setPendingModularizeId] = useState<number | null | undefined>(undefined);
+  const [pendingDocumentId, setPendingDocumentId] = useState<number | null | undefined>(undefined);
 
-  // 拉取可用提示词(DEFAULT is_default=1 + 该系统下 USER 提示词)
+  // 拉取可用提示词(DEFAULT 全局默认 + 当前系统下所有仓库的 USER 自定义)
+  // 提示词 scope_id = repository.id,但下拉框需要看到系统下所有仓库的 USER 提示词（共享）
+  // 实现方式:先 listRepositories 拿到系统下所有仓库 id,再对每个 id 调 listPrompts
   const fetchAll = async () => {
     setPromptsLoading(true);
     try {
       const all: Prompt[] = [];
-      const sysId = repository?.id;
+      const systemId = repository?.systemId;
+
+      // 1) 拉系统下所有仓库的 id
+      let repoIds: number[] = [];
+      if (systemId != null) {
+        try {
+          const reposRes = await listRepositories({
+            current: 1,
+            size: 1000,
+            systemId,
+          });
+          repoIds = (reposRes.records || []).map((r) => r.id);
+        } catch {
+          repoIds = [];
+        }
+      }
+      // 当前仓库一定包含在内（即使 listRepositories 失败,也至少能查到当前仓库）
+      if (repository && !repoIds.includes(repository.id)) {
+        repoIds = [repository.id, ...repoIds];
+      }
+
       for (const t of Object.keys(TYPE_NAME) as ('MODULARIZE' | 'DOCUMENT_GENERATION')[]) {
-        // 拉 DEFAULT 类别的
+        // 2) 拉 DEFAULT 类别的全局默认
         const defRes = await listPrompts({
           current: 1,
           size: 200,
@@ -71,20 +97,19 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
           isDefault: 1,
         });
         all.push(...defRes.records);
-        // 拉该系统下的 USER 提示词
-        if (sysId) {
+        // 3) 对系统下每个仓库,拉 USER 自定义并合并
+        for (const rid of repoIds) {
           const userRes = await listPrompts({
             current: 1,
             size: 200,
-            lifecycle: 'RELEASED',
             promptType: t,
             category: 'USER',
-            scopeId: sysId,
+            scopeId: rid,
           });
           all.push(...userRes.records);
         }
       }
-      // DRAFT 的也补进来
+      // 已绑定但未在前几次拉取中出现的,补拉一次(防御性)
       if (repository) {
         const boundIds = [repository.modularizePromptId, repository.documentPromptId].filter(
           Boolean,
@@ -100,7 +125,9 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
           }
         }
       }
-      setPrompts(all);
+      // 按 id 去重(防御性,正常情况下不会有重复)
+      const dedup = Array.from(new Map(all.map((p) => [p.id, p])).values());
+      setPrompts(dedup);
     } finally {
       setPromptsLoading(false);
     }
@@ -108,6 +135,14 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
 
   useEffect(() => {
     if (open) fetchAll();
+  }, [open, repository?.id]);
+
+  // 弹窗打开/切换仓库时,把 pending 重置为当前已绑定值
+  useEffect(() => {
+    if (open) {
+      setPendingModularizeId(repository?.modularizePromptId ?? null);
+      setPendingDocumentId(repository?.documentPromptId ?? null);
+    }
   }, [open, repository?.id]);
 
   // 找到当前已绑定的 prompt(可能为 null)
@@ -130,11 +165,11 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
     [prompts],
   );
 
-  // 下拉框选项(每个类型的所有 prompt,按 is_default 优先 / version 倒序)
+  // 下拉框选项:全局 DEFAULT + 当前仓库的 USER 自定义(无 lifecycle 区分)
   const modularizeOptions = useMemo(
     () =>
       prompts
-        .filter((p) => p.promptType === 'MODULARIZE' && p.lifecycle === 'RELEASED')
+        .filter((p) => p.promptType === 'MODULARIZE')
         .map((p) => ({
           value: p.id,
           label: `${p.name} (v${p.version})${p.isDefault === 1 ? ' · 默认' : ''}`,
@@ -144,7 +179,7 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
   const documentOptions = useMemo(
     () =>
       prompts
-        .filter((p) => p.promptType === 'DOCUMENT_GENERATION' && p.lifecycle === 'RELEASED')
+        .filter((p) => p.promptType === 'DOCUMENT_GENERATION')
         .map((p) => ({
           value: p.id,
           label: `${p.name} (v${p.version})${p.isDefault === 1 ? ' · 默认' : ''}`,
@@ -164,63 +199,89 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
     }
   };
 
-  /** 从下拉框切换提示词 → 立即调后端 updateSystem */
-  const handleSelectExisting = async (
+  /** 从下拉框切换提示词 → 仅 stage 到 pending,不调后端 */
+  const handleSelectExisting = (
     promptType: 'MODULARIZE' | 'DOCUMENT_GENERATION',
-    id: number,
+    id: number | undefined,
   ) => {
-    if (!repository) return;
-    const oldPrompt = promptType === 'MODULARIZE' ? selectedModularize : selectedDocument;
-    const payload: Partial<System> =
-      promptType === 'MODULARIZE'
-        ? { modularizePromptId: id }
-        : { documentPromptId: id };
-    try {
-      await updateRepository(repository.id, payload);
-      message.success('提示词绑定已更新');
-      onSaved?.();
-    } catch {
-      // 拦截器已提示
+    if (promptType === 'MODULARIZE') {
+      setPendingModularizeId(id ?? null);
+    } else {
+      setPendingDocumentId(id ?? null);
     }
-    // 异步清理(不阻塞 UI)
-    cleanupOrphanedUserPrompt(promptType, oldPrompt);
   };
 
   /** 打开自定义编辑器 */
   const openCustom = (promptType: 'MODULARIZE' | 'DOCUMENT_GENERATION') => {
     setEditorState({ open: true, promptType });
   };
-  const openTrial = (p: Prompt) => {
-    setTrialPrompt(p);
-    setTrialOpen(true);
+
+  /** 自定义创建成功 → 仅把新 prompt 推到本地列表 + stage 到 pending,不调后端绑定 */
+  const handlePromptCreated = (p: Prompt) => {
+    // 把新 prompt 合并到本地列表（下拉框立即可见）
+    setPrompts((prev) => (prev.some((x) => x.id === p.id) ? prev : [...prev, p]));
+    // stage 到 pending
+    if (p.promptType === 'MODULARIZE') {
+      setPendingModularizeId(p.id);
+    } else {
+      setPendingDocumentId(p.id);
+    }
+    message.success(`已创建自定义提示词:${p.name}（点击底部「保存」生效）`);
   };
 
-  /** 自定义创建成功 → 调用后端 updateSystem 绑定到对应字段 */
-  const handlePromptCreated = async (p: Prompt) => {
+  /** 是否有未保存的暂存变更 */
+  const isDirty = useMemo(() => {
+    if (!repository) return false;
+    const m = pendingModularizeId === undefined ? repository.modularizePromptId ?? null : pendingModularizeId;
+    const d = pendingDocumentId === undefined ? repository.documentPromptId ?? null : pendingDocumentId;
+    return m !== (repository.modularizePromptId ?? null) || d !== (repository.documentPromptId ?? null);
+  }, [pendingModularizeId, pendingDocumentId, repository]);
+
+  /** 底部「保存」:把 modularize + document 一次性提交,并清理旧孤立 USER prompt */
+  const handleSaveAll = async () => {
     if (!repository) return;
-    const oldPrompt = p.promptType === 'MODULARIZE' ? selectedModularize : selectedDocument;
-    const fieldName = p.promptType === 'MODULARIZE' ? 'modularizePromptId' : 'documentPromptId';
+    const modularizeId = pendingModularizeId === undefined ? repository.modularizePromptId ?? null : pendingModularizeId;
+    const documentId = pendingDocumentId === undefined ? repository.documentPromptId ?? null : pendingDocumentId;
+    const oldModularize = selectedModularize;
+    const oldDocument = selectedDocument;
     setSubmitting(true);
     try {
       await updateRepository(repository.id, {
-        ...(repository.modularizePromptId ? {} : {}),
-        [fieldName]: p.id,
+        modularizePromptId: modularizeId,
+        documentPromptId: documentId,
       } as Partial<System>);
-      // 把新 prompt 合并到本地列表
-      setPrompts((prev) => (prev.some((x) => x.id === p.id) ? prev : [...prev, p]));
-      message.success(`已绑定提示词:${p.name}`);
+      message.success('提示词绑定已保存');
+      // 异步清理被替换下来的孤立 USER 提示词
+      if (modularizeId !== (repository.modularizePromptId ?? null)) {
+        cleanupOrphanedUserPrompt('MODULARIZE', oldModularize);
+      }
+      if (documentId !== (repository.documentPromptId ?? null)) {
+        cleanupOrphanedUserPrompt('DOCUMENT_GENERATION', oldDocument);
+      }
       onSaved?.();
+      onClose();
     } catch {
       // 拦截器已提示
     } finally {
       setSubmitting(false);
     }
-    // 异步清理旧的 USER 孤立提示词
-    cleanupOrphanedUserPrompt(p.promptType as 'MODULARIZE' | 'DOCUMENT_GENERATION', oldPrompt);
   };
 
   const renderCard = (promptType: 'MODULARIZE' | 'DOCUMENT_GENERATION') => {
-    const selected = promptType === 'MODULARIZE' ? selectedModularize : selectedDocument;
+    // 选中值优先取 pending(用户暂存),没有 pending 则取 repository 实际绑定
+    const pendingId = promptType === 'MODULARIZE' ? pendingModularizeId : pendingDocumentId;
+    const effectiveId =
+      pendingId === undefined
+        ? promptType === 'MODULARIZE'
+          ? repository?.modularizePromptId
+          : repository?.documentPromptId
+        : pendingId;
+    const selected = effectiveId != null ? prompts.find((p) => p.id === effectiveId) ?? null : null;
+    const isPending =
+      pendingId !== undefined &&
+      pendingId !== (promptType === 'MODULARIZE'
+        ? repository?.modularizePromptId
+        : repository?.documentPromptId);
     const defaultP = promptType === 'MODULARIZE' ? defaultModularize : defaultDocument;
     return (
       <Card
@@ -235,6 +296,7 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
                 {selected.isDefault === 1 ? ' · 默认' : ' · 自定义'}
               </Tag>
             )}
+            {isPending && <Tag color="orange">待保存</Tag>}
           </Space>
         }
         extra={
@@ -244,7 +306,7 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
               optionFilterProp="label"
               placeholder="选择已有提示词"
               style={{ width: 320 }}
-              value={selected?.id}
+              value={effectiveId ?? undefined}
               onChange={(id) => handleSelectExisting(promptType, id)}
               options={promptType === 'MODULARIZE' ? modularizeOptions : documentOptions}
               loading={promptsLoading}
@@ -257,26 +319,16 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
             >
               自定义
             </Button>
-            {selected && (
-              <Button
-                size="small"
-                type="link"
-                icon={<PlayCircleOutlined />}
-                onClick={() => openTrial(selected)}
-              >
-                试跑
-              </Button>
-            )}
           </Space>
         }
       >
         {selected ? (
           <Text type="secondary">
-            已绑定 ID={selected.id}。点「自定义」可基于默认提示词({defaultP?.name ?? '无'})复制修改并保存为该系统专属的提示词。
+            当前{isPending ? '暂存' : '已绑定'}：{selected.name}（v{selected.version}）。点「自定义」可基于默认提示词({defaultP?.name ?? '无'})复制修改并保存为该仓库专属的提示词。
           </Text>
         ) : (
           <Text type="secondary">
-            当前未绑定。点「自定义」创建一个(将基于默认提示词 {defaultP?.name ?? '无'} 复制修改,自动以「{repository?.gitUrl ?? '系统'} - {TYPE_LABEL[promptType]} - 时间戳」命名)。
+            当前未绑定。点「自定义」创建一个(将基于默认提示词 {defaultP?.name ?? '无'} 复制修改)。
           </Text>
         )}
       </Card>
@@ -297,8 +349,17 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
         width={760}
         destroyOnClose
         footer={[
-          <Button key="close" onClick={onClose}>
-            关闭
+          <Button key="cancel" onClick={onClose}>
+            取消
+          </Button>,
+          <Button
+            key="save"
+            type="primary"
+            loading={submitting}
+            disabled={!isDirty || submitting}
+            onClick={handleSaveAll}
+          >
+            保存
           </Button>,
         ]}
       >
@@ -308,9 +369,9 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
           style={{ marginBottom: 16 }}
           message={
             <Space direction="vertical" size={4}>
-              <Text>系统绑定 1 个模块提取提示词 + 1 个文档生成提示词,初始默认绑定到「全局默认提示词」。</Text>
+              <Text>仓库绑定 1 个模块提取提示词 + 1 个文档生成提示词,初始默认绑定到「全局默认提示词」。</Text>
               <Text type="secondary">
-                点「自定义」可基于全局默认提示词复制修改,自动以「{repository?.gitUrl ?? '系统'} - 类型 - 时间戳」命名。
+                下拉切换或自定义创建仅暂存,点底部「保存」才统一提交;点「取消」或关闭弹窗丢弃本次暂存。
               </Text>
             </Space>
           }
@@ -339,20 +400,6 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
           promptTypeLabel={TYPE_LABEL[editorState.promptType]}
           onClose={() => setEditorState(null)}
           onCreated={handlePromptCreated}
-        />
-      )}
-
-      {/* 试跑弹窗 */}
-      {trialPrompt && (
-        <SystemPromptTrialModal
-          open={trialOpen}
-          prompt={trialPrompt}
-          promptTypeLabel={
-            trialPrompt.promptType === 'MODULARIZE'
-              ? TYPE_LABEL.MODULARIZE
-              : TYPE_LABEL.DOCUMENT_GENERATION
-          }
-          onClose={() => setTrialOpen(false)}
         />
       )}
     </>

@@ -1,13 +1,16 @@
 package com.company.codeinsight.modules.entrypoint.service;
 
 import com.company.codeinsight.modules.entrypoint.model.DiscoveredEntrypoint;
+import com.company.codeinsight.modules.entrypoint.model.EntrypointMethodView;
 import com.company.codeinsight.modules.entrypoint.model.EntrypointReviewView;
 import com.company.codeinsight.modules.entrypoint.model.EntryPoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
+import com.company.codeinsight.modules.entrypoint.model.ExcludeTarget;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 
 import java.io.File;
 import java.util.List;
+import java.util.Map;
 
 /**
  * 知识入口复核服务
@@ -42,8 +45,16 @@ public interface EntrypointReviewService {
     List<EntryPoint> loadEnabledEntries(Long taskId);
 
     /**
-     * 解析 EntryPointConfig：任务级空时回退到仓库级，再 null 走默认 Controller/JOB/MQ 兜底。
-     * <p>与 {@code ModuleHierarchyServiceImpl.buildAndPersist} 原有解析逻辑保持一致。</p>
+     * 读取任务创建时落库的入口扫描快照（{@code ci_task.entry_scan_config}）。
+     * 运行时不再 merge 仓库配置；快照为空时回退平台默认预置。
      */
     EntryPointConfig resolveConfig(DecompileTask task);
+
+    /**
+     * 入口复核确认时：将复核页追加的指定排除写入任务配置，并同步过滤 ci_entrypoint 落表数据。
+     */
+    void applyReviewExcludes(Long taskId, List<ExcludeTarget> additionalExcludes);
+
+    /** 按入口类全限定名索引已落表的方法列表（供模块层级 method_signatures 兜底） */
+    Map<String, List<EntrypointMethodView>> loadMethodsByClassName(Long taskId);
 }

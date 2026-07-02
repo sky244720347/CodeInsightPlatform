@@ -20,9 +20,9 @@ public interface ModuleHierarchyNodeMapper extends BaseMapper<ModuleHierarchyNod
      * 替代逐条 insert + 回表 SELECT，将两级 DB 往返合并为一次。
      */
     @Insert("<script>" +
-            "INSERT INTO ci_module_hierarchy (task_id, system_id, level, parent_id, node_id, name, keywords, class_paths, method_signatures, created_at) VALUES " +
+            "INSERT INTO ci_module_hierarchy (task_id, system_id, level, parent_id, node_id, name, keywords, class_paths, method_signatures, confirmed, created_at, updated_at) VALUES " +
             "<foreach collection='list' item='item' separator=','>" +
-            "(#{item.taskId}, #{item.systemId}, #{item.level}, #{item.parentId}, #{item.nodeId}, #{item.name}, #{item.keywords}, #{item.classPaths}, #{item.methodSignatures}, #{item.createdAt})" +
+            "(#{item.taskId}, #{item.systemId}, #{item.level}, #{item.parentId}, #{item.nodeId}, #{item.name}, #{item.keywords}, #{item.classPaths}, #{item.methodSignatures}, #{item.confirmed}, #{item.createdAt}, #{item.updatedAt})" +
             "</foreach>" +
             "</script>")
     @Options(useGeneratedKeys = true, keyProperty = "id")

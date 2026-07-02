@@ -253,7 +253,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             }
         }
         task.setModelName(modelName);
-        task.setEntryScanConfig(com.company.codeinsight.modules.entrypoint.model.EntryPointConfigCodec.encode(entryScanConfig));
+        task.setEntryScanConfig(buildTaskEntryScanSnapshot(repositoryId, entryScanConfig));
         // 默认开启模块层级调试断点，调用方显式传 false 才跳过
         task.setRequireHierarchyReview(requireHierarchyReview == null ? Boolean.TRUE : requireHierarchyReview);
         // 默认开启知识入口复核断点，调用方显式传 false 才跳过
@@ -311,7 +311,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             }
         }
         task.setModelName(modelName);
-        task.setEntryScanConfig(com.company.codeinsight.modules.entrypoint.model.EntryPointConfigCodec.encode(entryScanConfig));
+        task.setEntryScanConfig(buildTaskEntryScanSnapshot(repositoryId, entryScanConfig));
         task.setRequireHierarchyReview(requireHierarchyReview == null ? Boolean.TRUE : requireHierarchyReview);
         task.setRequireEntrypointReview(requireEntrypointReview == null ? Boolean.TRUE : requireEntrypointReview);
 
@@ -425,7 +425,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     }
 
     /**
-     * 数据源合规性拦截校验：要求系统处于 ACTIVE 状态
+     * 数据源合规性拦截校验：系统与代码库必须存在且归属关系正确。
+     * <p>系统启停状态机已删除，不再校验 ACTIVE。</p>
      */
     private void validateTaskSource(Long systemId, Long repositoryId) {
         if (systemId == null || repositoryId == null) {
@@ -435,12 +436,6 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         SystemApplication system = systemApplicationService.getById(systemId);
         if (system == null) {
             throw new BusinessException("所选系统不存在");
-        }
-        // 状态机校验：仅 ACTIVE 可创建任务
-        com.company.codeinsight.modules.system.enums.SystemState state =
-                com.company.codeinsight.modules.system.enums.SystemState.parse(system.getState());
-        if (!state.isEnabled()) {
-            throw new BusinessException("系统未启用，当前状态：" + state + "，请先完成配置并启用");
         }
 
         CodeRepository repository = codeRepositoryService.getById(repositoryId);
@@ -516,6 +511,22 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         taskCache.put(task.getId(), task);
         // DRAFT → PENDING（TaskQueueDispatcher 在下个 tick 拉起）
         stateMachineService.transitTo(task, TaskStatus.PENDING, null);
+    }
+
+    /**
+     * 构建任务入口扫描快照：默认全量复制仓库配置（含 excludeTargets），请求体字段整段覆写。
+     */
+    private String buildTaskEntryScanSnapshot(Long repositoryId,
+            com.company.codeinsight.modules.entrypoint.model.EntryPointConfig taskOverride) {
+        com.company.codeinsight.modules.repository.entity.CodeRepository repo =
+                codeRepositoryService.getById(repositoryId);
+        com.company.codeinsight.modules.entrypoint.model.EntryPointConfig repoCfg =
+                com.company.codeinsight.modules.entrypoint.model.EntryPointConfigCodec.decode(
+                        repo != null ? repo.getEntryScanConfig() : null);
+        com.company.codeinsight.modules.entrypoint.model.EntryPointConfig snapshot =
+                com.company.codeinsight.modules.entrypoint.model.EntryPointConfig.buildTaskSnapshot(
+                        repoCfg, taskOverride);
+        return com.company.codeinsight.modules.entrypoint.model.EntryPointConfigCodec.encode(snapshot);
     }
 
     /**
@@ -629,6 +640,12 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
      */
     @Override
     public void resumeAfterEntrypointReview(Long id) {
+        resumeAfterEntrypointReview(id, null);
+    }
+
+    @Override
+    public void resumeAfterEntrypointReview(Long id,
+            java.util.List<com.company.codeinsight.modules.entrypoint.model.ExcludeTarget> additionalExcludes) {
         DecompileTask task = this.getById(id);
         if (task == null) {
             throw new BusinessException("任务不存在");
@@ -637,20 +654,25 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         if (current != TaskStatus.ENTRYPOINT_REVIEW) {
             throw new BusinessException("仅在知识入口复核状态下可恢复，当前状态: " + current);
         }
+        if (additionalExcludes != null && !additionalExcludes.isEmpty()) {
+            entrypointReviewService.applyReviewExcludes(id, additionalExcludes);
+            task = this.getById(id);
+        }
         assertTaskAffinity(task);
 
         taskCache.put(task.getId(), task);
+        final DecompileTask taskRef = task;
         CompletableFuture.runAsync(() -> {
             try {
                 PipelineContext pctx = pipelineContextCache.get(id);
                 if (pctx == null) {
-                    pctx = rebuildPipelineContext(task);
+                    pctx = rebuildPipelineContext(taskRef);
                     if (pctx == null) {
                         throw new BusinessException("流水线上下文丢失（projectDir / IncrementalContext），请重试任务");
                     }
                     execLog.log(id, "  pipelineContext 已从 temp_repos 重建（内存缓存失效，如后端重启）");
                 }
-                continueAfterEntrypointReview(id, task, pctx.projectDir(), pctx.ctx());
+                continueAfterEntrypointReview(id, taskRef, pctx.projectDir(), pctx.ctx());
             } catch (Exception e) {
                 log.error("Resume after entrypoint review failed for task " + id, e);
                 try {
@@ -775,6 +797,68 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     }
 
     /**
+     * 知识纠错任务：跳过拉取/AST/入口识别等前置阶段，从 resume_from 续跑。
+     */
+    public void runRemediationPipeline(Long taskId) {
+        DecompileTask task4SysId = taskCache.get(taskId);
+        Long systemId = (task4SysId != null) ? task4SysId.getSystemId()
+                : (this.getById(taskId) != null ? this.getById(taskId).getSystemId() : null);
+        CompletableFuture.runAsync(() -> {
+            try {
+                execLog.truncate(taskId);
+                execLog.log(taskId, "══════ 知识纠错流水线 taskId=" + taskId + " ══════");
+                DecompileTask task = this.getById(taskId);
+                if (task == null) {
+                    throw new BusinessException("任务不存在");
+                }
+                assertTaskAffinity(task);
+                PipelineContext pctx = rebuildPipelineContext(task);
+                if (pctx == null) {
+                    throw new BusinessException("纠错任务工作区不可用，请确认来源任务目录仍存在");
+                }
+                pipelineContextCache.put(taskId, pctx);
+                String resume = task.getResumeFrom();
+                if (com.company.codeinsight.modules.knowledge.remediation.KnowledgeRemediationConstants.RESUME_AI_ANALYZING
+                        .equals(resume)) {
+                    execLog.log(taskId, ">>> 纠错续跑 — 从 AI_ANALYZING / MODULE_HIERARCHY 开始（复用已克隆入口与 AST）");
+                    continueAfterEntrypointReview(taskId, task, pctx.projectDir(), pctx.ctx());
+                } else if (com.company.codeinsight.modules.knowledge.remediation.KnowledgeRemediationConstants.RESUME_GENERATING_DOC
+                        .equals(resume)) {
+                    execLog.log(taskId, ">>> 纠错续跑 — 从 GENERATING_DOC 开始");
+                    continueGeneratingDocRemediation(taskId, task, pctx.projectDir(), pctx.ctx());
+                } else {
+                    throw new BusinessException("未知纠错续跑起点: " + resume);
+                }
+            } catch (Exception e) {
+                execLog.log(taskId, "!!! 纠错流水线异常: " + e.getMessage());
+                try {
+                    stateMachineService.transitTo(taskId, TaskStatus.FAILED, e.getMessage());
+                } catch (Exception ex) {
+                    log.error("Failed to transit failed status", ex);
+                }
+            } finally {
+                taskCache.remove(taskId);
+                pipelineContextCache.remove(taskId);
+                if (systemId != null) {
+                    taskConcurrencyLimiter.release(systemId, taskId);
+                }
+            }
+        });
+    }
+
+    private void continueGeneratingDocRemediation(Long taskId, DecompileTask task, File projectDir,
+            com.company.codeinsight.modules.scanner.model.IncrementalContext incrementalCtx) {
+        stateMachineService.transitTo(taskId, TaskStatus.GENERATING_DOC, null);
+        List<CodeChunk> chunks = codeChunkService.getChunksByTaskId(taskId);
+        aiSummaryService.generateDraftDocument(taskId, chunks,
+                decompilePromptService.requireTaskPromptContent(task,
+                        com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
+                incrementalCtx);
+        stateMachineService.transitTo(taskId, TaskStatus.PENDING_REVIEW, null);
+        execLog.log(taskId, "<<< 纠错流水线完成 → PENDING_REVIEW");
+    }
+
+    /**
      * 异步流水线核心控制器
      * 将代码扫描、切片、AI分析和归纳归整串联在一起的无阻塞后台流水线。
      */
@@ -788,6 +872,14 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             long t0 = System.currentTimeMillis();
             boolean pausedForEntrypointReview = false;
             try {
+                DecompileTask taskEarly = this.getById(taskId);
+                if (taskEarly != null
+                        && com.company.codeinsight.modules.knowledge.remediation.KnowledgeRemediationConstants.TRIGGER_SOURCE
+                        .equals(taskEarly.getTriggerSource())) {
+                    runRemediationPipeline(taskId);
+                    return;
+                }
+
                 execLog.truncate(taskId);
                 execLog.log(taskId, "══════ 流水线启动 taskId=" + taskId + " ══════");
 

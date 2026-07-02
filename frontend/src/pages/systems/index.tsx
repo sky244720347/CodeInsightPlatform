@@ -2,23 +2,23 @@ import React, { useCallback, useEffect, useState } from 'react';
 import { Card, Form, Space, Table, message } from 'antd';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
-  changeSystemState,
   deleteSystem,
   updateSystem,
 } from '../../api/system';
 import {
   createRepository,
   deleteRepository,
+  getRepository,
   testRepositoryConnection,
   updateRepository,
 } from '../../api/repository';
-import type { Repository, System, SystemState } from '../../types';
+import type { Repository, System } from '../../types';
 import { getSystemColumns } from './columns';
 import SystemFilterBar from './SystemFilterBar';
 import SystemFormModal, { type SystemFormValues } from './SystemFormModal';
 import SystemWizardModal from './SystemWizardModal';
 import SystemPromptBindModal from './SystemPromptBindModal';
-import SystemStatusTag from '../../components/SystemStatusTag';
+import SystemBusinessKnowledgeModal from './SystemBusinessKnowledgeModal';
 import RepositoryDrawer from './RepositoryDrawer';
 import RepositoryFormModal, { type RepositoryFormValues } from './RepositoryFormModal';
 import RepositoryScanConfigModal, { type ScanConfigFormValues } from './RepositoryScanConfigModal';
@@ -27,13 +27,15 @@ import { parseRepoEntryScanConfig } from './repositoryUtils';
 import { useRepositories, useSystemsList } from './hooks';
 
 /**
- * 系统与代码库管理主页面（4 步向导重构版）
+ * 系统与代码库管理主页面
  *
  *  关注点拆分：
  *   - 数据获取   → hooks.ts (useSystemsList / useRepositories)
- *   - 视觉组件   → SystemFilterBar / SystemWizardModal / RepositoryDrawer / SystemStatusTag
+ *   - 视觉组件   → SystemFilterBar / SystemWizardModal / RepositoryDrawer
  *   - 列定义     → columns.tsx
  *   - 本文件     → 编排：handlers + 弹窗状态 + 渲染
+ *
+ *  <p>系统级启停状态机已删除：表头无"状态"列、行内无"启停"Switch。</p>
  */
 const Systems: React.FC = () => {
   const navigate = useNavigate();
@@ -85,21 +87,7 @@ const Systems: React.FC = () => {
     }
   }, [editForm, editingSystem, list]);
 
-  // ===== 启停切换 =====
-  const handleStatusToggle = useCallback(
-    async (nextActive: boolean, record: System) => {
-      try {
-        const target: SystemState = nextActive ? 'ACTIVE' : 'DISABLED';
-        await changeSystemState(record.id, target);
-        message.success(`${record.name} 已${nextActive ? '启用' : '停用'}`);
-        list.fetch();
-      } catch (err) {
-        // 拦截器已提示
-        console.error(err);
-      }
-    },
-    [list],
-  );
+  // ===== 启停切换（已删除：系统级状态机下线）=====
 
   // ===== 删除系统 =====
   const handleDeleteSystem = useCallback(
@@ -133,21 +121,57 @@ const Systems: React.FC = () => {
     setPromptBindOpen(true);
   }, []);
 
-  // 从任务下发等页面深链打开提示词绑定弹窗：/systems?systemId=1&action=prompts
+  // ===== 业务知识配置弹窗 =====
+  const [bizOpen, setBizOpen] = useState(false);
+  const [bizSystem, setBizSystem] = useState<System | null>(null);
+  const openBusinessKnowledge = useCallback((system: System) => {
+    setBizSystem(system);
+    setBizOpen(true);
+  }, []);
+  const closeBusinessKnowledge = useCallback(() => {
+    setBizOpen(false);
+    setBizSystem(null);
+  }, []);
+
+  // 从任务下发等页面深链打开提示词绑定弹窗：
+  //   /systems?systemId=1&repositoryId=2&action=prompts  → 直接打开指定仓库的提示词弹窗
+  //   /systems?systemId=1&action=prompts                  → 兼容旧链接：只打开系统详情抽屉
   useEffect(() => {
     const action = searchParams.get('action');
     const sysId = Number(searchParams.get('systemId'));
+    const repoId = Number(searchParams.get('repositoryId'));
     if (action !== 'prompts' || !Number.isFinite(sysId) || sysId <= 0 || systems.length === 0) {
       return;
     }
     const system = systems.find((s) => s.id === sysId);
     if (!system) return;
-    openPromptBind(system);
-    const next = new URLSearchParams(searchParams);
-    next.delete('systemId');
-    next.delete('action');
-    setSearchParams(next, { replace: true });
-  }, [openPromptBind, searchParams, setSearchParams, systems]);
+    const clearParams = () => {
+      const next = new URLSearchParams(searchParams);
+      next.delete('systemId');
+      next.delete('repositoryId');
+      next.delete('action');
+      setSearchParams(next, { replace: true });
+    };
+    if (Number.isFinite(repoId) && repoId > 0) {
+      // 有 repositoryId:先取仓库,再打开绑定弹窗(带上正确的 repository 上下文)
+      setSelectedSystem(system);
+      getRepository(repoId)
+        .then((repo) => {
+          setSelectedRepo(repo);
+          setPromptBindOpen(true);
+          clearParams();
+        })
+        .catch(() => {
+          // 取仓库失败:回退到抽屉
+          openDetailDrawer(system);
+          clearParams();
+        });
+    } else {
+      // 兼容旧链接:没传 repositoryId,只打开抽屉让用户自选
+      openDetailDrawer(system);
+      clearParams();
+    }
+  }, [openDetailDrawer, searchParams, setSearchParams, systems]);
 
   // ===== 仓库删除 =====
   const handleDeleteRepository = useCallback(
@@ -179,6 +203,20 @@ const Systems: React.FC = () => {
   const [repoTesting, setRepoTesting] = useState(false);
   const [repoSubmitting, setRepoSubmitting] = useState(false);
   const [repoForm] = Form.useForm<RepositoryFormValues>();
+
+  const [scanModalOpen, setScanModalOpen] = useState(false);
+  const [scanConfigRepo, setScanConfigRepo] = useState<Repository | null>(null);
+  const [scanSubmitting, setScanSubmitting] = useState(false);
+  const [scanForm] = Form.useForm<ScanConfigFormValues>();
+
+  const openScanConfig = useCallback(
+    (repo: Repository) => {
+      setScanConfigRepo(repo);
+      scanForm.setFieldsValue({ entryScanConfig: parseRepoEntryScanConfig(repo) });
+      setScanModalOpen(true);
+    },
+    [scanForm],
+  );
 
   const openAddRepo = useCallback(() => {
     if (!selectedSystem) return;
@@ -213,12 +251,15 @@ const Systems: React.FC = () => {
       if (editingRepo) {
         await updateRepository(editingRepo.id, { id: editingRepo.id, ...values });
         message.success('代码库已更新');
+        setRepoModalOpen(false);
+        setEditingRepo(null);
       } else {
-        await createRepository({ systemId: selectedSystem.id, ...values });
-        message.success('代码库已添加');
+        const repo = await createRepository({ systemId: selectedSystem.id, ...values });
+        message.success('代码库已添加，请配置入口扫描规则');
+        setRepoModalOpen(false);
+        setEditingRepo(null);
+        openScanConfig(repo);
       }
-      setRepoModalOpen(false);
-      setEditingRepo(null);
       repoHook.refresh(selectedSystem.id);
       list.fetch();
     } catch (err) {
@@ -227,7 +268,7 @@ const Systems: React.FC = () => {
     } finally {
       setRepoSubmitting(false);
     }
-  }, [editingRepo, list, repoForm, repoHook, selectedSystem]);
+  }, [editingRepo, list, openScanConfig, repoForm, repoHook, selectedSystem]);
 
   const handleRepoTest = useCallback(async () => {
     try {
@@ -246,21 +287,8 @@ const Systems: React.FC = () => {
   }, [editingRepo, repoForm]);
 
   // ===== 代码库入口扫描规则 =====
-  const [scanModalOpen, setScanModalOpen] = useState(false);
-  const [scanConfigRepo, setScanConfigRepo] = useState<Repository | null>(null);
   const [scanWindowOpen, setScanWindowOpen] = useState(false);
   const [scanWindowRepo, setScanWindowRepo] = useState<Repository | null>(null);
-  const [scanSubmitting, setScanSubmitting] = useState(false);
-  const [scanForm] = Form.useForm<ScanConfigFormValues>();
-
-  const openScanConfig = useCallback(
-    (repo: Repository) => {
-      setScanConfigRepo(repo);
-      scanForm.setFieldsValue({ entryScanConfig: parseRepoEntryScanConfig(repo) });
-      setScanModalOpen(true);
-    },
-    [scanForm],
-  );
 
   const handleScanConfigSubmit = useCallback(async () => {
     if (!scanConfigRepo || !selectedSystem) return;
@@ -290,9 +318,9 @@ const Systems: React.FC = () => {
   const systemColumns = getSystemColumns({
     onEdit: handleEdit,
     onEditPrompts: openPromptBind,
+    onEditBusinessKnowledge: openBusinessKnowledge,
     onOpenDetail: openDetailDrawer,
     onDelete: handleDeleteSystem,
-    onStatusToggle: handleStatusToggle,
   });
 
   return (
@@ -316,12 +344,6 @@ const Systems: React.FC = () => {
         title={
           <Space>
             <span>系统列表</span>
-            <SystemStatusTag state="DRAFT" />
-            <SystemStatusTag state="REPO_CONFIGURED" />
-            <SystemStatusTag state="SCAN_CONFIGURED" />
-            <SystemStatusTag state="PROMPT_CONFIGURED" />
-            <SystemStatusTag state="ACTIVE" />
-            <SystemStatusTag state="DISABLED" />
           </Space>
         }
       >
@@ -351,6 +373,7 @@ const Systems: React.FC = () => {
           setWizardOpen(false);
           list.fetch();
         }}
+        onPartialSave={() => list.fetch()}
       />
 
       <SystemFormModal
@@ -386,8 +409,18 @@ const Systems: React.FC = () => {
           setPromptBindOpen(false);
           setSelectedSystem(null);
         }}
-        onSaved={() => {
-          list.fetch();
+        onSaved={async () => {
+          await list.fetch();
+          if (selectedRepo?.id) {
+            try {
+              const updated = await getRepository(selectedRepo.id);
+              setSelectedRepo(updated);
+            } catch { /* ignore */ }
+          }
+          // 顺便刷新仓库列表（抽屉里仓库行内显示的提示词绑定 ID 已变化）
+          if (selectedSystem?.id) {
+            await repoHook.refresh(selectedSystem.id);
+          }
         }}
       />
 
@@ -425,6 +458,12 @@ const Systems: React.FC = () => {
           onClose={() => { setScanWindowOpen(false); setScanWindowRepo(null); }}
         />
       )}
+
+      <SystemBusinessKnowledgeModal
+        open={bizOpen}
+        system={bizSystem}
+        onClose={closeBusinessKnowledge}
+      />
     </div>
   );
 };

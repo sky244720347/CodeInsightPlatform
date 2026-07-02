@@ -30,6 +30,6 @@ public interface KnowledgeService {
     /**
      * 分页条件查询知识发布版本列表
      */
-    Page<KnowledgeVersion> listVersionsPage(int current, int size, Long systemId);
+    Page<KnowledgeVersion> listVersionsPage(int current, int size, Long systemId, Long repositoryId);
 }
 

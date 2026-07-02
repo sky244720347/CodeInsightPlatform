@@ -59,5 +59,6 @@ code-insight:
       poll-interval-ms: ${PUSH_SCHEDULER_INTERVAL:2000}
     git:
       commit-prefix: "${PUSH_GIT_COMMIT_PREFIX:docs: add code-insight knowledge}"
+    default-method: ${PUSH_DEFAULT_METHOD:NAS}
     s3:
       enabled: ${PUSH_S3_ENABLED:false}

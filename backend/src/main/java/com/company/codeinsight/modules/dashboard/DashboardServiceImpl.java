@@ -241,8 +241,7 @@ public class DashboardServiceImpl implements DashboardService {
     public List<Map<String, Object>> getSystemCoverage() {
         List<SystemApplication> systems = systemMapper.selectList(
                 new LambdaQueryWrapper<SystemApplication>()
-                        .eq(SystemApplication::getStatus, 1)
-                        .or(w -> w.isNull(SystemApplication::getDeletedAt))
+                        .isNull(SystemApplication::getDeletedAt)
         );
         if (systems.isEmpty()) return Collections.emptyList();
 

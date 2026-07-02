@@ -1,7 +1,6 @@
-import { Button, Popconfirm, Space, Switch, Tag, Tooltip, Typography } from 'antd';
-import { DeleteOutlined, EditOutlined,  SettingOutlined } from '@ant-design/icons';
-import type { System, SystemState } from '../../types';
-import SystemStatusTag from '../../components/SystemStatusTag';
+import { Button, Popconfirm, Space, Tag, Typography } from 'antd';
+import { BookOutlined, DeleteOutlined, EditOutlined, SettingOutlined } from '@ant-design/icons';
+import type { System } from '../../types';
 
 const { Text } = Typography;
 
@@ -10,32 +9,17 @@ export interface SystemColumnHandlers {
   onEdit: (system: System) => void;
   onOpenDetail: (system: System) => void;
   onDelete: (system: System) => void;
-  /** 启用 / 停用：state 在 PROMPT_CONFIGURED / ACTIVE / DISABLED 之间切换 */
-  onStatusToggle: (nextActive: boolean, system: System) => void;
   /** 修改系统提示词绑定 */
   onEditPrompts: (system: System) => void;
+  /** 维护系统业务知识（喂给 {business_knowledge.md} 占位符） */
+  onEditBusinessKnowledge: (system: System) => void;
 }
-
-/**
- * 状态 → 是否能切换启用/停用：仅 PROMPT_CONFIGURED / ACTIVE / DISABLED 可手动切
- */
-function canToggleState(state?: SystemState): boolean {
-  return (
-    state === 'PROMPT_CONFIGURED' ||
-    state === 'ACTIVE' ||
-    state === 'DISABLED'
-  );
-}
-
-const NEXT_ACTIVE_STATE: Record<string, 'ACTIVE' | 'DISABLED'> = {
-  PROMPT_CONFIGURED: 'ACTIVE',
-  ACTIVE: 'DISABLED',
-  DISABLED: 'ACTIVE',
-};
 
 /**
  * 系统主表列定义工厂
  * 把 handlers 注入后返回 columns 数组（避免在组件里写大段 render）
+ *
+ * <p>系统级启停状态机已删除：不再有"状态"列与"启停"列。</p>
  */
 export const getSystemColumns = (handlers: SystemColumnHandlers) => [
   {
@@ -65,13 +49,6 @@ export const getSystemColumns = (handlers: SystemColumnHandlers) => [
     render: (owner: string) => <Tag color="blue">{owner || '未分配'}</Tag>,
   },
   {
-    title: '状态',
-    dataIndex: 'state',
-    key: 'state',
-    width: 130,
-    render: (state: SystemState | undefined) => <SystemStatusTag state={state} />,
-  },
-  {
     title: '代码库数',
     dataIndex: 'repositoryCount',
     key: 'repositoryCount',
@@ -96,33 +73,6 @@ export const getSystemColumns = (handlers: SystemColumnHandlers) => [
       time ? new Date(time).toLocaleString() : <Text type="secondary">未扫描</Text>,
   },
   {
-    title: '启停',
-    key: 'toggle',
-    width: 110,
-    render: (_: unknown, record: System) => {
-      const state = record.state;
-      const enabled = state === 'ACTIVE';
-      const toggleable = canToggleState(state);
-      const nextActive = !enabled;
-      const tip = !toggleable
-        ? '请先完成基本信息 / 仓库 / 入口扫描 / 提示词 4 步配置'
-        : enabled
-          ? '点击停用'
-          : `点击启用（目标态：${NEXT_ACTIVE_STATE[state as string] || 'ACTIVE'}）`;
-      return (
-        <Tooltip title={tip}>
-          <Switch
-            checkedChildren="启用"
-            unCheckedChildren="停用"
-            checked={enabled}
-            disabled={!toggleable}
-            onChange={() => handlers.onStatusToggle(nextActive, record)}
-          />
-        </Tooltip>
-      );
-    },
-  },
-  {
     title: '创建时间',
     dataIndex: 'createdAt',
     key: 'createdAt',
@@ -132,7 +82,7 @@ export const getSystemColumns = (handlers: SystemColumnHandlers) => [
   {
     title: '操作',
     key: 'action',
-    width: 240,
+    width: 280,
     fixed: 'right' as const,
     render: (_: unknown, record: System) => (
       <Space size={6} wrap>
@@ -145,6 +95,13 @@ export const getSystemColumns = (handlers: SystemColumnHandlers) => [
           onClick={() => handlers.onOpenDetail(record)}
         >
           仓库
+        </Button>
+        <Button
+          size="small"
+          icon={<BookOutlined />}
+          onClick={() => handlers.onEditBusinessKnowledge(record)}
+        >
+          业务知识
         </Button>
         <Popconfirm
           title={`删除系统【${record.name}】？`}
