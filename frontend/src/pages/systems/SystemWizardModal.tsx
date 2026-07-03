@@ -28,13 +28,14 @@ import {
   updateRepository,
   testRepositoryConnection,
 } from '../../api/repository';
-import { listPrompts } from '../../api/prompt';
+import { listPrompts, testRunPrompt } from '../../api/prompt';
 import type { Repository, System, EntryScanConfig, Prompt } from '../../types';
 import EntryScanConfigEditor from '../../components/EntryScanConfigEditor';
+import PromptTrialModal from '../../components/PromptTrialModal';
 import RepositoryScanConfigModal from './RepositoryScanConfigModal';
 import { buildScanConfigWithDefaults } from '../../utils/scanConfigDefaults';
 import SystemPromptEditorModal from './SystemPromptEditorModal';
-import SystemPromptTrialModal from './SystemPromptTrialModal';
+import { applyPromptCreated } from './promptSelect';
 
 const { Text, Paragraph } = Typography;
 
@@ -276,19 +277,47 @@ const SystemWizardModal: React.FC<Props> = ({
     setTrialPrompt(p);
     setTrialOpen(true);
   };
+  /** 试跑回调：通用 PromptTrialModal 自管 state，本函数只负责发请求并返回结果。 */
+  const handleTrialRun = async (params: {
+    sampleCode: string;
+    variables: Record<string, string>;
+    resolvedContent: string;
+  }) => {
+    if (!trialPrompt) {
+      return {
+        inputTokens: 0,
+        outputTokens: 0,
+        durationMs: 0,
+        result: '',
+        errorReason: '未选择提示词',
+      };
+    }
+    try {
+      return await testRunPrompt(
+        trialPrompt.id,
+        params.sampleCode,
+        undefined,
+        params.resolvedContent,
+      );
+    } catch (e) {
+      return {
+        inputTokens: 0,
+        outputTokens: 0,
+        durationMs: 0,
+        result: '',
+        errorReason: e instanceof Error ? e.message : '试跑请求失败',
+      };
+    }
+  };
   /** 提示词创建成功 → 仅 stage 到 pending + 推入本地列表,不调后端绑定 */
   const handlePromptCreated = (p: Prompt) => {
-    // 把新 prompt 合并到本地列表(下拉框立即可见)
-    setPrompts((prev) => {
-      if (prev.some((x) => x.id === p.id)) return prev;
-      return [...prev, p];
+    applyPromptCreated(p, {
+      setPrompts,
+      setPendingModularizeId,
+      setPendingDocumentId,
+      form: promptForm,
+      promptType: p.promptType as 'MODULARIZE' | 'DOCUMENT_GENERATION',
     });
-    // stage 到 pending,由底部「完成配置」统一提交
-    if (p.promptType === 'MODULARIZE') {
-      setPendingModularizeId(p.id);
-    } else {
-      setPendingDocumentId(p.id);
-    }
     message.success(`已创建自定义提示词:${p.name}（点击底部「完成配置」生效）`);
   };
 
@@ -592,6 +621,8 @@ const SystemWizardModal: React.FC<Props> = ({
                 {/* 用 Form.Item 包裹使字段被注册,validateFields 才能拿到值 */}
                 <Form.Item name="modularizePromptId" noStyle>
                   <Select
+                    /* key 跟随 pending 变化,新建自定义提示词后强制重渲染,避免 Ant Design Select 缓存的高亮遗漏 */
+                    key={`mod:${pendingModularizeId ?? 'x'}`}
                     showSearch
                     optionFilterProp="label"
                     placeholder="选择已有提示词"
@@ -646,6 +677,8 @@ const SystemWizardModal: React.FC<Props> = ({
                 {/* 用 Form.Item 包裹使字段被注册,validateFields 才能拿到值 */}
                 <Form.Item name="documentPromptId" noStyle>
                   <Select
+                    /* key 跟随 pending 变化,新建自定义提示词后强制重渲染 */
+                    key={`doc:${pendingDocumentId ?? 'x'}`}
                     showSearch
                     optionFilterProp="label"
                     placeholder="选择已有提示词"
@@ -748,7 +781,7 @@ const SystemWizardModal: React.FC<Props> = ({
 
       {/* 试跑子弹窗(对已绑定 prompt) */}
       {trialPrompt && (
-        <SystemPromptTrialModal
+        <PromptTrialModal
           open={trialOpen}
           prompt={trialPrompt}
           promptTypeLabel={
@@ -757,6 +790,7 @@ const SystemWizardModal: React.FC<Props> = ({
               : DEFAULT_PROMPTS.DOCUMENT_GENERATION.label
           }
           onClose={() => setTrialOpen(false)}
+          onRun={handleTrialRun}
         />
       )}
 

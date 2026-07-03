@@ -15,6 +15,7 @@ import { listPrompts, getPrompt, deletePrompt } from '../../api/prompt';
 import { listRepositories, updateRepository } from '../../api/repository';
 import type { Prompt, Repository, System } from '../../types';
 import SystemPromptEditorModal from './SystemPromptEditorModal';
+import { applyPromptCreated } from './promptSelect';
 
 const { Text } = Typography;
 
@@ -218,14 +219,12 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
 
   /** 自定义创建成功 → 仅把新 prompt 推到本地列表 + stage 到 pending,不调后端绑定 */
   const handlePromptCreated = (p: Prompt) => {
-    // 把新 prompt 合并到本地列表（下拉框立即可见）
-    setPrompts((prev) => (prev.some((x) => x.id === p.id) ? prev : [...prev, p]));
-    // stage 到 pending
-    if (p.promptType === 'MODULARIZE') {
-      setPendingModularizeId(p.id);
-    } else {
-      setPendingDocumentId(p.id);
-    }
+    applyPromptCreated(p, {
+      setPrompts,
+      setPendingModularizeId,
+      setPendingDocumentId,
+      promptType: p.promptType as 'MODULARIZE' | 'DOCUMENT_GENERATION',
+    });
     message.success(`已创建自定义提示词:${p.name}（点击底部「保存」生效）`);
   };
 
@@ -301,7 +300,9 @@ const SystemPromptBindModal: React.FC<Props> = ({ open, repository, onClose, onS
         }
         extra={
           <Space size={4} wrap>
+            {/* key 跟随当前 promptType + pending 选择变化,新建自定义提示词后强制 Select 重渲染以显示高亮 */}
             <Select
+              key={`${promptType}:${pendingModularizeId ?? 'x'}:${pendingDocumentId ?? 'x'}`}
               showSearch
               optionFilterProp="label"
               placeholder="选择已有提示词"
