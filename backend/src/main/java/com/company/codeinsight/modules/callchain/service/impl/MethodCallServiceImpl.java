@@ -196,6 +196,8 @@ public class MethodCallServiceImpl implements MethodCallService {
                 mc.setTargetSignature(src.getTargetSignature());
                 mc.setExpression(truncate(src.getExpression(), MAX_EXPR_LEN));
                 mc.setLineNumber(src.getLineNumber());
+                // Phase 3：多态候选集透传（候选解析阶段已经在 parser 模块做完）
+                mc.setDependencyCandidates(src.getDependencyCandidates());
                 mc.setCreatedAt(LocalDateTime.now());
                 buffer.add(mc);
                 counters[2]++;

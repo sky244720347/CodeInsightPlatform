@@ -6,9 +6,11 @@ import com.company.codeinsight.modules.parser.model.ParsedClassInfo.MethodInfo;
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo.SqlReference;
 import com.company.codeinsight.modules.parser.service.JavaParserService;
 import com.github.javaparser.ParseProblemException;
+import com.github.javaparser.ParserConfiguration;
 import com.github.javaparser.Range;
 import com.github.javaparser.StaticJavaParser;
 import com.github.javaparser.ast.CompilationUnit;
+import com.github.javaparser.ast.Modifier;
 import com.github.javaparser.ast.Node;
 import com.github.javaparser.ast.NodeList;
 import com.github.javaparser.ast.body.AnnotationDeclaration;
@@ -27,9 +29,18 @@ import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
+import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration;
+import com.github.javaparser.symbolsolver.JavaSymbolSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
+import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
 import org.springframework.util.StringUtils;
 
 import java.io.File;
+import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -38,6 +49,7 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import java.util.stream.Stream;
 
 /**
  * 基于真实语法树（AST）的 Java 静态解析实现（AST 引擎）。
@@ -93,6 +105,11 @@ public class AstJavaParserService implements JavaParserService {
             ParsedClassInfo info = new ParsedClassInfo();
             info.setType("UNKNOWN");
 
+            // 0. Phase 2/3：探测项目源根并装配 symbol solver（用于把声明类型升级为解析类型）+ subtype 索引
+            //    无项目标记（裸文件 / 单元测试时）返回 null，走现有"声明类型"路径
+            ProjectContext ctx = acquireProjectContext(file);
+            JavaSymbolSolver symbolSolver = ctx == null ? null : ctx.symbolSolver;
+
             // 1. 包名
             cu.getPackageDeclaration().ifPresent(p -> info.setPackageName(p.getNameAsString()));
 
@@ -102,7 +119,7 @@ public class AstJavaParserService implements JavaParserService {
             TypeDeclaration<?> td = pickTopLevelType(cu);
             if (td != null) {
                 if (td instanceof ClassOrInterfaceDeclaration) {
-                    fillFromClass((ClassOrInterfaceDeclaration) td, info);
+                    fillFromClass((ClassOrInterfaceDeclaration) td, info, ctx);
                 } else if (td instanceof EnumDeclaration) {
                     info.setClassName(td.getNameAsString());
                     info.setType("ENUM");
@@ -184,7 +201,9 @@ public class AstJavaParserService implements JavaParserService {
 
     // -------- 以下为 AST → ParsedClassInfo 的填充逻辑 --------
 
-    private void fillFromClass(ClassOrInterfaceDeclaration cid, ParsedClassInfo info) {
+    private void fillFromClass(ClassOrInterfaceDeclaration cid, ParsedClassInfo info,
+                               ProjectContext ctx) {
+        JavaSymbolSolver symbolSolver = ctx == null ? null : ctx.symbolSolver;
         info.setClassName(cid.getNameAsString());
 
         // extends / implements（取第一个）
@@ -264,16 +283,22 @@ public class AstJavaParserService implements JavaParserService {
             }
             // 在每个方法体内做调用链 + SQL 收集，存到 info 的暂存上下文
             // 用一个 inner state 暂存，由 fillMethodCalls / fillSqlReferences 完成遍历
-            attachMethodBody(md, mi, info, depVars);
+            attachMethodBody(md, mi, info, depVars, symbolSolver,
+                    ctx == null ? null : ctx.subtypeIndex);
             info.getMethods().add(mi);
         }
 
         // 收集工作已在此方法体内完成（attachMethodBody 内同时遍历调用链与 SQL 字面量）
     }
 
-    /** 抽出方法级 MethodCallExpr，caller = 当前方法名，target = 方法名，dependencyName = depVars[receiver] */
+    /** 抽出方法级 MethodCallExpr，caller = 当前方法名，target = 方法名，dependencyName = depVars[receiver]
+     *  Phase 2：当 symbolSolver 非空（项目源根已知）时，对 receiver 进一步做符号解析，把声明类型升级为解析后 FQ。
+     *  Phase 3：基于 subtypeIndex 给 depType 填上多态候选集（逗号分隔的 FQ 列表）。
+     */
     private void attachMethodBody(MethodDeclaration md, MethodInfo mi, ParsedClassInfo info,
-                                 Map<String, String> depVars) {
+                                 Map<String, String> depVars,
+                                 JavaSymbolSolver symbolSolver,
+                                 Map<String, List<String>> subtypeIndex) {
         if (md.getBody().isEmpty()) return;
         BlockStmt body = md.getBody().get();
         for (MethodCallExpr call : body.findAll(MethodCallExpr.class)) {
@@ -292,6 +317,13 @@ public class AstJavaParserService implements JavaParserService {
                 if (depVars.containsKey(scopeText)) {
                     receiver = scopeText;
                     depType = depVars.get(scopeText);
+                    // Phase 2：尝试把 depType 从"声明简单名"升级为"解析后的 FQ"
+                    String resolved = tryResolveReceiverType(scope, symbolSolver);
+                    if (resolved != null) {
+                        depType = resolved;
+                    }
+                    // Phase 3：把声明类型查表拿到该项目内的所有具体子类候选
+                    ci.setDependencyCandidates(findCandidatesForFqcn(depType, subtypeIndex));
                 }
             }
             ci.setDependencyName(depType == null ? "" : depType);
@@ -392,30 +424,23 @@ public class AstJavaParserService implements JavaParserService {
 
     // -------- 注解参数提取（@XxxMapping("/foo") 等） --------
 
+    /**
+     * 从一批同名前缀的注解中取首个字符串参数。
+     * JavaParser 3.x 把 {@code @XxxMapping("/foo")} 归类为 SingleMemberAnnotationExpr，
+     * 把 {@code @XxxMapping(value = "/foo")} 归类为 NormalAnnotationExpr——
+     * 不分两种子类，纯按 toString() 抓第一对引号即可覆盖两种形式。
+     * 这与 Regex 版的"取注解内首个双引号串"语义等价。
+     */
     private String extractMappingFromAnnotations(NodeList<AnnotationExpr> annotations, String name) {
         for (AnnotationExpr ann : annotations) {
             if (!name.equalsIgnoreCase(simpleName(ann.getNameAsString()))) continue;
-            // 单 value 形式 @XxxMapping("/foo")
-            if (ann.isNormalAnnotationExpr()) {
-                return extractSingleStringArg(ann.toString());
-            }
-            // @XxxMapping(value = "/foo") 或 @XxxMapping(path = "/foo")
             String text = ann.toString();
-            int eq = text.indexOf('=');
-            if (eq > 0) {
-                int q1 = text.indexOf('"', eq);
-                int q2 = text.indexOf('"', q1 + 1);
-                if (q1 > 0 && q2 > q1) return text.substring(q1 + 1, q2);
-            }
+            int p = text.indexOf('(');
+            if (p < 0) continue; // Marker 注释（无括号）一定没有路径
+            int q1 = text.indexOf('"', p);
+            int q2 = text.indexOf('"', q1 + 1);
+            if (q1 > 0 && q2 > q1) return text.substring(q1 + 1, q2);
         }
-        return null;
-    }
-
-    private String extractSingleStringArg(String annText) {
-        int p = annText.indexOf('(');
-        int q1 = annText.indexOf('"', p + 1);
-        int q2 = annText.indexOf('"', q1 + 1);
-        if (q1 > 0 && q2 > q1) return annText.substring(q1 + 1, q2);
         return null;
     }
 
@@ -560,5 +585,185 @@ public class AstJavaParserService implements JavaParserService {
                 // 原生小写（防御）
                 "int", "long", "boolean", "double", "float", "byte", "short", "char"
         ).contains(type);
+    }
+
+    // -------- Phase 2/3: Symbol Solver 装配与缓存 --------
+
+    /** 项目源根 → JavaSymbolSolver 缓存。源根以绝对路径为 key。 */
+    private static final ConcurrentHashMap<String, JavaSymbolSolver> SYMBOL_SOLVER_CACHE = new ConcurrentHashMap<>();
+
+    /** Phase 3：项目源根 → subtype 索引（parent FQ → [concrete impl FQ, ...]）。 */
+    private static final ConcurrentHashMap<String, Map<String, List<String>>> SUBTYPE_INDEX_CACHE = new ConcurrentHashMap<>();
+
+    /** 项目标记（用于源根探测）：.git / Maven pom / Gradle */
+    private static final List<String> PROJECT_MARKERS = List.of(
+            ".git", "pom.xml", "build.gradle", "build.gradle.kts", "settings.gradle", "settings.gradle.kts"
+    );
+
+    /** Phase 3 项目上下文：某个源根下的所有 Phase 2/3 信息 */
+    static final class ProjectContext {
+        final File sourceRoot;
+        final JavaSymbolSolver symbolSolver;
+        final Map<String, List<String>> subtypeIndex;
+        ProjectContext(File sourceRoot, JavaSymbolSolver symbolSolver, Map<String, List<String>> subtypeIndex) {
+            this.sourceRoot = sourceRoot;
+            this.symbolSolver = symbolSolver;
+            this.subtypeIndex = subtypeIndex;
+        }
+    }
+
+    /**
+     * 解析文件路径向上找项目源根。返回 null 表示裸文件（无法解析）。
+     *
+     * <p>严格策略：必须撞见 .git / pom.xml / build.gradle 等项目级标记才算"项目"。
+     * 没找到就返 null——避免对一个非项目目录（甚至 C:\）跑 Files.walk 时撞到系统保留目录
+     * （Windows 上的 $Recycle.Bin 等）抛 AccessDeniedException。</p>
+     */
+    private File discoverSourceRoot(File file) {
+        File current = file.getAbsoluteFile().getParentFile();
+        while (current != null) {
+            for (String marker : PROJECT_MARKERS) {
+                if (new File(current, marker).exists()) {
+                    return current;
+                }
+            }
+            current = current.getParentFile();
+        }
+        return null;
+    }
+
+    /**
+     * 获取（或创建）一个绑定到当前文件源根的 ProjectContext：含符号求解器 + subtype 索引。
+     * 源根不存在时返回 null，下游走"声明类型"路径，不抛异常。
+     */
+    private ProjectContext acquireProjectContext(File file) {
+        File root = discoverSourceRoot(file);
+        if (root == null) return null;
+        String key = root.getAbsolutePath();
+        // 用 SYMBOL_SOLVER_CACHE 作为统一入口，subtype 索引同步构建
+        JavaSymbolSolver symbolSolver = SYMBOL_SOLVER_CACHE.computeIfAbsent(key, k -> {
+            CombinedTypeSolver combined = new CombinedTypeSolver();
+            combined.add(new ReflectionTypeSolver());
+            JavaSymbolSolver ss = new JavaSymbolSolver(combined);
+            ParserConfiguration parserConfig = new ParserConfiguration().setSymbolResolver(ss);
+            JavaParserTypeSolver jpts = new JavaParserTypeSolver(root, parserConfig);
+            combined.add(jpts);
+            return ss;
+        });
+        // Phase 3 subtype 索引懒构建
+        Map<String, List<String>> subtypeIndex = SUBTYPE_INDEX_CACHE.computeIfAbsent(key, k -> {
+            // 取上面刚 build/取出的 solver 来跑 subtype 索引
+            JavaSymbolSolver ss = SYMBOL_SOLVER_CACHE.get(k);
+            return buildSubtypeIndex(root, ss);
+        });
+        return new ProjectContext(root, symbolSolver, subtypeIndex);
+    }
+
+    /**
+     * Phase 3：构建项目级 subtype 索引。
+     * 扫描 source root 下所有 .java 文件，记录每个具体（非接口、非抽象）类 → 它 extends/implements 的父类型 FQ。
+     * 反向索引：parent FQ → [concrete child FQ, ...]，用于把声明类型为接口的字段扩充成候选子类集。
+     *
+     * <p>复杂度 O(N)，N = 项目源文件数。10k 文件约几秒。索引按 source root 缓存，第二次调用走缓存。</p>
+     */
+    private Map<String, List<String>> buildSubtypeIndex(File root, JavaSymbolSolver symbolSolver) {
+        Map<String, List<String>> index = new ConcurrentHashMap<>();
+        Path rootPath = root.toPath();
+        try (Stream<Path> stream = Files.walk(rootPath)) {
+            stream
+                .filter(Files::isRegularFile)
+                .filter(p -> p.toString().endsWith(".java"))
+                // 跳过测试目录
+                .filter(p -> !p.toString().replace('\\', '/').contains("/test/"))
+                .filter(p -> !p.toString().replace('\\', '/').contains("/target/"))
+                .forEach(p -> indexOneFile(p, root, symbolSolver, index));
+        } catch (IOException ex) {
+            // 走读失败 → 返回空索引
+            return index;
+        }
+        return index;
+    }
+
+    /** 单文件 subtype 收集。错就跳过，不抛。 */
+    private void indexOneFile(Path p, File root, JavaSymbolSolver symbolSolver, Map<String, List<String>> index) {
+        try {
+            CompilationUnit cu = StaticJavaParser.parse(p.toFile());
+            String pkg = cu.getPackageDeclaration().map(d -> d.getNameAsString()).orElse("");
+            for (TypeDeclaration<?> td : cu.getTypes()) {
+                if (!(td instanceof ClassOrInterfaceDeclaration)) continue;
+                ClassOrInterfaceDeclaration cid = (ClassOrInterfaceDeclaration) td;
+                // 只索引"具象"类（非接口、非 abstract），避免返回抽象基类作为 caller 真正调用的对象
+                if (cid.isInterface()) continue;
+                if (cid.hasModifier(Modifier.Keyword.ABSTRACT)) continue;
+
+                String classFqcn = pkg.isEmpty() ? td.getNameAsString() : pkg + "." + td.getNameAsString();
+
+                for (ClassOrInterfaceType parent : cid.getExtendedTypes()) {
+                    String parentFqcn = resolveTypeFqcn(parent, pkg, symbolSolver);
+                    if (parentFqcn != null) {
+                        index.computeIfAbsent(parentFqcn, k -> new ArrayList<>()).add(classFqcn);
+                    }
+                }
+                for (ClassOrInterfaceType parent : cid.getImplementedTypes()) {
+                    String parentFqcn = resolveTypeFqcn(parent, pkg, symbolSolver);
+                    if (parentFqcn != null) {
+                        index.computeIfAbsent(parentFqcn, k -> new ArrayList<>()).add(classFqcn);
+                    }
+                }
+            }
+        } catch (Exception ex) {
+            // 单文件解析失败或符号解析失败，安静跳过
+        }
+    }
+
+    /**
+     * 解析 ClassOrInterfaceType 到 FQ 名。优先走 symbolSolver.toResolvedType()，
+     * 拿不到再退到包路径 + 简单名。
+     */
+    private String resolveTypeFqcn(ClassOrInterfaceType t, String contextPkg, JavaSymbolSolver symbolSolver) {
+        try {
+            ResolvedReferenceTypeDeclaration decl = symbolSolver.toResolvedType(t, ResolvedReferenceTypeDeclaration.class);
+            if (decl != null) {
+                String qn = decl.getQualifiedName();
+                if (StringUtils.hasText(qn) && qn.contains(".")) return qn;
+            }
+        } catch (Exception ignored) {
+            // 解析失败：fallback
+        }
+        String simple = t.getNameAsString();
+        if (!StringUtils.hasText(contextPkg)) return simple;
+        return contextPkg + "." + simple;
+    }
+
+    /**
+     * 给定声明类型 FQ，找出项目内所有候选子类（多态候选集），返回逗号分隔的 FQ 列表。
+     * 无候选 / 源根缺失 / depType 无值时返回 null。
+     */
+    private String findCandidatesForFqcn(String declaredFqcn, Map<String, List<String>> subtypeIndex) {
+        if (subtypeIndex == null || !StringUtils.hasText(declaredFqcn)) return null;
+        List<String> candidates = subtypeIndex.get(declaredFqcn);
+        if (candidates == null || candidates.isEmpty()) return null;
+        return String.join(",", candidates);
+    }
+
+    /**
+     * 尝试解析 receiver 表达式（一个 NameExpr / 字段引用）的类型，返回 FQ 名；解析失败返回 null。
+     * 设计原则：纯静默失败——solver 不胜任时就用声明类型，不抛错，避免打断流水线。
+     */
+    private String tryResolveReceiverType(Expression scope, JavaSymbolSolver symbolSolver) {
+        if (symbolSolver == null) return null;
+        try {
+            var resolved = symbolSolver.calculateType(scope);
+            if (resolved.isReferenceType()) {
+                String fqcn = resolved.asReferenceType().getQualifiedName();
+                if (StringUtils.hasText(fqcn) && fqcn.contains(".")) {
+                    return fqcn;
+                }
+            }
+            return null;
+        } catch (Exception ex) {
+            // 解不到（如 lambda 内部 / 复杂表达式 / 跨 JAR 类型），安静回退
+            return null;
+        }
     }
 }

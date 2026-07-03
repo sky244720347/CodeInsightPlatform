@@ -158,6 +158,12 @@ public class ParsedClassInfo {
          * 在源文件中的第几行
          */
         private Integer lineNumber;
+        /**
+         * Phase 3：声明类型的所有项目内具体候选子类 FQ（多态候选，逗号分隔）。
+         * 例如 "com.x.ServiceA,com.x.ServiceB"。
+         * 落到 ci_method_call.dependency_candidates，给 #9 反向 BFS 在多态调用下也能找到真实被改的入口。
+         */
+        private String dependencyCandidates;
     }
 
     /**

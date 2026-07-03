@@ -7,6 +7,7 @@ import com.company.codeinsight.common.util.AiResponseJsonExtractor;
 import com.company.codeinsight.common.util.Base62Generator;
 import com.company.codeinsight.common.util.PromptTemplateLoader;
 import com.company.codeinsight.modules.ai.service.AiSummaryService;
+import com.company.codeinsight.modules.ai.service.PipelineAiCaller;
 import com.company.codeinsight.modules.businessknowledge.service.BusinessKnowledgeService;
 import com.company.codeinsight.modules.entrypoint.model.EntryPoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
@@ -26,6 +27,7 @@ import com.company.codeinsight.modules.hierarchy.service.ModuleHierarchyService;
 import com.company.codeinsight.modules.scanner.model.IncrementalContext;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
+import com.company.codeinsight.modules.task.service.TaskExecutionLogger;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -95,6 +97,12 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     @Autowired
     @Lazy
     private AiSummaryService aiSummaryService;
+
+    @Autowired
+    private PipelineAiCaller pipelineAiCaller;
+
+    @Autowired
+    private TaskExecutionLogger execLog;
 
     @Autowired
     private PromptTemplateLoader promptTemplateLoader;
@@ -359,67 +367,66 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     // ============================ private helpers ============================
 
     /**
-     * 并行阶段：对单个入口渲染 prompt 并调 AI（含重试），返回解析后的 JSON 节点。
-     * 失败时内部已打日志，返回 null。
+     * 并行阶段：对单个入口渲染 prompt 并调 AI（含可配置重试），返回解析后的 JSON 节点。
+     * 失败时写入 pipeline.log 并返回 null。
      */
     private JsonNode callAiForEntry(DecompileTask task, EntryPoint entry,
                                     String promptTemplate, File projectDir,
                                     EntryPointConfig entryPointConfig) {
+        Long taskId = task.getId();
+        String entryLabel = entry.getClassName();
         try {
             String javaCode = entryPointDiscoveryService.readEntrySource(projectDir, entry, entryPointConfig);
             if (!StringUtils.hasText(javaCode)) {
-                log.warn("入口 {} 无可读源文件或命中排除规则，跳过", entry.getClassName());
+                log.warn("入口 {} 无可读源文件或命中排除规则，跳过", entryLabel);
+                execLog.log(taskId, "[AI-SKIP] stage=MODULE_HIERARCHY target=" + entryLabel + " reason=no readable source");
                 return null;
             }
 
-            // 业务知识按系统维度维护：task→systemId→库表查 Markdown 正文；
-            // 未配置时 getContentBySystemId 返回空串，PromptTemplateLoader 替换占位符为空，与历史兜底行为一致。
             String businessKnowledge = businessKnowledgeService.getContentBySystemId(task.getSystemId());
-            // 注意：并行阶段不传 hierarchy JSON——各入口无法看到其他入口的并发写入，
-            // AI 本身已通过 prompt 中的入口源码即可判定业务领域归属，缺失上下文不影响模块归属准确性
             String promptInput = promptTemplateLoader.render(promptTemplate, javaCode, businessKnowledge, "{}");
             if (promptTemplateLoader.hasUnresolvedPlaceholders(promptInput)) {
-                log.warn("Prompt 仍有未替换占位符，跳过入口 {}", entry.getClassName());
+                log.warn("Prompt 仍有未替换占位符，跳过入口 {}", entryLabel);
+                execLog.log(taskId, "[AI-SKIP] stage=MODULE_HIERARCHY target=" + entryLabel + " reason=unresolved prompt placeholders");
                 return null;
             }
 
             AiSummaryService.AiCallMeta meta = new AiSummaryService.AiCallMeta();
             meta.setCallStage("MODULE_HIERARCHY");
-            meta.setClassPath(entry.getClassName());
+            meta.setClassPath(entryLabel);
 
-            int maxAttempts = 2;
-            String currentPrompt = promptInput;
-            for (int attempt = 1; attempt <= maxAttempts; attempt++) {
-                String aiResponse = aiSummaryService.summarizeWithPrompt(task.getId(), currentPrompt, task.getModelName(), meta);
-                if (!StringUtils.hasText(aiResponse) || "{}".equals(aiResponse.trim())) {
-                    if (attempt < maxAttempts) {
-                        log.info("入口 {} AI 返回为空（第 {} 次），重试", entry.getClassName(), attempt);
-                        continue;
-                    }
-                    log.warn("入口 {} AI 经过 {} 次尝试仍未返回有效响应，跳过", entry.getClassName(), maxAttempts);
-                    return null;
-                }
+            String aiPayload = pipelineAiCaller.callWithRetry(
+                    taskId,
+                    "MODULE_HIERARCHY",
+                    entryLabel,
+                    promptInput,
+                    task.getModelName(),
+                    meta,
+                    response -> {
+                        if (!StringUtils.hasText(response) || "{}".equals(response.trim())) {
+                            return PipelineAiCaller.ValidationResult.fail("empty response");
+                        }
+                        try {
+                            String cleaned = AiResponseJsonExtractor.extractJsonPayload(response);
+                            objectMapper.readTree(cleaned);
+                            return PipelineAiCaller.ValidationResult.ok(cleaned);
+                        } catch (Exception e) {
+                            return PipelineAiCaller.ValidationResult.fail("JSON parse: " + e.getMessage());
+                        }
+                    },
+                    (original, current, failedAttempt, reason) -> original
+                            + "\n\n[系统提示] 上轮输出 JSON 解析失败：" + reason
+                            + "\n请确保输出是合法的 JSON 格式（用 ```json ... ``` 包裹），字段约束见上方模板。"
+            );
 
-                try {
-                    String cleaned = AiResponseJsonExtractor.extractJsonPayload(aiResponse);
-                    JsonNode inc = objectMapper.readTree(cleaned);
-                    return inc;
-                } catch (Exception e) {
-                    String errorMsg = e.getMessage();
-                    log.warn("入口 {} AI 响应 JSON 解析失败（第 {} 次）: {}", entry.getClassName(), attempt, errorMsg);
-                    if (attempt < maxAttempts) {
-                        currentPrompt = promptInput + "\n\n[系统提示] 上轮输出 JSON 解析失败：" + errorMsg
-                                + "\n请确保输出是合法的 JSON 格式（用 ```json ... ``` 包裹），字段约束见上方模板。";
-                    } else {
-                        log.warn("入口 {} AI 响应 JSON 解析已重试 {} 次仍失败，跳过。原始响应前 200 字符: {}",
-                                entry.getClassName(), maxAttempts,
-                                aiResponse.substring(0, Math.min(200, aiResponse.length())));
-                        return null;
-                    }
-                }
+            if (!StringUtils.hasText(aiPayload) || "{}".equals(aiPayload.trim())) {
+                return null;
             }
+            return objectMapper.readTree(aiPayload);
         } catch (Exception e) {
-            log.error("callAiForEntry failed for {}: {}", entry.getClassName(), e.getMessage(), e);
+            log.error("callAiForEntry failed for {}: {}", entryLabel, e.getMessage(), e);
+            execLog.log(taskId, "[AI-FAIL] stage=MODULE_HIERARCHY target=" + entryLabel
+                    + " reason=unexpected: " + e.getMessage());
         }
         return null;
     }

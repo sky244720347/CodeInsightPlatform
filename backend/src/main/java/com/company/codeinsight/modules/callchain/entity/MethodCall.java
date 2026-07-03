@@ -81,6 +81,14 @@ public class MethodCall {
     private String targetSignature;
 
     /**
+     * Phase 3：声明类型的所有项目内具体候选子类 FQ（多态候选，逗号分隔）。
+     * 与 dependency_name 配合使用，给 #9 反向 BFS 在多态调用下也能找到真实被改的入口。
+     * 留 null 表示没识别到候选（如依赖是 final 类、注解处理器注入、跨 JAR 类型等）。
+     */
+    @TableField("dependency_candidates")
+    private String dependencyCandidates;
+
+    /**
      * 记录创建时间
      */
     private LocalDateTime createdAt;

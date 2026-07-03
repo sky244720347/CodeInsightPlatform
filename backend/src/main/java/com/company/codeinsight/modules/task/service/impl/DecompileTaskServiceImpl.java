@@ -127,6 +127,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     @Autowired
     private AiCallRecordMapper aiCallRecordMapper;
 
+    @Autowired
+    private com.company.codeinsight.common.config.AiRetryProperties aiRetryProperties;
+
     /**
      * 草稿主表映射：用于任务创建前置条件校验，
      * 扫描 ci_knowledge_draft 中仍处于非终态的草稿。
@@ -869,6 +872,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         execLog.log(taskId, ">>> AI_ANALYZING — AI 归纳");
         execLog.log(taskId, "  aiMock=" + aiSummaryService.isAiMock() + " | model="
                 + (task.getModelName() != null ? task.getModelName() : "(default)"));
+        execLog.log(taskId, "  aiRetry       = maxAttempts=" + aiRetryProperties.getMaxAttempts()
+                + " backoffMs=" + aiRetryProperties.getBackoffMs());
         long aiT0 = System.currentTimeMillis();
         com.company.codeinsight.modules.callchain.model.IncrementalImpact impact = analyzeIncrementalImpact(
                 taskId, projectDir, incrementalCtx, pctx);

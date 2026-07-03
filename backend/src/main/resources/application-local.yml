@@ -37,6 +37,9 @@ code-insight:
     api-url: ${LLM_API_URL:https://api.minimax.io/v1}
     model-name: ${LLM_MODEL_NAME:MiniMax-M3}
     hierarchy-parallelism: ${AI_HIERARCHY_PARALLELISM:4}
+    retry:
+      max-attempts: ${AI_RETRY_MAX_ATTEMPTS:3}
+      backoff-ms: ${AI_RETRY_BACKOFF_MS:1000}
   token:
     limit-enabled: ${TOKEN_LIMIT_ENABLED:true}
     task-limit: ${TOKEN_TASK_LIMIT:100000}

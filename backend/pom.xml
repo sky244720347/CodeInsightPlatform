@@ -81,6 +81,14 @@
             <version>3.26.4</version>
         </dependency>
 
+        <!-- JavaParser Symbol Solver：依赖 javaparser-core，提供 JavaParserFacade / CombinedTypeSolver，
+             让 parser 把声明类型升级为解析类型，支撑 #9 反向 BFS 的多态追溯。Phase 2 引入。 -->
+        <dependency>
+            <groupId>com.github.javaparser</groupId>
+            <artifactId>javaparser-symbol-solver-core</artifactId>
+            <version>3.26.4</version>
+        </dependency>
+
         <!-- OpenAPI (Swagger UI) -->
         <dependency>
             <groupId>org.springdoc</groupId>

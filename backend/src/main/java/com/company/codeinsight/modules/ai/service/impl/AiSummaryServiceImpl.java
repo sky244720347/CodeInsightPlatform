@@ -3,6 +3,7 @@ package com.company.codeinsight.modules.ai.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.company.codeinsight.common.config.AiRetryProperties;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.util.AiResponseJsonExtractor;
 import com.company.codeinsight.modules.ai.entity.AiCallRecord;
@@ -11,6 +12,7 @@ import com.company.codeinsight.modules.ai.mapper.AiCallRecordMapper;
 import com.company.codeinsight.modules.callchain.entity.MethodCall;
 import com.company.codeinsight.modules.callchain.mapper.MethodCallMapper;
 import com.company.codeinsight.modules.ai.service.AiSummaryService;
+import com.company.codeinsight.modules.ai.service.PipelineAiCaller;
 import com.company.codeinsight.modules.chunk.entity.CodeChunk;
 import com.company.codeinsight.modules.chunk.mapper.CodeChunkMapper;
 import com.company.codeinsight.modules.draft.entity.DraftWorkspace;
@@ -107,6 +109,12 @@ public class AiSummaryServiceImpl implements AiSummaryService {
      */
     @Autowired
     private TaskExecutionLogger execLog;
+
+    @Autowired
+    private PipelineAiCaller pipelineAiCaller;
+
+    @Autowired
+    private AiRetryProperties aiRetryProperties;
 
     /**
      * 包级访问器：供 DecompileTaskServiceImpl 在 AI 阶段开头读取 Mock 状态写到 pipeline.log。
@@ -275,71 +283,97 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         }
 
         long start = System.currentTimeMillis();
-        try {
-            // 7. 构建符合 OpenAI / MiniMax 协议兼容的 HTTP 请求载荷
-            Map<String, Object> reqBody = new HashMap<>();
-            reqBody.put("model", modelToUse);
-            reqBody.put("stream", false);
+        int maxAttempts = Math.max(1, aiRetryProperties.getMaxAttempts());
+        long backoffMs = Math.max(0L, aiRetryProperties.getBackoffMs());
+        String chunkTarget = chunk.getFilePath()
+                + (chunk.getMethodName() != null ? "#" + chunk.getMethodName() : "");
+        String lastErr = "unknown";
+            for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    Map<String, Object> reqBody = new HashMap<>();
+                    reqBody.put("model", modelToUse);
+                    reqBody.put("stream", false);
 
-            List<Map<String, String>> messages = new ArrayList<>();
-            Map<String, String> userMsg = new HashMap<>();
-            userMsg.put("role", "user");
-            userMsg.put("content", promptInput);
-            messages.add(userMsg);
-            reqBody.put("messages", messages);
+                    List<Map<String, String>> messages = new ArrayList<>();
+                    Map<String, String> userMsg = new HashMap<>();
+                    userMsg.put("role", "user");
+                    userMsg.put("content", promptInput);
+                    messages.add(userMsg);
+                    reqBody.put("messages", messages);
 
-            String jsonPayload = objectMapper.writeValueAsString(reqBody);
+                    String jsonPayload = objectMapper.writeValueAsString(reqBody);
 
-            // 自适应追加标准的端点后缀
-            String requestUrl = activeApiUrl;
-            if (!requestUrl.endsWith("/chat/completions")) {
-                requestUrl = requestUrl.replaceAll("/+$", "") + "/chat/completions";
+                    String requestUrl = activeApiUrl;
+                    if (!requestUrl.endsWith("/chat/completions")) {
+                        requestUrl = requestUrl.replaceAll("/+$", "") + "/chat/completions";
+                    }
+
+                    HttpRequest request = HttpRequest.newBuilder()
+                            .uri(URI.create(requestUrl))
+                            .header("Authorization", "Bearer " + activeApiKey)
+                            .header("Content-Type", "application/json")
+                            .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
+                            .timeout(Duration.ofSeconds(45))
+                            .build();
+
+                    log.info("开始向 MiniMax API 发起请求, URL: {}, Model: {}, attempt={}/{}",
+                            requestUrl, modelToUse, attempt, maxAttempts);
+                    HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+                    long duration = System.currentTimeMillis() - start;
+
+                    if (response.statusCode() == 200) {
+                        JsonNode root = objectMapper.readTree(response.body());
+                        String aiText = normalizeModelContent(
+                                root.path("choices").get(0).path("message").path("content").asText());
+                        int inTokens = root.path("usage").path("prompt_tokens").asInt();
+                        int outTokens = root.path("usage").path("completion_tokens").asInt();
+
+                        chunk.setStatus("ANALYZED");
+                        chunkMapper.updateById(chunk);
+
+                        saveCallRecordAndAudit(systemId, taskId, resolvePromptId(task, "CHUNK"), null, chunkId,
+                                modelToUse, inTokens, outTokens, aiText, true, null, duration, "CHUNK_SUMMARY");
+                        if (attempt > 1) {
+                            execLog.log(taskId, String.format(
+                                    "[AI-OK] stage=CHUNK_SUMMARY target=%s recovered on attempt %d/%d",
+                                    chunkTarget, attempt, maxAttempts));
+                        }
+                        return aiText;
+                    }
+
+                    lastErr = "HTTP " + response.statusCode() + ": " + response.body();
+                    saveCallRecordAndAudit(systemId, taskId, resolvePromptId(task, "CHUNK"), null, chunkId, modelToUse,
+                            promptInput.length() / 3, 0, "[AI_ERROR: " + lastErr + "]", false, lastErr, duration,
+                            "CHUNK_SUMMARY");
+                } catch (Exception e) {
+                    lastErr = e.getMessage();
+                    long duration = System.currentTimeMillis() - start;
+                    log.error("调用大模型发生网络异常（{}）attempt={}/{}: {}", modelToUse, attempt, maxAttempts, lastErr);
+                    saveCallRecordAndAudit(systemId, taskId, resolvePromptId(task, "CHUNK"), null, chunkId, modelToUse,
+                            promptInput.length() / 3, 0, "[AI_ERROR: " + lastErr + "]", false, lastErr, duration,
+                            "CHUNK_SUMMARY");
+                }
+
+                if (attempt < maxAttempts) {
+                    execLog.log(taskId, String.format(
+                            "[AI-RETRY] stage=CHUNK_SUMMARY target=%s attempt=%d/%d reason=%s",
+                            chunkTarget, attempt, maxAttempts, truncateAiLogReason(lastErr)));
+                    if (backoffMs > 0) {
+                        try {
+                            Thread.sleep(backoffMs * attempt);
+                        } catch (InterruptedException ie) {
+                            Thread.currentThread().interrupt();
+                            break;
+                        }
+                    }
+                }
             }
 
-            HttpRequest request = HttpRequest.newBuilder()
-                    .uri(URI.create(requestUrl))
-                    .header("Authorization", "Bearer " + activeApiKey)
-                    .header("Content-Type", "application/json")
-                    .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
-                    .timeout(Duration.ofSeconds(45))
-                    .build();
-
-            log.info("开始向 MiniMax API 发起请求, URL: {}, Model: {}", requestUrl, modelToUse);
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
-            long duration = System.currentTimeMillis() - start;
-
-            // 8. 处理响应成功的情况并记录真实的 Token 计数进行审计
-            if (response.statusCode() == 200) {
-                JsonNode root = objectMapper.readTree(response.body());
-                String aiText = normalizeModelContent(root.path("choices").get(0).path("message").path("content").asText());
-                int inTokens = root.path("usage").path("prompt_tokens").asInt();
-                int outTokens = root.path("usage").path("completion_tokens").asInt();
-
-                // 标记该切片状态为已成功分析完成
-                chunk.setStatus("ANALYZED");
-                chunkMapper.updateById(chunk);
-
-                // 保存 AI 原始响应记录并提交至 Token 审计表
-                saveCallRecordAndAudit(systemId, taskId, resolvePromptId(task, "CHUNK"), null, chunkId, modelToUse,
-                        inTokens, outTokens, aiText, true, null, duration, "CHUNK_SUMMARY");
-                return aiText;
-            } else {
-                String errMsg = "HTTP 错误码: " + response.statusCode() + ", 详情: " + response.body();
-                log.error("大模型请求失败（{}），返回空标记，不再生成 Mock 内容: {}", modelToUse, errMsg);
-                saveCallRecordAndAudit(systemId, taskId, resolvePromptId(task, "CHUNK"), null, chunkId, modelToUse,
-                        promptInput.length() / 3, 0, "[AI_ERROR: " + errMsg + "]", false, errMsg, duration, "CHUNK_SUMMARY");
-                return "[AI_ERROR: " + errMsg + "]";
-            }
-        } catch (Exception e) {
-            long duration = System.currentTimeMillis() - start;
-            log.error("调用大模型发生网络异常（{}）: {}", modelToUse, e.getMessage());
-            // 网络超时/连接错误：不再降级生成 Mock 内容，避免制造虚假 AI 输出
-            saveCallRecordAndAudit(systemId, taskId, resolvePromptId(task, "CHUNK"), null, chunkId, modelToUse,
-                    promptInput.length() / 3, 0, "[AI_ERROR: " + e.getMessage() + "]", false, e.getMessage(), duration, "CHUNK_SUMMARY");
-            return "[AI_ERROR: " + e.getMessage() + "]";
-        }
+            execLog.log(taskId, String.format(
+                    "[AI-FAIL] stage=CHUNK_SUMMARY target=%s reason=%s after %d attempts",
+                    chunkTarget, truncateAiLogReason(lastErr), maxAttempts));
+            return "[AI_ERROR: " + lastErr + "]";
         } finally {
-            // 释放并发信号量（无论成功/失败/异常）
             aiConcurrencyService.release();
         }
     }
@@ -858,27 +892,41 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             return;
         }
 
-        // 3. 调 AI
+        // 3. 调 AI（可配置重试 + pipeline.log）
         AiSummaryService.AiCallMeta callMeta = new AiSummaryService.AiCallMeta();
         callMeta.setCallStage("FUNCTION_DOC");
         callMeta.setClassPath(functionDto.getId());
-        String aiMarkdown = summarizeWithPrompt(taskId, promptInput, task.getModelName(), callMeta);
+        String docTarget = label;
+        String aiMarkdown = pipelineAiCaller.callWithRetry(
+                taskId,
+                "FUNCTION_DOC",
+                docTarget,
+                promptInput,
+                task.getModelName(),
+                callMeta,
+                response -> {
+                    if (!StringUtils.hasText(response) || "{}".equals(response.trim())) {
+                        return PipelineAiCaller.ValidationResult.fail("empty response");
+                    }
+                    String validationMsg = validateModuleDocStructure(response);
+                    if (validationMsg != null) {
+                        return PipelineAiCaller.ValidationResult.fail("structure: " + validationMsg);
+                    }
+                    return PipelineAiCaller.ValidationResult.ok(response);
+                },
+                (original, current, failedAttempt, reason) -> original
+                        + "\n\n[系统提示] 上轮输出不符合要求：" + reason
+                        + "\n请补全全部六个章节（一、～六、），输出完整 Markdown。"
+        );
 
         String finalMarkdown, initialStatus;
         if (!StringUtils.hasText(aiMarkdown) || "{}".equals(aiMarkdown.trim())) {
-            log.warn("Function {} AI 响应为空", funcName);
+            log.warn("Function {} AI 响应为空或全部重试失败", funcName);
             finalMarkdown = buildPlaceholderDoc(moduleDto);
             initialStatus = "PENDING_REVIEW";
         } else {
-            String validationMsg = validateModuleDocStructure(aiMarkdown);
-            if (validationMsg != null) {
-                log.warn("Function {} AI 结构不完整: {}", funcName, validationMsg);
-                finalMarkdown = aiMarkdown;
-                initialStatus = "PENDING_REVIEW";
-            } else {
-                finalMarkdown = aiMarkdown;
-                initialStatus = "AI_GENERATED";
-            }
+            finalMarkdown = aiMarkdown;
+            initialStatus = "AI_GENERATED";
         }
             upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto, finalMarkdown, initialStatus, projectDir);
     }
@@ -1086,30 +1134,42 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             return;
         }
 
-        // 3. 调 AI（复用 summarizeWithPrompt 全部基础设施）
+        // 3. 调 AI（可配置重试 + pipeline.log）
         AiSummaryService.AiCallMeta callMeta = new AiSummaryService.AiCallMeta();
         callMeta.setCallStage("MODULE_DOC");
         callMeta.setClassPath(moduleDto.getId());
 
-        String aiMarkdown = summarizeWithPrompt(task.getId(), promptInput, task.getModelName(), callMeta);
+        String aiMarkdown = pipelineAiCaller.callWithRetry(
+                task.getId(),
+                "MODULE_DOC",
+                moduleName,
+                promptInput,
+                task.getModelName(),
+                callMeta,
+                response -> {
+                    if (!StringUtils.hasText(response) || "{}".equals(response.trim())) {
+                        return PipelineAiCaller.ValidationResult.fail("empty response");
+                    }
+                    String validationMsg = validateModuleDocStructure(response);
+                    if (validationMsg != null) {
+                        return PipelineAiCaller.ValidationResult.fail("structure: " + validationMsg);
+                    }
+                    return PipelineAiCaller.ValidationResult.ok(response);
+                },
+                (original, current, failedAttempt, reason) -> original
+                        + "\n\n[系统提示] 上轮输出不符合要求：" + reason
+                        + "\n请补全全部六个章节（一、～六、），输出完整 Markdown。"
+        );
 
         String finalMarkdown;
         String initialStatus;
         if (!StringUtils.hasText(aiMarkdown) || "{}".equals(aiMarkdown.trim())) {
-            log.warn("模块 {} AI 响应为空，写 PENDING_REVIEW 占位", moduleName);
+            log.warn("模块 {} AI 响应为空或全部重试失败，写 PENDING_REVIEW 占位", moduleName);
             finalMarkdown = buildPlaceholderDoc(moduleDto);
             initialStatus = "PENDING_REVIEW";
         } else {
-            // Markdown 结构完整性校验
-            String validationMsg = validateModuleDocStructure(aiMarkdown);
-            if (validationMsg != null) {
-                log.warn("模块 {} AI 输出结构不完整: {}，保留 AI 输出但标记为 PENDING_REVIEW", moduleName, validationMsg);
-                finalMarkdown = aiMarkdown;
-                initialStatus = "PENDING_REVIEW";
-            } else {
-                finalMarkdown = aiMarkdown;
-                initialStatus = "AI_GENERATED";
-            }
+            finalMarkdown = aiMarkdown;
+            initialStatus = "AI_GENERATED";
         }
 
         // 4. 落库（写文件 + 写 KnowledgeDraft + 写 source references）
@@ -2085,6 +2145,14 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         if (!StringUtils.hasText(key)) return "(空)";
         if (key.length() <= 12) return key.substring(0, Math.min(2, key.length())) + "***";
         return key.substring(0, 4) + "***" + key.substring(key.length() - 4);
+    }
+
+    private static String truncateAiLogReason(String text) {
+        if (!StringUtils.hasText(text)) {
+            return "unknown";
+        }
+        String t = text.replace('\n', ' ').trim();
+        return t.length() <= 200 ? t : t.substring(0, 200) + "...";
     }
 
     private String generateMockSummary(CodeChunk chunk) {

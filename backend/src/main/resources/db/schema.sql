@@ -721,6 +721,11 @@ CREATE INDEX IF NOT EXISTS idx_method_call_target_sig ON ci_method_call (task_id
 COMMENT ON COLUMN ci_method_call.caller_signature IS '调用方方法完整签名：className#methodName(ParamType1,ParamType2)';
 COMMENT ON COLUMN ci_method_call.target_signature IS '被调方方法完整签名：className#methodName(ParamType1,ParamType2)';
 
+-- 18.2 Phase 3：声明类型的所有项目内具体候选子类 FQ（多态候选，逗号分隔）
+--   支撑 #9 反向 BFS 在多态调用下也能找到真实被改的入口
+ALTER TABLE ci_method_call ADD COLUMN IF NOT EXISTS dependency_candidates TEXT;
+COMMENT ON COLUMN ci_method_call.dependency_candidates IS '声明类型的所有项目内具体候选子类 FQ（多态候选，逗号分隔）';
+
 -- 19. 模块层级表（AI 提炼入口的业务归属，DTO 持久化）
 CREATE TABLE IF NOT EXISTS ci_module_hierarchy (
     id BIGSERIAL PRIMARY KEY,

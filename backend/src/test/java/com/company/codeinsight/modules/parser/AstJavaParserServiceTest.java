@@ -305,6 +305,188 @@ public class Broken {
                 () -> parserService.parseFile(f));
     }
 
+    /**
+     * Phase 2：跨文件项目的 symbol 解析。
+     * 验证在有项目源根（pom.xml）的多文件项目里，把 depType 从"声明简单名"
+     * 升级为"解析后 FQ 名"。这是 #9 反向 BFS 上"声明类型 vs 解析类型"
+     * 区分链路的最小可验证单元。
+     *
+     * 注意：本测试验证的是 FQ 解析（UserService → com.example.polymorph.UserService），
+     * 不是"接口→实现子类"的多态解析——后者属于 Phase 3 范畴，需要更精细的
+     * subtype walking，schema 也要扩字段。
+     */
+    @Test
+    public void testParseCrossFileFqResolution() throws IOException {
+        // 在临时目录里搭一个最小"项目"：根目录放 pom.xml 触发 discoverSourceRoot
+        File projectDir = File.createTempFile("symbol-test", "");
+        projectDir.delete();
+        Assertions.assertTrue(projectDir.mkdir(), "should create project dir");
+        projectDir.deleteOnExit();
+
+        File pom = new File(projectDir, "pom.xml");
+        try (FileWriter w = new FileWriter(pom)) {
+            w.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project xmlns=\"http://maven.apache.org/POM/4.0.0\"/>\n");
+        }
+
+        // JavaParserTypeSolver 按 Maven 约定按"项目根 + 包路径"寻文件，所以先建包目录
+        File packageDir = new File(projectDir, "com/example/polymorph");
+        packageDir.mkdirs();
+
+        // 1. 写一个接口类
+        File ifaceFile = new File(packageDir, "UserService.java");
+        try (FileWriter w = new FileWriter(ifaceFile)) {
+            w.write("""
+package com.example.polymorph;
+
+public interface UserService {
+    String findById(Long id);
+}
+""");
+        }
+        // 2. 写一个调用方，字段声明类型是接口
+        File callerFile = new File(packageDir, "UserCaller.java");
+        try (FileWriter w = new FileWriter(callerFile)) {
+            w.write("""
+package com.example.polymorph;
+
+public class UserCaller {
+    private final UserService userService;
+
+    public UserCaller(UserService userService) {
+        this.userService = userService;
+    }
+
+    public void handle(Long id) {
+        userService.findById(id);
+    }
+}
+""");
+        }
+
+        ParsedClassInfo info = parserService.parseFile(callerFile);
+        Assertions.assertNotNull(info);
+        Assertions.assertEquals("UserCaller", info.getClassName());
+        Assertions.assertEquals(1, info.getMethodCalls().size(), "should record one method call");
+
+        MethodCallInfo call = info.getMethodCalls().get(0);
+        Assertions.assertEquals("findById", call.getTargetMethod());
+        Assertions.assertEquals("handle", call.getCallerMethod());
+
+        // 关键断言：dependencyName 已被 symbol solver 升级为 FQ
+        // （不再仅是声明类型简单名 "UserService"，而是 "com.example.polymorph.UserService"）
+        Assertions.assertEquals("com.example.polymorph.UserService", call.getDependencyName(),
+                "Phase 2 symbol solver should resolve declared type to FQN, got: " + call.getDependencyName());
+    }
+
+    /**
+     * Phase 3：多态候选集。
+     * 验证一个接口被多个具体类实现时，依赖类型的 dependencyCandidates
+     * 能列出所有项目内具体子类的 FQ。这是 #9 反向 BFS 在多态调用下也能
+     * 找到真实被改的入口的关键输入。
+     */
+    @Test
+    public void testParsePolymorphicCandidates() throws IOException {
+        // 搭一个最小项目：pom.xml + 三个 .java（一个接口 + 两个实现 + 一个 controller）
+        File projectDir = File.createTempFile("poly-test", "");
+        projectDir.delete();
+        Assertions.assertTrue(projectDir.mkdir(), "should create project dir");
+        projectDir.deleteOnExit();
+
+        File pom = new File(projectDir, "pom.xml");
+        try (FileWriter w = new FileWriter(pom)) {
+            w.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project xmlns=\"http://maven.apache.org/POM/4.0.0\"/>\n");
+        }
+
+        File packageDir = new File(projectDir, "com/example/poly");
+        packageDir.mkdirs();
+
+        // 1. 接口
+        File ifaceFile = new File(packageDir, "Notifier.java");
+        try (FileWriter w = new FileWriter(ifaceFile)) {
+            w.write("""
+package com.example.poly;
+
+public interface Notifier {
+    void notify(Long userId);
+}
+""");
+        }
+        // 2. 实现 A
+        File aFile = new File(packageDir, "EmailNotifier.java");
+        try (FileWriter w = new FileWriter(aFile)) {
+            w.write("""
+package com.example.poly;
+
+public class EmailNotifier implements Notifier {
+    @Override public void notify(Long userId) { }
+}
+""");
+        }
+        // 3. 实现 B
+        File bFile = new File(packageDir, "SmsNotifier.java");
+        try (FileWriter w = new FileWriter(bFile)) {
+            w.write("""
+package com.example.poly;
+
+public class SmsNotifier implements Notifier {
+    @Override public void notify(Long userId) { }
+}
+""");
+        }
+        // 4. 一个抽象基类（不应该被索引进 candidates —— 它不是具象）
+        File absFile = new File(packageDir, "AbstractNotifier.java");
+        try (FileWriter w = new FileWriter(absFile)) {
+            w.write("""
+package com.example.poly;
+
+public abstract class AbstractNotifier implements Notifier {
+    @Override public void notify(Long userId) { }
+}
+""");
+        }
+        // 5. Controller 调用方
+        File controllerFile = new File(packageDir, "NotifyController.java");
+        try (FileWriter w = new FileWriter(controllerFile)) {
+            w.write("""
+package com.example.poly;
+
+@RestController
+public class NotifyController {
+    private final Notifier notifier;
+
+    public NotifyController(Notifier notifier) {
+        this.notifier = notifier;
+    }
+
+    public void send(Long userId) {
+        notifier.notify(userId);
+    }
+}
+""");
+        }
+
+        ParsedClassInfo info = parserService.parseFile(controllerFile);
+        Assertions.assertNotNull(info);
+        Assertions.assertEquals("NotifyController", info.getClassName());
+        Assertions.assertEquals(1, info.getMethodCalls().size(), "should record one notify call");
+
+        MethodCallInfo call = info.getMethodCalls().get(0);
+        Assertions.assertEquals("notify", call.getTargetMethod());
+
+        // Phase 2 已验证：depType 升级为 FQ
+        Assertions.assertEquals("com.example.poly.Notifier", call.getDependencyName());
+
+        // Phase 3：candidates 必须包含两个具象实现，不包含抽象基类
+        String candidates = call.getDependencyCandidates();
+        Assertions.assertNotNull(candidates, "Phase 3 should populate dependencyCandidates for polymorphic field");
+        Assertions.assertTrue(candidates.contains("com.example.poly.EmailNotifier"),
+                "should include EmailNotifier, got: " + candidates);
+        Assertions.assertTrue(candidates.contains("com.example.poly.SmsNotifier"),
+                "should include SmsNotifier, got: " + candidates);
+        Assertions.assertFalse(candidates.contains("AbstractNotifier"),
+                "abstract class should NOT be a caller-reachable candidate, got: " + candidates);
+    }
+
     // ---------- helpers ----------
 
     private File writeTemp(String prefix, String suffix, String content) throws IOException {
