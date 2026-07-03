@@ -28,8 +28,13 @@ const ScanWindowHeatmap: React.FC<Props> = ({ data, repoMap, sysMap, onRefresh }
     data.forEach((w) => {
       for (let i = 0; i < 7; i++) {
         if ((w.weekDays & (1 << i)) === 0) continue;
-        const key = `${i}|${w.hour}:${String(w.minute).padStart(2, '0')}`;
-        timeSet.add(`${w.hour}:${String(w.minute).padStart(2, '0')}`);
+        // 把 hour 也 pad 成两位，与下方 heatmapData / drawerRepos 的 lookup 保持一致——
+        // 否则单数 hour（"2:00"）在 lookup 时变 "02:00" → col=-1 → 整张热图空。
+        const hh = String(w.hour).padStart(2, '0');
+        const mm = String(w.minute).padStart(2, '0');
+        const timeLabel = `${hh}:${mm}`;
+        const key = `${i}|${timeLabel}`;
+        timeSet.add(timeLabel);
         const g = groups.get(key) || { repos: [], count: 0 };
         g.repos.push(w);
         g.count++;
