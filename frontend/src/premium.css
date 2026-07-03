@@ -642,6 +642,29 @@ button, input, textarea, select { font: inherit; }
 }
 .ci-filter-card .ant-card-body { padding: 16px !important; }
 .ci-filter-card .ant-form-item { margin-bottom: 0; }
+
+.ci-advanced-filter-panel {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid #e6e8ef;
+}
+
+.ci-advanced-filter-form .ant-form-item {
+  margin-bottom: 0;
+}
+
+.ci-advanced-filter-form .ant-form-item-label > label {
+  height: auto;
+  font-size: 12px;
+  color: #64748b;
+}
+
+.ci-advanced-filter-form .ant-input,
+.ci-advanced-filter-form .ant-select-selector,
+.ci-advanced-filter-form .ant-picker {
+  width: 100%;
+}
+
 .ci-systems-table-card .ant-card-body { padding: 16px !important; }
 .ci-toolbar-actions { display: flex; align-items: center; justify-content: flex-end; }
 .ci-table-link.ant-btn { min-height: auto; color: #385ba0; font-weight: 680; }

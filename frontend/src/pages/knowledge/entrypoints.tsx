@@ -51,6 +51,7 @@ const KnowledgeEntrypointsPage: React.FC = () => {
   const [items, setItems] = useState<EntrypointReviewItem[]>([]);
   const [viewMode, setViewMode] = useState<'list' | 'tree'>('list');
   const [editMode, setEditMode] = useState(false);
+  const [confirmOpen, setConfirmOpen] = useState(false);
   const [pendingExcludes, setPendingExcludes] = useState<ExcludeTarget[]>([]);
 
   const remediationReady =
@@ -96,29 +97,29 @@ const KnowledgeEntrypointsPage: React.FC = () => {
 
   const handleSubmitRemediation = () => {
     if (!ctx.repositoryId) return;
-    Modal.confirm({
-      title: '确认从模块层级阶段重跑？',
-      content:
-        '将克隆当前生效任务的工作区与 AST 产物，应用入口调整后全量重算模块层级与文档（跳过拉取/扫描）。',
-      okText: '确认重跑',
-      onOk: async () => {
-        setSubmitting(true);
-        try {
-          const resp = await remediateEntrypoints({
-            repositoryId: ctx.repositoryId!,
-            systemId: ctx.systemId,
-            excludeTargets: pendingExcludes,
-            operator: getCurrentOperator(),
-          });
-          message.success(`纠错任务已创建 #${resp.taskId}`);
-          setEditMode(false);
-          setPendingExcludes([]);
-          navigate(`/tasks/${resp.taskId}`);
-        } finally {
-          setSubmitting(false);
-        }
-      },
-    });
+    setConfirmOpen(true);
+  };
+
+  const handleConfirmRemediation = async () => {
+    if (!ctx.repositoryId) return;
+    setSubmitting(true);
+    try {
+      const resp = await remediateEntrypoints({
+        repositoryId: ctx.repositoryId,
+        systemId: ctx.systemId,
+        excludeTargets: pendingExcludes,
+        operator: getCurrentOperator(),
+      });
+      setConfirmOpen(false);
+      setEditMode(false);
+      setPendingExcludes([]);
+      message.success(`纠错任务已下发 #${resp.taskId}`);
+      navigate(`/tasks/${resp.taskId}`);
+    } catch {
+      // request 拦截器已弹错，保留弹窗供用户修改后重试
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const treeData = useMemo<DataNode[]>(() => {
@@ -290,6 +291,18 @@ const KnowledgeEntrypointsPage: React.FC = () => {
           </>
         )}
       </Card>
+
+      <Modal
+        title="确认从模块层级阶段重跑？"
+        open={confirmOpen}
+        okText="确认重跑"
+        cancelText="取消"
+        confirmLoading={submitting}
+        onOk={handleConfirmRemediation}
+        onCancel={() => !submitting && setConfirmOpen(false)}
+      >
+        将克隆当前生效任务的工作区与 AST 产物，应用入口调整后全量重算模块层级与文档（跳过拉取/扫描）。
+      </Modal>
     </div>
   );
 };

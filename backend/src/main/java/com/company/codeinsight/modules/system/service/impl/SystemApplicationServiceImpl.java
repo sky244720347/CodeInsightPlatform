@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
+import com.company.codeinsight.modules.repository.service.CodeRepositoryService;
 import com.company.codeinsight.modules.system.entity.SystemApplication;
 import com.company.codeinsight.modules.system.mapper.SystemApplicationMapper;
 import com.company.codeinsight.modules.system.service.SystemApplicationService;
@@ -35,6 +36,9 @@ public class SystemApplicationServiceImpl extends ServiceImpl<SystemApplicationM
 
     @Autowired
     private CodeRepositoryMapper codeRepositoryMapper;
+
+    @Autowired
+    private CodeRepositoryService codeRepositoryService;
 
     @Autowired
     private DecompileTaskMapper decompileTaskMapper;
@@ -108,19 +112,17 @@ public class SystemApplicationServiceImpl extends ServiceImpl<SystemApplicationM
             }
         }
 
-        // 3. 级联软删除代码库
-        if (!repos.isEmpty()) {
-            for (CodeRepository repo : repos) {
-                repo.setDeletedAt(java.time.LocalDateTime.now());
-            }
-            for (CodeRepository repo : repos) {
-                codeRepositoryMapper.updateById(repo);
+        // 3. 级联软删除代码库（@TableLogic 须走 removeById，updateById 不会写入 deleted_at）
+        for (CodeRepository repo : repos) {
+            if (!codeRepositoryService.removeById(repo.getId())) {
+                throw new BusinessException("代码库删除失败: " + repo.getGitUrl());
             }
         }
 
         // 4. 软删除系统本体
-        system.setDeletedAt(java.time.LocalDateTime.now());
-        this.updateById(system);
+        if (!this.removeById(id)) {
+            throw new BusinessException("系统删除失败");
+        }
     }
 
     private long countActiveTasksBySystemId(Long systemId) {

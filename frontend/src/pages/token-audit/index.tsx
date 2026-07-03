@@ -40,7 +40,7 @@ const TokenAudit: React.FC = () => {
   const [selectedType, setSelectedType] = useState<string | undefined>();
 
   useEffect(() => {
-    listSystems({ current: 1, size: 100, status: 1 }).then((data) => setSystems(data.records));
+    listSystems({ current: 1, size: 100 }).then((data) => setSystems(data.records));
   }, []);
 
   useEffect(() => {

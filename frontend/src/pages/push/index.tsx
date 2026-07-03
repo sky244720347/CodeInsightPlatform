@@ -77,7 +77,7 @@ const Push: React.FC = () => {
   const [pushingVersions, setPushingVersions] = useState<Set<number>>(new Set());
 
   useEffect(() => {
-    listSystems({ current: 1, size: 100, status: 1 }).then((data) => setSystems(data.records));
+    listSystems({ current: 1, size: 100 }).then((data) => setSystems(data.records));
   }, []);
 
   useEffect(() => {
@@ -164,7 +164,12 @@ const Push: React.FC = () => {
       return;
     }
     const data = await listTasks({ current: 1, size: 100, systemId: selectedSystemId });
-    setTasks(data.records.filter((task) => ['PENDING_REVIEW', 'CONFIRMED'].includes(task.status)));
+    const confirmedTasks = data.records.filter((task) => task.status === 'CONFIRMED');
+    if (confirmedTasks.length === 0) {
+      message.warning('当前系统下没有已整体确认的任务，请先在复核页完成「任务整体通过」');
+      return;
+    }
+    setTasks(confirmedTasks);
     setVersionModalOpen(true);
   };
 

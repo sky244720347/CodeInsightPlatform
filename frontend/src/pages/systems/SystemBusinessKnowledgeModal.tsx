@@ -103,11 +103,9 @@ const SystemBusinessKnowledgeModal: React.FC<Props> = ({ open, system, onClose, 
         content,
         updatedBy: undefined, // 后端操作日志会从会话兜底；MVP 不强制前端传
       });
-      message.success(`业务知识已保存（version ${saved.version}）`);
-      setVersion(saved.version);
-      setUpdatedAt(saved.updatedAt);
-      setUpdatedBy(saved.updatedBy ?? null);
+      message.success('业务知识已保存');
       onSaved?.(saved);
+      onClose();
     } catch (err) {
       // 拦截器已提示
       console.error('保存业务知识失败', err);

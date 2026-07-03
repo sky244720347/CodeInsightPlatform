@@ -322,11 +322,6 @@ const TaskDispatchPage: React.FC = () => {
     : { name: '请先选择系统', isBound: false };
   const promptsBlocking = !modularizeDisplay.isBound || !documentDisplay.isBound;
 
-  const systemStateWarn =
-    selectedSystem && selectedSystem.state && selectedSystem.state !== 'ACTIVE'
-      ? `系统当前状态为「${selectedSystem.state}」，未启用，无法创建任务。`
-      : null;
-
   return (
     <div className="ci-page ci-task-dispatch-page">
       <Card
@@ -369,13 +364,13 @@ const TaskDispatchPage: React.FC = () => {
                   rules={[{ required: true, message: '请选择系统' }]}
                 >
                   <Select
-                    placeholder="请选择已配置代码库且已启用的系统"
+                    placeholder="请选择已配置代码库的系统"
                     showSearch
                     optionFilterProp="label"
-                    notFoundContent="暂无已配置代码库的启用系统"
+                    notFoundContent="暂无已配置代码库的系统"
                     options={taskSourceSystems.map((s) => ({
                       value: s.id,
-                      label: `${s.name}${s.state && s.state !== 'ACTIVE' ? ` (${s.state})` : ''}`,
+                      label: s.name,
                     }))}
                   />
                 </Form.Item>
@@ -401,16 +396,6 @@ const TaskDispatchPage: React.FC = () => {
 
           {currentStep === 1 && (
             <>
-              {systemStateWarn && (
-                <Alert
-                  type="error"
-                  showIcon
-                  style={{ marginBottom: 16 }}
-                  message={systemStateWarn}
-                  description="请到「系统与仓库」完成配置并启用，或选择其他已启用 (ACTIVE) 的系统。"
-                />
-              )}
-
               {/* 系统绑定的提示词：只读展示 */}
               <Card size="small" style={{ marginBottom: 16, background: '#fafafa' }}>
                 <Space direction="vertical" size={8} style={{ width: '100%' }}>

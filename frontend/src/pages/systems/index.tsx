@@ -330,10 +330,8 @@ const Systems: React.FC = () => {
         <SystemFilterBar
           searchName={list.searchName}
           searchOwner={list.searchOwner}
-          searchStatus={list.searchStatus}
           onSearchNameChange={list.setSearchName}
           onSearchOwnerChange={list.setSearchOwner}
-          onSearchStatusChange={list.setSearchStatus}
           onSearch={list.handleSearch}
           onReset={list.handleReset}
           onAdd={openWizard}

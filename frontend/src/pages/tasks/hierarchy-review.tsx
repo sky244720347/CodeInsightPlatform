@@ -77,7 +77,7 @@ const HierarchyReview: React.FC = () => {
   }, [fetchDebugTasks]);
 
   useEffect(() => {
-    listSystems({ current: 1, size: 200, status: 1 }).then((data) => setSystems(data.records));
+    listSystems({ current: 1, size: 200 }).then((data) => setSystems(data.records));
   }, []);
 
   const openDrawer = (taskId: number) => {

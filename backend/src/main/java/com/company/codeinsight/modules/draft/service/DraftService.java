@@ -88,6 +88,11 @@ public interface DraftService {
     void confirmTask(Long taskId, String author, String comment);
 
     /**
+     * 创建知识版本 / 入队推送前的任务级就绪校验：任务须为 CONFIRMED，且工作区内每篇草稿均为 CONFIRMED 或 PUSHED。
+     */
+    void assertTaskReadyForKnowledgePublish(Long taskId);
+
+    /**
      * 查询草稿的所有修订版本历史
      */
     List<DraftRevision> getRevisions(Long draftId);

@@ -3,6 +3,8 @@ package com.company.codeinsight.modules.repository;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.service.CodeRepositoryService;
+import com.company.codeinsight.modules.system.entity.SystemApplication;
+import com.company.codeinsight.modules.system.service.SystemApplicationService;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -19,6 +21,9 @@ public class CodeRepositoryServiceTests {
 
     @Autowired
     private CodeRepositoryService codeRepositoryService;
+
+    @Autowired
+    private SystemApplicationService systemApplicationService;
 
     @Test
     public void testCrud() {
@@ -59,5 +64,51 @@ public class CodeRepositoryServiceTests {
     public void testGitConnectionFail() {
         boolean connected = codeRepositoryService.testConnection("https://invalid-git-url-xyz.com/repo.git", "main", "user", "pass");
         Assertions.assertFalse(connected);
+    }
+
+    @Test
+    public void testSoftDeleteRepository() {
+        SystemApplication system = new SystemApplication();
+        system.setName("软删仓库测试系统-" + System.nanoTime());
+        system.setOwner("Tester");
+        systemApplicationService.save(system);
+
+        CodeRepository repo = new CodeRepository();
+        repo.setSystemId(system.getId());
+        repo.setGitUrl("https://github.com/soft-delete-test/repo.git");
+        repo.setBranch("main");
+        repo.setScanRoot("/");
+        codeRepositoryService.save(repo);
+
+        Page<CodeRepository> before = codeRepositoryService.listRepositoriesPage(1, 10, system.getId(), "soft-delete-test");
+        Assertions.assertEquals(1, before.getTotal());
+
+        codeRepositoryService.softDeleteRepository(repo.getId());
+
+        Assertions.assertNull(codeRepositoryService.getById(repo.getId()));
+        Page<CodeRepository> after = codeRepositoryService.listRepositoriesPage(1, 10, system.getId(), "soft-delete-test");
+        Assertions.assertEquals(0, after.getTotal());
+    }
+
+    @Test
+    public void testSoftDeleteSystemCascadesRepositories() {
+        SystemApplication system = new SystemApplication();
+        system.setName("级联软删测试-" + System.nanoTime());
+        system.setOwner("Tester");
+        systemApplicationService.save(system);
+
+        CodeRepository repo = new CodeRepository();
+        repo.setSystemId(system.getId());
+        repo.setGitUrl("https://github.com/cascade-delete/repo.git");
+        repo.setBranch("main");
+        repo.setScanRoot("/");
+        codeRepositoryService.save(repo);
+
+        systemApplicationService.softDeleteSystem(system.getId());
+
+        Assertions.assertNull(systemApplicationService.getById(system.getId()));
+        Assertions.assertNull(codeRepositoryService.getById(repo.getId()));
+        Page<CodeRepository> repos = codeRepositoryService.listRepositoriesPage(1, 10, system.getId(), null);
+        Assertions.assertEquals(0, repos.getTotal());
     }
 }

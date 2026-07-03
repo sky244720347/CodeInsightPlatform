@@ -402,27 +402,9 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
      */
     @Override
     public PromptTestResultDto testRun(Long id, String sampleCode, Long modelId, String resolvedContent) {
-        DecompilePrompt prompt = this.getById(id);
-        if (prompt == null) {
-            throw new BusinessException("提示词模板不存在");
-        }
-
-        // 1. 动态从 Java 示例代码中正则匹配出类名和核心方法名（仅在未传 resolvedContent 时使用）
+        String filledPrompt = resolveTrialFilledPrompt(id, sampleCode, resolvedContent);
         String parsedClass = parseClassName(sampleCode);
         String parsedMethod = parseMethodName(sampleCode);
-
-        // 2. 组装占位符映射 + 渲染最终 prompt
-        String filledPrompt;
-        if (StringUtils.hasText(resolvedContent)) {
-            // 前端已替换完整 prompt,直接使用
-            filledPrompt = resolvedContent;
-        } else {
-            Map<String, String> vars = new HashMap<>();
-            vars.put("class_name", parsedClass);
-            vars.put("method_name", parsedMethod);
-            vars.put("source_code", sampleCode != null ? sampleCode : "public class MockTestClass { public void mockExecute() {} }");
-            filledPrompt = replaceVariables(prompt.getContent(), vars);
-        }
 
         // 3. 获取大模型配置
         AiModel model = resolveTrialModel(modelId);
@@ -523,28 +505,32 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
         return result;
     }
 
-    @Override
-    public void testRunStream(Long id, String sampleCode, Long modelId, String resolvedContent,
-                              Consumer<PromptTestStreamEventDto> eventConsumer) {
+    /**
+     * 试跑正文：前端传 {@code resolvedContent} 时可直接试跑未落库的自定义草稿（id 可为占位负值）；
+     * 否则按 id 加载已存模板并做占位符替换。
+     */
+    private String resolveTrialFilledPrompt(Long id, String sampleCode, String resolvedContent) {
+        if (StringUtils.hasText(resolvedContent)) {
+            return resolvedContent;
+        }
         DecompilePrompt prompt = this.getById(id);
         if (prompt == null) {
             throw new BusinessException("提示词模板不存在");
         }
+        Map<String, String> vars = new HashMap<>();
+        vars.put("class_name", parseClassName(sampleCode));
+        vars.put("method_name", parseMethodName(sampleCode));
+        vars.put("source_code", sampleCode != null ? sampleCode : "public class MockTestClass { public void mockExecute() {} }");
+        return replaceVariables(prompt.getContent(), vars);
+    }
 
+    @Override
+    public void testRunStream(Long id, String sampleCode, Long modelId, String resolvedContent,
+                              Consumer<PromptTestStreamEventDto> eventConsumer) {
+        String filledPrompt = resolveTrialFilledPrompt(id, sampleCode, resolvedContent);
         String parsedClass = parseClassName(sampleCode);
         String parsedMethod = parseMethodName(sampleCode);
 
-        String filledPrompt;
-        if (StringUtils.hasText(resolvedContent)) {
-            // 前端已替换完整 prompt,直接使用
-            filledPrompt = resolvedContent;
-        } else {
-            Map<String, String> vars = new HashMap<>();
-            vars.put("class_name", parsedClass);
-            vars.put("method_name", parsedMethod);
-            vars.put("source_code", sampleCode != null ? sampleCode : "public class MockTestClass { public void mockExecute() {} }");
-            filledPrompt = replaceVariables(prompt.getContent(), vars);
-        }
         AiModel model = resolveTrialModel(modelId);
         String modelName = model != null ? model.getIdentifier() : this.modelNameProp;
         String activeApiKey = (model != null && StringUtils.hasText(model.getApiKey())) ? model.getApiKey() : this.apiKey;

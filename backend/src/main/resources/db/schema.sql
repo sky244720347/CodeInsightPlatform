@@ -100,9 +100,7 @@ ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS modularize_prompt_id BIGINT;
 ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS document_prompt_id BIGINT;
 COMMENT ON COLUMN ci_repository.modularize_prompt_id IS '模块提取提示词 ID（FK → ci_prompt.id，运行时未设置则回退到 is_default=1（已废弃，请使用 ci_repository 同名列））';
 COMMENT ON COLUMN ci_repository.document_prompt_id IS '文档生成提示词 ID（FK → ci_prompt.id，运行时未设置则回退到 is_default=1（已废弃，请使用 ci_repository 同名列））';
--- 数据迁移：把现有系统绑定的提示词 ID 同步到其所有仓库
-UPDATE ci_repository r SET modularize_prompt_id = s.modularize_prompt_id, document_prompt_id = s.document_prompt_id FROM ci_system s WHERE r.system_id = s.id AND r.deleted_at IS NULL AND s.deleted_at IS NULL;
-
+-- 提示词绑定仅存于 ci_repository；勿在启动脚本中从 ci_system 批量 UPDATE，否则会每次重启覆盖仓库已绑定值。
 
 -- 3. 提示词模板表
 CREATE TABLE IF NOT EXISTS ci_prompt (

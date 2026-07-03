@@ -1,14 +1,12 @@
 import React from 'react';
-import { Button, Col, Input, Row, Select, Space } from 'antd';
+import { Button, Col, Input, Row, Space } from 'antd';
 import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 
 interface Props {
   searchName: string;
   searchOwner: string;
-  searchStatus: number | undefined;
   onSearchNameChange: (v: string) => void;
   onSearchOwnerChange: (v: string) => void;
-  onSearchStatusChange: (v: number | undefined) => void;
   onSearch: () => void;
   onReset: () => void;
   onAdd: () => void;
@@ -21,16 +19,14 @@ interface Props {
 const SystemFilterBar: React.FC<Props> = ({
   searchName,
   searchOwner,
-  searchStatus,
   onSearchNameChange,
   onSearchOwnerChange,
-  onSearchStatusChange,
   onSearch,
   onReset,
   onAdd,
 }) => (
   <Row gutter={[12, 12]} align="middle">
-    <Col xs={24} md={6}>
+    <Col xs={24} md={8}>
       <Input
         placeholder="搜索系统"
         value={searchName}
@@ -39,7 +35,7 @@ const SystemFilterBar: React.FC<Props> = ({
         prefix={<SearchOutlined />}
       />
     </Col>
-    <Col xs={24} md={6}>
+    <Col xs={24} md={8}>
       <Input
         placeholder="筛选负责人"
         value={searchOwner}
@@ -47,20 +43,7 @@ const SystemFilterBar: React.FC<Props> = ({
         onPressEnter={onSearch}
       />
     </Col>
-    <Col xs={24} md={5}>
-      <Select
-        placeholder="状态"
-        style={{ width: '100%' }}
-        allowClear
-        value={searchStatus}
-        onChange={onSearchStatusChange}
-        options={[
-          { value: 1, label: '启用' },
-          { value: 0, label: '停用' },
-        ]}
-      />
-    </Col>
-    <Col xs={24} md={7}>
+    <Col xs={24} md={8}>
       <Space className="ci-toolbar-actions" wrap>
         <Button type="primary" icon={<SearchOutlined />} onClick={onSearch}>
           查询

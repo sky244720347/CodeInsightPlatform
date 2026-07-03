@@ -52,4 +52,21 @@ public class SystemApplicationServiceTests {
         boolean removed = systemApplicationService.removeById(system.getId());
         Assertions.assertTrue(removed);
     }
+
+    @Test
+    public void testSoftDeleteSystem() {
+        SystemApplication system = new SystemApplication();
+        system.setName("软删测试系统-" + System.nanoTime());
+        system.setOwner("Tester");
+        systemApplicationService.save(system);
+
+        Page<SystemSummaryVO> before = systemApplicationService.listSystemsPage(1, 10, system.getName(), null);
+        Assertions.assertEquals(1, before.getTotal());
+
+        systemApplicationService.softDeleteSystem(system.getId());
+
+        Assertions.assertNull(systemApplicationService.getById(system.getId()));
+        Page<SystemSummaryVO> after = systemApplicationService.listSystemsPage(1, 10, system.getName(), null);
+        Assertions.assertEquals(0, after.getTotal());
+    }
 }

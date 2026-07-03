@@ -11,7 +11,6 @@ import {
 import { PlusOutlined } from '@ant-design/icons';
 import type { Repository, System } from '../../types';
 import { useRepositoryColumns } from './drawerColumns';
-import SystemStatus from './SystemStatus';
 
 interface Props {
   open: boolean;
@@ -75,9 +74,6 @@ const RepositoryDrawer: React.FC<Props> = ({
               </Descriptions.Item>
               <Descriptions.Item label="负责人">
                 <Tag color="blue">{system.owner}</Tag>
-              </Descriptions.Item>
-              <Descriptions.Item label="状态">
-                <SystemStatus status={system.status} />
               </Descriptions.Item>
               <Descriptions.Item label="代码库数">{system.repositoryCount ?? 0}</Descriptions.Item>
               <Descriptions.Item label="知识版本数">{system.knowledgeVersionCount ?? 0}</Descriptions.Item>

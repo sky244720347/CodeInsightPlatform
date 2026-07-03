@@ -151,19 +151,39 @@ public class KnowledgeBrowseTreeService {
     }
 
     private String resolvePublishedModuleDoc(ModuleDto module, ReleaseDocumentIndex docIndex) {
-        String nested = "modules/" + safeSegment(module.getModuleName()) + ".md";
-        if (docIndex.byRelativePath.containsKey(nested)) {
-            return nested;
-        }
-        String flat = docIndex.byBasename.get(ReleaseKnowledgeBrowseHelper.normalize(safeSegment(module.getModuleName())));
-        if (flat != null) {
-            return flat;
-        }
-        return docIndex.byBasename.get(ReleaseKnowledgeBrowseHelper.normalize(module.getModuleName()));
+        return resolvePublishedModuleDocPath(module, docIndex);
     }
 
     private String resolvePublishedFunctionDoc(ModuleDto module, SubModuleDto subModule, FunctionDto fn,
                                                ReleaseDocumentIndex docIndex) {
+        return resolvePublishedFunctionDocPath(module, subModule, fn, docIndex);
+    }
+
+    /**
+     * 与 {@code NasPushStrategy} / {@code KnowledgeServiceImpl#createVersion} 落盘规则一致：
+     * draft.moduleName 面包屑中的空白、斜杠、括号替换为下划线。
+     */
+    static String flattenBreadcrumb(String breadcrumb) {
+        if (breadcrumb == null) {
+            return "_";
+        }
+        return breadcrumb.replaceAll("[\\s/\\(\\)]", "_");
+    }
+
+    static String resolvePublishedModuleDocPath(ModuleDto module, ReleaseDocumentIndex docIndex) {
+        String nested = "modules/" + safeSegment(module.getModuleName()) + ".md";
+        if (docIndex.byRelativePath.containsKey(nested)) {
+            return nested;
+        }
+        String flat = lookupByFlattenedStem(docIndex, flattenBreadcrumb(module.getModuleName()));
+        if (flat != null) {
+            return flat;
+        }
+        return docIndex.byBasename.get(ReleaseKnowledgeBrowseHelper.normalize(safeSegment(module.getModuleName())));
+    }
+
+    static String resolvePublishedFunctionDocPath(ModuleDto module, SubModuleDto subModule, FunctionDto fn,
+                                                  ReleaseDocumentIndex docIndex) {
         String nested = "modules/"
                 + safeSegment(module.getModuleName()) + "/"
                 + safeSegment(subModule.getSubModuleName()) + "/"
@@ -171,7 +191,20 @@ public class KnowledgeBrowseTreeService {
         if (docIndex.byRelativePath.containsKey(nested)) {
             return nested;
         }
-        return resolvePublishedModuleDoc(module, docIndex);
+        String breadcrumb = module.getModuleName() + " / " + subModule.getSubModuleName()
+                + " / " + fn.getFunctionName();
+        String flat = lookupByFlattenedStem(docIndex, flattenBreadcrumb(breadcrumb));
+        if (flat != null) {
+            return flat;
+        }
+        return resolvePublishedModuleDocPath(module, docIndex);
+    }
+
+    private static String lookupByFlattenedStem(ReleaseDocumentIndex docIndex, String flattenedStem) {
+        if (!StringUtils.hasText(flattenedStem)) {
+            return null;
+        }
+        return docIndex.byBasename.get(ReleaseKnowledgeBrowseHelper.normalize(flattenedStem));
     }
 
     static String safeSegment(String raw) {

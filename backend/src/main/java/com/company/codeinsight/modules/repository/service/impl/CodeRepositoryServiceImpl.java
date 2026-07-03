@@ -19,7 +19,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
-import java.time.LocalDateTime;
 import java.util.Collection;
 import java.util.Set;
 
@@ -130,7 +129,9 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
             throw new BusinessException("该代码库下存在 " + activeCount + " 个未完成任务，请先处理后再删除");
         }
 
-        repo.setDeletedAt(LocalDateTime.now());
-        this.updateById(repo);
+        // @TableLogic 字段不能通过 updateById 写入，须走 removeById 触发逻辑删除
+        if (!this.removeById(id)) {
+            throw new BusinessException("代码库删除失败");
+        }
     }
 }

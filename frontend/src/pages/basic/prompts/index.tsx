@@ -33,14 +33,12 @@ import {
   testRunPrompt,
   updatePrompt,
 } from '../../../api/prompt';
-import { listModels } from '../../../api/model';
-import type { AiModel, Prompt } from '../../../types';
+import type { Prompt } from '../../../types';
 import type { PromptType } from './constants';
 import { PROMPT_TYPE_TABS } from './constants';
 import { createPromptColumns, renderPromptExpandedRow } from './columns';
-import { getPreferredModel } from './utils';
 import PromptFormModal from './PromptFormModal';
-import PromptTrialModal from './PromptTrialModal';
+import PromptTrialModal from '../../../components/PromptTrialModal';
 import './prompts.css';
 
 const { Text, Paragraph } = Typography;
@@ -102,24 +100,6 @@ const PromptsPage: React.FC = () => {
   const [formModalType, setFormModalType] = useState<PromptType>('MODULARIZE');
   const [trialOpen, setTrialOpen] = useState(false);
   const [trialPrompt, setTrialPrompt] = useState<Prompt | null>(null);
-  const [models, setModels] = useState<AiModel[]>([]);
-  const [selectedModelId, setSelectedModelId] = useState<number | undefined>();
-  const [sampleCode, setSampleCode] = useState<string>(
-    `public class OrderService {
-  public void createOrder(Order order) {
-    checkInventory(order.getItemId());
-    orderMapper.insert(order);
-  }
-}`,
-  );
-  const [trialRunning, setTrialRunning] = useState(false);
-  const [trialResult, setTrialResult] = useState<{
-    inputTokens: number;
-    outputTokens: number;
-    durationMs: number;
-    result: string;
-    errorReason?: string;
-  } | null>(null);
 
   /** 拉取指定 promptType + lifecycle 的提示词（仅 DEFAULT 类别） */
   const fetchPrompts = useCallback(async () => {
@@ -162,18 +142,6 @@ const PromptsPage: React.FC = () => {
     fetchTypeStats();
   }, [fetchPrompts, fetchTypeStats]);
 
-  /** 拉取可用模型(试跑用) */
-  const fetchModels = useCallback(async () => {
-    try {
-      const data = await listModels();
-      setModels(data);
-      const preferred = getPreferredModel(data);
-      if (preferred) setSelectedModelId(preferred.id);
-    } catch {
-      // ignore
-    }
-  }, []);
-
   useEffect(() => {
     fetchPrompts();
   }, [fetchPrompts]);
@@ -181,10 +149,6 @@ const PromptsPage: React.FC = () => {
   useEffect(() => {
     fetchTypeStats();
   }, [fetchTypeStats]);
-
-  useEffect(() => {
-    fetchModels();
-  }, [fetchModels]);
 
   /** 切换 lifecycle / promptType 时重置到第一页 */
   useEffect(() => {
@@ -211,6 +175,8 @@ const PromptsPage: React.FC = () => {
   };
   const openEditModal = useCallback(async (p: Prompt) => {
     // 已发布/已归档的提示词:先克隆为新 DRAFT(版本+1),再打开编辑弹窗
+    // 注意:即使后端已 clone 一条 DRAFT,前端也不要切 tab/重置分页,保持用户当前所在 lifecycle 视图不变;
+    // 用户取消编辑时,留在原 tab;DRAFT 列表里的新草稿可由用户后续手动查看或删除。
     if (p.lifecycle === 'RELEASED' || p.lifecycle === 'ARCHIVED') {
       try {
         const cloned = await clonePrompt(p.id);
@@ -218,8 +184,6 @@ const PromptsPage: React.FC = () => {
         setEditingPrompt(cloned);
         setFormModalType(clonedType);
         setPromptType(clonedType);
-        setLifecycle('DRAFT');
-        setCurrent(1);
         setFormModalOpen(true);
         return;
       } catch {
@@ -269,31 +233,38 @@ const PromptsPage: React.FC = () => {
   // ========== 试跑模态框 ==========
   const openTrial = useCallback((p: Prompt) => {
     setTrialPrompt(p);
-    setTrialResult(null);
     setTrialOpen(true);
   }, []);
+  /** 试跑回调：通用 PromptTrialModal 自管 state，本函数只负责发请求并返回结果。 */
   const handleTrialRun = async (params: {
     sampleCode: string;
     variables: Record<string, string>;
     resolvedContent: string;
   }) => {
-    if (!trialPrompt) return;
-    setTrialRunning(true);
-    setTrialResult(null);
+    if (!trialPrompt) {
+      return {
+        inputTokens: 0,
+        outputTokens: 0,
+        durationMs: 0,
+        result: '',
+        errorReason: '未选择提示词',
+      };
+    }
     try {
-      const res = await testRunPrompt(
+      return await testRunPrompt(
         trialPrompt.id,
         params.sampleCode,
-        selectedModelId,
+        undefined,
         params.resolvedContent,
       );
-      setTrialResult(res);
-      if (res.errorReason) message.error('试跑失败');
-      else message.success('试跑完成');
-    } catch {
-      message.error('试跑请求失败');
-    } finally {
-      setTrialRunning(false);
+    } catch (e) {
+      return {
+        inputTokens: 0,
+        outputTokens: 0,
+        durationMs: 0,
+        result: '',
+        errorReason: e instanceof Error ? e.message : '试跑请求失败',
+      };
     }
   };
 
@@ -523,17 +494,12 @@ const PromptsPage: React.FC = () => {
       {/* 试跑 */}
       <PromptTrialModal
         open={trialOpen}
-        promptTypeLabel={PROMPT_TYPE_TABS.find((t) => t.key === trialPrompt?.promptType)?.label ?? ''}
-        selectedPrompt={trialPrompt}
-        models={models}
-        selectedModelId={selectedModelId}
-        sampleCode={sampleCode}
-        running={trialRunning}
-        result={trialResult}
-        onCancel={() => setTrialOpen(false)}
+        prompt={trialPrompt}
+        promptTypeLabel={
+          PROMPT_TYPE_TABS.find((t) => t.key === trialPrompt?.promptType)?.label ?? ''
+        }
+        onClose={() => setTrialOpen(false)}
         onRun={handleTrialRun}
-        onModelChange={setSelectedModelId}
-        onSampleCodeChange={setSampleCode}
       />
     </div>
   );

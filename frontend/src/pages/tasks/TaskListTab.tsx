@@ -3,8 +3,8 @@ import {
   Button,
   Card,
   Col,
-  Collapse,
   DatePicker,
+  Form,
   Input,
   Progress,
   Row,
@@ -543,21 +543,15 @@ const TaskListTab: React.FC = () => {
           </Col>
         </Row>
 
-        {/* 精准搜索：可折叠的高级过滤面板 */}
-        <Collapse
-          activeKey={advancedOpen ? ['advanced'] : []}
-          onChange={(keys) => setAdvancedOpen(Array.isArray(keys) && keys.includes('advanced'))}
-          ghost
-          style={{ marginTop: advancedOpen ? 12 : 0 }}
-          items={[
-            {
-              key: 'advanced',
-              showArrow: false,
-              children: (
-                <Row gutter={[12, 12]}>
-                  <Col xs={24} md={6}>
+        {/* 精准搜索：高级过滤面板 */}
+        {advancedOpen && (
+          <div className="ci-advanced-filter-panel">
+            <Form layout="vertical" requiredMark={false} className="ci-advanced-filter-form">
+              <Row gutter={[12, 12]}>
+                <Col xs={24} sm={12} md={6}>
+                  <Form.Item label="状态">
                     <Select
-                      placeholder="状态"
+                      placeholder="全部状态"
                       allowClear
                       style={{ width: '100%' }}
                       value={filterStatus}
@@ -567,10 +561,12 @@ const TaskListTab: React.FC = () => {
                       }}
                       options={Object.entries(statusMeta).map(([value, meta]) => ({ value, label: meta.label }))}
                     />
-                  </Col>
-                  <Col xs={24} md={6}>
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12} md={6}>
+                  <Form.Item label="任务类型">
                     <Select
-                      placeholder="任务类型"
+                      placeholder="全部类型"
                       allowClear
                       style={{ width: '100%' }}
                       value={filterType}
@@ -583,10 +579,12 @@ const TaskListTab: React.FC = () => {
                         { value: 'INCREMENTAL', label: '增量扫描' },
                       ]}
                     />
-                  </Col>
-                  <Col xs={24} md={6}>
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12} md={6}>
+                  <Form.Item label="触发来源">
                     <Select
-                      placeholder="触发来源"
+                      placeholder="全部来源"
                       allowClear
                       style={{ width: '100%' }}
                       value={filterTriggerSource}
@@ -599,22 +597,27 @@ const TaskListTab: React.FC = () => {
                         { value: 'SCHEDULED', label: '定时触发' },
                       ]}
                     />
-                  </Col>
-                  <Col xs={24} md={6}>
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12} md={6}>
+                  <Form.Item label="AI 模型">
                     <Input
                       allowClear
-                      placeholder="AI 模型名（精确）"
+                      placeholder="模型名（精确匹配）"
+                      style={{ width: '100%' }}
                       value={filterModelName ?? ''}
                       onChange={(e) => {
                         setFilterModelName(e.target.value || undefined);
                         setCurrent(1);
                       }}
                     />
-                  </Col>
-                  <Col xs={24} md={12}>
+                  </Form.Item>
+                </Col>
+                <Col xs={24} sm={12} md={12} lg={8}>
+                  <Form.Item label="创建时间">
                     <RangePicker
                       style={{ width: '100%' }}
-                      placeholder={['创建时间(起)', '创建时间(止)']}
+                      placeholder={['开始日期', '结束日期']}
                       value={filterCreatedRange as never}
                       onChange={(v) => {
                         setFilterCreatedRange(v as [Dayjs | null, Dayjs | null] | null);
@@ -622,12 +625,12 @@ const TaskListTab: React.FC = () => {
                       }}
                       allowClear
                     />
-                  </Col>
-                </Row>
-              ),
-            },
-          ]}
-        />
+                  </Form.Item>
+                </Col>
+              </Row>
+            </Form>
+          </div>
+        )}
       </Card>
 
       {/* 任务表 */}

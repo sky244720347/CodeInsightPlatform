@@ -28,6 +28,7 @@ import com.company.codeinsight.modules.draft.entity.KnowledgeDraft;
 import com.company.codeinsight.modules.draft.enums.DraftStatus;
 import com.company.codeinsight.modules.draft.mapper.DraftWorkspaceMapper;
 import com.company.codeinsight.modules.draft.mapper.KnowledgeDraftMapper;
+import com.company.codeinsight.modules.draft.service.DraftService;
 import com.company.codeinsight.modules.knowledge.entity.KnowledgeVersion;
 import com.company.codeinsight.modules.knowledge.mapper.KnowledgeVersionMapper;
 import com.company.codeinsight.modules.push.entity.PushTask;
@@ -81,6 +82,9 @@ public class PushServiceImpl implements PushService {
     private KnowledgeDraftMapper draftMapper;
 
     @Autowired
+    private DraftService draftService;
+
+    @Autowired
     private PushTaskMapper pushTaskMapper;
 
     @Autowired
@@ -129,6 +133,7 @@ public class PushServiceImpl implements PushService {
         if (task == null) {
             throw new BusinessException("未找到关联的知识构建任务");
         }
+        draftService.assertTaskReadyForKnowledgePublish(task.getId());
 
         // 强校验：所有 Draft 必须为 CONFIRMED 状态
         DraftWorkspace ws = workspaceMapper.selectOne(
@@ -155,9 +160,11 @@ public class PushServiceImpl implements PushService {
         version.setPushMethod(method.name());
         versionMapper.updateById(version);
 
-        // 更新 DecompileTask 状态（如果当前是 CONFIRMED）
         if (TaskStatus.CONFIRMED.name().equals(task.getStatus())) {
             stateMachineService.transitTo(task.getId(), TaskStatus.PUSHING, null);
+        } else {
+            throw new BusinessException("任务状态异常（当前: " + task.getStatus()
+                    + "），仅 CONFIRMED 状态可入队推送");
         }
 
         // 入队到 Redis
@@ -331,7 +338,10 @@ public class PushServiceImpl implements PushService {
                 pushTask.setCompletedAt(LocalDateTime.now());
                 pushTaskMapper.updateById(pushTask);
 
-                stateMachineService.transitTo(version.getTaskId(), TaskStatus.PUSHED, null);
+                DecompileTask taskAfterPush = taskMapper.selectById(version.getTaskId());
+                if (taskAfterPush != null && TaskStatus.PUSHING.name().equals(taskAfterPush.getStatus())) {
+                    stateMachineService.transitTo(version.getTaskId(), TaskStatus.PUSHED, null);
+                }
 
                 log.info("推送任务执行成功: pushTaskId={}, result={}", pushTaskId, result);
             } catch (Exception e) {

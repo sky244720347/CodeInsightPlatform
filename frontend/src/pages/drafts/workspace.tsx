@@ -364,8 +364,29 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     [documentLeaves, selectedDraftId],
   );
 
-  // 按状态统计当前任务的模块数量（用于确认通过弹窗）
+  // 按状态统计当前任务的模块数量（用于任务整体通过弹窗）
   const moduleStatusCounts = useMemo(() => countModulesByStatus(treeData), [treeData]);
+
+  const allDraftsConfirmed = useMemo(() => {
+    if (flatLeaves.length === 0) return false;
+    return flatLeaves.every((leaf) => leaf.status === 'CONFIRMED' || leaf.status === 'PUSHED');
+  }, [flatLeaves]);
+
+  const unconfirmedDraftCount = useMemo(
+    () => flatLeaves.filter((leaf) => leaf.status !== 'CONFIRMED' && leaf.status !== 'PUSHED').length,
+    [flatLeaves],
+  );
+
+  const taskOverallConfirmed = useMemo(
+    () =>
+      selectedTask?.status === 'CONFIRMED'
+      || selectedTask?.status === 'PUSHING'
+      || selectedTask?.status === 'PUSHED',
+    [selectedTask],
+  );
+
+  const canTaskOverallPass =
+    allDraftsConfirmed && !taskOverallConfirmed && !isTaskLocked && !demoMode && flatLeaves.length > 0;
 
   /* ===================================================================
    *  数据拉取
@@ -610,7 +631,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
       if (currentLeafIndex >= 0 && currentLeafIndex < documentLeaves.length - 1) {
         setSelectedDraftId(documentLeaves[currentLeafIndex + 1].draftId);
       } else {
-        message.info("已是最后一个文档");
+        message.success('已是最后一篇，全部文档已逐篇通过时可点击「任务整体通过」');
       }
     } catch (e) { message.error("审核通过失败"); }
   };
@@ -690,7 +711,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
         getCurrentOperator(),
         confirmComment.trim() || undefined,
       );
-      message.success('任务下整组草稿已确认通过');
+      message.success('任务已整体确认通过，可前往推送页创建版本');
       setConfirmModalOpen(false);
       setConfirmComment('');
       // 重新拉取 treeData 让目录树每个节点状态从最新数据派生
@@ -753,6 +774,10 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   };
 
   const handlePush = () => {
+    if (selectedTask?.status !== 'CONFIRMED') {
+      message.warning('请先在复核页完成「任务整体通过」，任务状态为已确认后才可推送');
+      return;
+    }
     // 推送前最后一道人工防线：让复核人确认"无变更"再进推送页面。
     // 后端 pushVersion / pushToGit 已有 CONFIRMED 校验兜底，前端这里只做 UX 确认。
     const sysName = selectedTask?.systemId != null ? `系统 #${selectedTask.systemId}` : '当前系统';
@@ -1046,24 +1071,29 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
       </div>
     );
 
-    // 工具组：演示数据 / 全屏 — 仅 UI 偏好，与数据粒度无关
-    // 任务级操作已抽到顶层 renderTaskActions（放在顶部"选择上下文"卡里），不放在工具栏。
-    // 当前草稿编辑已抽到 draftEditGroup。
+    // 工具组：任务整体通过 / 全屏
     const toolGroup = (
       <div className="ci-action-group">
         <Tooltip
           title={
-            demoMode
-              ? '关闭演示模式：恢复调用真实后端接口'
-              : '开启演示模式：所有数据来自本地 mock store，无需后端即可体验完整复核流程'
+            taskOverallConfirmed
+              ? '任务已完成整体确认'
+              : unconfirmedDraftCount > 0
+                ? `尚有 ${unconfirmedDraftCount} 篇文档未逐篇「通过」`
+                : flatLeaves.length === 0
+                  ? '暂无草稿文档'
+                  : isTaskLocked
+                    ? '任务已推送，不可再次确认'
+                    : '全部文档已逐篇通过，点击完成任务整体确认后可创建版本并推送'
           }
         >
           <Button
-            icon={<ExperimentOutlined />}
-            type={demoMode ? 'primary' : 'default'}
-            onClick={() => handleToggleDemo(!demoMode)}
+            icon={<SafetyCertificateOutlined />}
+            type="primary"
+            onClick={handleConfirm}
+            disabled={!canTaskOverallPass}
           >
-            {demoMode ? '演示中' : '演示数据'}
+            任务整体通过
           </Button>
         </Tooltip>
         <Tooltip title={isFullscreen ? '退出全屏' : '全屏浏览：文档占满整个视口'}>
@@ -1543,7 +1573,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
             >
               <CheckOutlined />
             </span>
-            <span>确认通过</span>
+            <span>任务整体通过</span>
             {selectedTask && <Tag color="processing">任务 #{selectedTask.id}</Tag>}
           </Space>
         }
@@ -1553,8 +1583,8 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
           setConfirmModalOpen(false);
           setConfirmComment('');
         }}
-        okText="确认通过"
-        okButtonProps={{ loading: confirmLoading }}
+        okText="任务整体通过"
+        okButtonProps={{ loading: confirmLoading, disabled: !allDraftsConfirmed }}
         cancelButtonProps={{ disabled: confirmLoading }}
         destroyOnClose
       >
@@ -1605,9 +1635,13 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                   </Text>
                   <Text type="secondary" style={{ fontSize: 11 }}>共 {total} 个模块</Text>
                 </Space>
-                {unconfirmedCount > 0 && (
+                {unconfirmedCount > 0 ? (
                   <div style={{ marginTop: 6, fontSize: 11, color: '#92400e' }}>
-                    ⚠️ 还有 {unconfirmedCount} 个模块未确认，确定要通过吗？
+                    尚有 {unconfirmedCount} 篇文档未逐篇「通过」，请先完成逐篇确认。
+                  </div>
+                ) : (
+                  <div style={{ marginTop: 6, fontSize: 11, color: '#047857' }}>
+                    全部文档已逐篇通过，可提交任务整体确认。
                   </div>
                 )}
               </div>

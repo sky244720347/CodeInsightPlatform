@@ -14,9 +14,9 @@ import {
   PlusOutlined,
   SnippetsOutlined,
 } from '@ant-design/icons';
-import { createPrompt } from '../../api/prompt';
+import { createPrompt, testRunPrompt } from '../../api/prompt';
 import type { Prompt } from '../../types';
-import SystemPromptTrialModal from './SystemPromptTrialModal';
+import PromptTrialModal from '../../components/PromptTrialModal';
 
 const { Text } = Typography;
 
@@ -96,7 +96,7 @@ const SystemPromptEditorModal: React.FC<Props> = ({
   /** 打开试跑:用当前表单内容(可能未保存)作为 preview prompt */
   const handleOpenTrial = () => {
     const preview: Prompt = {
-      id: -1,
+      id: 0,
       name: currentName,
       content: currentContent,
       version: 1,
@@ -238,11 +238,40 @@ const SystemPromptEditorModal: React.FC<Props> = ({
 
       {/* 试跑子弹窗:用当前表单内容(可能未保存)作为 preview prompt */}
       {trialPreview && (
-        <SystemPromptTrialModal
+        <PromptTrialModal
           open={trialOpen}
           prompt={trialPreview}
           promptTypeLabel={promptTypeLabel}
           onClose={() => setTrialOpen(false)}
+          onRun={async (params) => {
+            // 编辑器里的草稿（id=0）尚未落库，后端无法跑：直接展示 resolvedContent 并提示
+            if (trialPreview.id === 0) {
+              return {
+                inputTokens: 0,
+                outputTokens: 0,
+                durationMs: 0,
+                result: params.resolvedContent,
+                errorReason:
+                  '当前是未保存的草稿预览，未真正调用 AI；点「创建」保存为草稿后再次试跑才会调用大模型。',
+              };
+            }
+            try {
+              return await testRunPrompt(
+                trialPreview.id,
+                params.sampleCode,
+                undefined,
+                params.resolvedContent,
+              );
+            } catch (e) {
+              return {
+                inputTokens: 0,
+                outputTokens: 0,
+                durationMs: 0,
+                result: '',
+                errorReason: e instanceof Error ? e.message : '试跑请求失败',
+              };
+            }
+          }}
         />
       )}
     </>

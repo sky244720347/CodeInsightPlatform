@@ -104,13 +104,34 @@ function TagsFieldPopover({
 // ---------------------------------------------------------------------------
 
 export interface ModuleHierarchyEditorProps {
-  taskId: number;
-  /** 提交保存并继续生成文档后通知父组件刷新数据 */
+  // ============ 受控模式（新）：父组件持有 hierarchy 状态 ============
+  /** 当前模块层级。父组件负责加载（getModuleHierarchy / getPublishedHierarchy 等）。 */
+  value?: ModuleHierarchy | null;
+  /** 树形/JSON 编辑时回传给父组件的最新值 */
+  onChange?: (next: ModuleHierarchy | null) => void;
+  /** 父组件提交保存（resolve 后认为提交成功；reject 时由父组件处理错误） */
+  onSubmit?: (hierarchy: ModuleHierarchy) => Promise<void> | void;
+  /** 父组件标识的「正在加载初始数据」状态 */
+  loading?: boolean;
+  /** 父组件标识的「正在提交」状态（控制 renderSubmit 的 saving 形参） */
+  saving?: boolean;
+
+  // ============ 任务流模式（保留旧行为，向后兼容）============
+  /**
+   * 任务流模式下的 taskId。非空时启用自加载（getModuleHierarchy）+ 自提交
+   * （replaceModuleHierarchy + resumeModuleHierarchyReview），与 onChange/onSubmit 互斥。
+   */
+  taskId?: number | null;
+  /** 任务流模式下，提交成功后通知父组件刷新 */
   onSubmitted?: () => void;
-  /** 渲染自定义的「保存并继续」按钮（可选；不传则渲染默认 Popconfirm 按钮） */
+
+  // ============ 通用定制点 ============
+  /** 渲染自定义的「保存」按钮（不传则不渲染） */
   renderSubmit?: (handleSubmit: () => void, saving: boolean) => React.ReactNode;
-  /** 渲染顶部的额外说明（可选；不传则渲染默认 Alert） */
+  /** 渲染顶部的额外说明（不传则渲染默认 Alert） */
   renderAlert?: () => React.ReactNode;
+  /** 是否允许拖拽节点（默认 true）。受控只读场景可传 false。 */
+  enableDrag?: boolean;
 }
 
 interface EditorDataNode extends DataNode {
@@ -185,50 +206,99 @@ function generateCandidateId(prefix: 'm' | 's' | 'f', existing: string[]): strin
 
 const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
   taskId,
+  value,
+  onChange,
+  onSubmit,
+  loading: loadingProp,
+  saving: savingProp,
   onSubmitted,
   renderSubmit,
   renderAlert,
+  enableDrag = true,
 }) => {
-  const [loading, setLoading] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [hierarchy, setHierarchy] = useState<ModuleHierarchy | null>(null);
-  const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
-  const hierarchyRef = useRef<ModuleHierarchy | null>(null);
+  /** 受控模式：未传 taskId 时由父组件通过 value/onChange 持有 hierarchy */
+  const isControlled = taskId == null;
 
-  // 同步 ref，确保 onDrop 等回调读到最新 hierarchy
+  // 内部 state（受控模式下也保留镜像，用于渲染 + ref 同步；外部 value 变化时由 effect 同步）
+  const [internalLoading, setInternalLoading] = useState(false);
+  const [internalSaving, setInternalSaving] = useState(false);
+  const [hierarchy, setHierarchy] = useState<ModuleHierarchy | null>(value ?? null);
+  const [expandedKeys, setExpandedKeys] = useState<React.Key[]>([]);
+  const hierarchyRef = useRef<ModuleHierarchy | null>(hierarchy);
+
+  // 同步 ref，确保 onDrop / applyHierarchy 等回调读到最新 hierarchy
   useEffect(() => {
     hierarchyRef.current = hierarchy;
   }, [hierarchy]);
 
-  // 加载当前任务模块层级
+  // 受控模式：value 变化 → 同步到内部 state + ref；展开状态只在 null→non-null 时重置
+  const wasNullRef = useRef<boolean>(true);
   useEffect(() => {
-    if (taskId == null) return;
+    if (!isControlled) return;
+    const next = value ?? null;
+    setHierarchy(next);
+    hierarchyRef.current = next;
+    if (wasNullRef.current && next !== null) {
+      setExpandedKeys([]);
+    }
+    wasNullRef.current = next === null;
+  }, [isControlled, value]);
+
+  // 任务流模式：自加载（getModuleHierarchy）
+  useEffect(() => {
+    if (isControlled || taskId == null) return;
     let cancelled = false;
-    setLoading(true);
+    setInternalLoading(true);
     setHierarchy(null);
     setExpandedKeys([]);
+    wasNullRef.current = true;
     getModuleHierarchy(taskId)
       .then((data) => {
         if (cancelled) return;
         // 把后端返回的 "Y"/"N" 字符串统一转成 boolean，使树形 Checkbox 正确显示
         const normalized = yonHierarchyFromDisplay(data ?? { taskId, modules: {} });
         setHierarchy(normalized);
+        hierarchyRef.current = normalized;
+        wasNullRef.current = false;
       })
       .catch(() => {
         // request.ts 拦截器已统一弹错
       })
       .finally(() => {
-        if (!cancelled) setLoading(false);
+        if (!cancelled) setInternalLoading(false);
       });
     return () => {
       cancelled = true;
     };
-  }, [taskId]);
+  }, [isControlled, taskId]);
+
+  // 统一的「应用变更」入口
+  // - 受控模式：基于 hierarchyRef.current 计算新值，eager 写回 ref，调用 onChange 让父组件回填
+  // - 非受控模式：直接 setHierarchy
+  const applyHierarchy = useCallback(
+    (
+      next:
+        | ModuleHierarchy
+        | null
+        | ((prev: ModuleHierarchy | null) => ModuleHierarchy | null),
+    ) => {
+      if (isControlled) {
+        const base = hierarchyRef.current;
+        const computed = typeof next === 'function' ? next(base) : next;
+        if (computed === base) return;
+        hierarchyRef.current = computed;
+        onChange?.(computed);
+      } else {
+        setHierarchy((prev) => (typeof next === 'function' ? next(prev) : next));
+      }
+    },
+    [isControlled, onChange],
+  );
 
   // --------------- Mutation helpers ---------------
 
   const updateModule = useCallback((moduleId: string, next: ModuleNode | null) => {
-    setHierarchy((prev) => {
+    applyHierarchy((prev) => {
       if (!prev) return prev;
       const modules = { ...(prev.modules ?? {}) };
       if (next === null) {
@@ -238,11 +308,11 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
       }
       return { ...prev, modules };
     });
-  }, []);
+  }, [applyHierarchy]);
 
   const updateSubModule = useCallback(
     (moduleId: string, subId: string, next: SubModuleNode | null) => {
-      setHierarchy((prev) => {
+      applyHierarchy((prev) => {
         if (!prev) return prev;
         const m = prev.modules?.[moduleId];
         if (!m) return prev;
@@ -258,12 +328,12 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
         };
       });
     },
-    [],
+    [applyHierarchy],
   );
 
   const updateFunction = useCallback(
     (moduleId: string, subId: string, fnId: string, next: FunctionNode | null) => {
-      setHierarchy((prev) => {
+      applyHierarchy((prev) => {
         if (!prev) return prev;
         const m = prev.modules?.[moduleId];
         const sm = m?.subModules?.[subId];
@@ -289,11 +359,11 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
         };
       });
     },
-    [],
+    [applyHierarchy],
   );
 
   const addModule = useCallback(() => {
-    setHierarchy((prev) => {
+    applyHierarchy((prev) => {
       if (!prev) return prev;
       const existingIds = Object.keys(prev.modules ?? {});
       const newId = generateCandidateId('m', existingIds);
@@ -307,10 +377,10 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
       setExpandedKeys((keys) => [...keys, newId]);
       return { ...prev, modules: { ...(prev.modules ?? {}), [newId]: newMod } };
     });
-  }, []);
+  }, [applyHierarchy]);
 
   const addSubModule = useCallback((moduleId: string) => {
-    setHierarchy((prev) => {
+    applyHierarchy((prev) => {
       if (!prev) return prev;
       const m = prev.modules?.[moduleId];
       if (!m) return prev;
@@ -338,10 +408,10 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
         },
       };
     });
-  }, []);
+  }, [applyHierarchy]);
 
   const addFunction = useCallback((moduleId: string, subId: string) => {
-    setHierarchy((prev) => {
+    applyHierarchy((prev) => {
       if (!prev) return prev;
       const m = prev.modules?.[moduleId];
       const sm = m?.subModules?.[subId];
@@ -377,7 +447,7 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
         },
       };
     });
-  }, []);
+  }, [applyHierarchy]);
 
   // --------------- Drag & Drop ---------------
 
@@ -405,18 +475,15 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
   }, []);
 
   const onDrop: TreeProps['onDrop'] = useCallback((info) => {
-    const h = hierarchyRef.current;
-    if (!h) return;
-
-    const dragNode = info.dragNode as unknown as EditorDataNode;
-    const dropNode = info.node as unknown as EditorDataNode;
-    const dragKey = String(dragNode.key);
-    const dropKey = String(dropNode.key);
-
-    if (dragKey === dropKey) return;
-
-    setHierarchy((prev) => {
+    applyHierarchy((prev) => {
       if (!prev) return prev;
+
+      const dragNode = info.dragNode as unknown as EditorDataNode;
+      const dropNode = info.node as unknown as EditorDataNode;
+      const dragKey = String(dragNode.key);
+      const dropKey = String(dropNode.key);
+
+      if (dragKey === dropKey) return prev;
 
       if (!info.dropToGap) {
         // ---- 放入节点内部：改变父子关系 ----
@@ -516,7 +583,7 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
 
       return prev;
     });
-  }, []);
+  }, [applyHierarchy]);
 
   // --------------- Tree data ---------------
 
@@ -752,28 +819,38 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
   // --------------- Submit ---------------
 
   const handleSubmit = async () => {
+    // 注意：handleSubmit 只在 click 事件里触发，那时 hierarchy state 一定是最新的；
+    // 不读 hierarchyRef（避免 react-hooks/refs 误判 + 防止 ref 渲染期访问）。
     if (!hierarchy) return;
-    setSaving(true);
+    if (isControlled) {
+      // 受控模式：完全交给父组件处理（含错误捕获与状态管理）
+      await onSubmit?.(hierarchy);
+      return;
+    }
+    // 任务流模式：内部直接调后端 API
+    setInternalSaving(true);
     try {
-      await replaceModuleHierarchy(taskId, hierarchy);
-      await resumeModuleHierarchyReview(taskId);
+      await replaceModuleHierarchy(taskId!, hierarchy);
+      await resumeModuleHierarchyReview(taskId!);
       message.success('已保存并提交继续生成文档');
       onSubmitted?.();
     } finally {
-      setSaving(false);
+      setInternalSaving(false);
     }
   };
 
   // --------------- Render ---------------
 
   const moduleCount = Object.keys(hierarchy?.modules ?? {}).length;
+  const isLoading = isControlled ? !!loadingProp : internalLoading;
+  const isSaving = isControlled ? !!savingProp : internalSaving;
 
   // 当前激活的 tab：tree（默认）/ json
   const [activeTab, setActiveTab] = useState<'tree' | 'json'>('tree');
 
   // 批量确认操作
   const handleConfirmAll = (value: boolean) => {
-    setHierarchy((prev) => {
+    applyHierarchy((prev) => {
       if (!prev) return prev;
       const modules = { ...(prev.modules ?? {}) };
       for (const modKey of Object.keys(modules)) {
@@ -797,7 +874,7 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
     });
   };
 
-  if (loading) {
+  if (isLoading) {
     return (
       <div style={{ padding: 48, textAlign: 'center' }}>
         <LoadingOutlined /> 正在加载模块层级...
@@ -899,7 +976,7 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
             </>
           )}
         </Space>
-        {renderSubmit && renderSubmit(handleSubmit, saving)}
+        {renderSubmit && renderSubmit(handleSubmit, isSaving)}
       </div>
 
       <Tabs
@@ -919,10 +996,11 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
                       className="ci-hierarchy-tree ci-hierarchy-tree--compact"
                       treeData={treeData}
                       titleRender={titleRender}
-                      draggable={{
-                        icon: false,
-                        nodeDraggable: () => true,
-                      }}
+                      draggable={
+                        enableDrag
+                          ? { icon: false, nodeDraggable: () => true }
+                          : false
+                      }
                       allowDrop={allowDrop}
                       onDrop={onDrop}
                       expandedKeys={expandedKeys}
@@ -951,7 +1029,7 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
             children: (
               <ModuleHierarchyJsonEditor
                 value={hierarchy}
-                onChange={(next) => setHierarchy(next)}
+                onChange={(next) => applyHierarchy(next)}
               />
             ),
           },

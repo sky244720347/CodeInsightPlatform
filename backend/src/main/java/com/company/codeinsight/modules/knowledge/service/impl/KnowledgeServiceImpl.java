@@ -89,6 +89,9 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     @Autowired
     private com.company.codeinsight.common.storage.StorageProperties storageProperties;
 
+    @Autowired
+    private com.company.codeinsight.modules.draft.service.DraftService draftService;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /**
@@ -107,6 +110,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         if (!StringUtils.hasText(task.getSourceCommit())) {
             throw new BusinessException("任务尚未完成代码拉取，缺少 source_commit，无法生成知识版本");
         }
+        draftService.assertTaskReadyForKnowledgePublish(taskId);
 
         CodeRepository repo = repositoryMapper.selectById(task.getRepositoryId());
         if (repo == null) {

@@ -131,14 +131,12 @@ public class KnowledgeRemediationServiceImpl implements KnowledgeRemediationServ
         if (repo == null) {
             throw new BusinessException("仓库不存在");
         }
-        decompilePromptService.validateRepositoryPromptBinding(ctx.getRepositoryId());
+        DecompileTask baseTask = decompileTaskService.getById(baseTaskId);
 
         DecompileTask task = new DecompileTask();
         task.setSystemId(ctx.getSystemId());
         task.setRepositoryId(ctx.getRepositoryId());
-        task.setModularizePromptId(repo.getModularizePromptId());
-        task.setDocumentPromptId(repo.getDocumentPromptId());
-        DecompileTask baseTask = decompileTaskService.getById(baseTaskId);
+        applyRemediationPromptIds(task, repo, baseTask);
         task.setModelName(baseTask != null ? baseTask.getModelName() : null);
         if (baseTask != null && StringUtils.hasText(baseTask.getSourceCommit())) {
             task.setSourceCommit(baseTask.getSourceCommit());
@@ -156,9 +154,24 @@ public class KnowledgeRemediationServiceImpl implements KnowledgeRemediationServ
         task.setRemediationScopeJson(scopeJson);
         task.setEntryScanConfig(repo.getEntryScanConfig());
         task.setPriority(70);
-        decompilePromptService.validateTaskPromptBinding(task.getModularizePromptId(), task.getDocumentPromptId());
         decompileTaskService.save(task);
         return task;
+    }
+
+    /**
+     * 纠错任务提示词继承顺序：来源任务（已跑通流水线）→ 仓库绑定。
+     * 避免仓库未单独绑定时，无法基于已发布版本发起纠错。
+     */
+    private void applyRemediationPromptIds(DecompileTask task, CodeRepository repo, DecompileTask baseTask) {
+        Long modularizeId = baseTask != null && baseTask.getModularizePromptId() != null
+                ? baseTask.getModularizePromptId()
+                : repo.getModularizePromptId();
+        Long documentId = baseTask != null && baseTask.getDocumentPromptId() != null
+                ? baseTask.getDocumentPromptId()
+                : repo.getDocumentPromptId();
+        task.setModularizePromptId(modularizeId);
+        task.setDocumentPromptId(documentId);
+        decompilePromptService.validateTaskPromptBinding(modularizeId, documentId);
     }
 
     private ActiveKnowledgeContext requireContext(Long repositoryId, Long systemId) {

@@ -61,7 +61,7 @@ const Logs: React.FC = () => {
   };
 
   useEffect(() => {
-    listSystems({ current: 1, size: 100, status: 1 }).then((data) => setSystems(data.records));
+    listSystems({ current: 1, size: 100 }).then((data) => setSystems(data.records));
   }, []);
 
   // 从 URL 参数带出 taskId 时，自动查询

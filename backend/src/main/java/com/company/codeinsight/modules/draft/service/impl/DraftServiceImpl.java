@@ -401,19 +401,20 @@ public class DraftServiceImpl implements DraftService {
             }
         }
 
-        // 1. 整组草稿一次性置为 CONFIRMED
         List<KnowledgeDraft> drafts = draftMapper.selectList(
                 new LambdaQueryWrapper<KnowledgeDraft>().eq(KnowledgeDraft::getWorkspaceId, ws.getId())
         );
         if (drafts.isEmpty()) {
             throw new BusinessException("任务 #" + taskId + " 工作区为空，无需确认");
         }
-        LocalDateTime now = LocalDateTime.now();
         for (KnowledgeDraft d : drafts) {
-            d.setStatus(DraftStatus.CONFIRMED.name());
-            d.setUpdatedAt(now);
-            draftMapper.updateById(d);
+            String st = d.getStatus();
+            if (!DraftStatus.CONFIRMED.name().equals(st) && !DraftStatus.PUSHED.name().equals(st)) {
+                throw new BusinessException("尚有未逐篇确认的草稿: " + d.getModuleName()
+                        + "（当前: " + st + "），请先对每篇文档点击「通过」");
+            }
         }
+        LocalDateTime now = LocalDateTime.now();
 
         // 2. 工作区晋升 COMPLETED
         ws.setStatus("COMPLETED");
@@ -443,6 +444,35 @@ public class DraftServiceImpl implements DraftService {
                     log.warn("联动任务状态推进失败（任务={}，当前={}）：{}",
                             task.getId(), current, e.getMessage());
                 }
+            }
+        }
+    }
+
+    @Override
+    public void assertTaskReadyForKnowledgePublish(Long taskId) {
+        DecompileTask task = taskMapper.selectById(taskId);
+        if (task == null) {
+            throw new BusinessException("未找到知识构建任务");
+        }
+        if (!TaskStatus.CONFIRMED.name().equals(task.getStatus())) {
+            throw new BusinessException("任务尚未整体确认（当前状态: " + task.getStatus()
+                    + "），请先在复核页逐篇通过后点击「任务整体通过」");
+        }
+        DraftWorkspace ws = workspaceMapper.selectOne(
+                new LambdaQueryWrapper<DraftWorkspace>().eq(DraftWorkspace::getTaskId, taskId));
+        if (ws == null) {
+            throw new BusinessException("草稿工作区不存在");
+        }
+        List<KnowledgeDraft> drafts = draftMapper.selectList(
+                new LambdaQueryWrapper<KnowledgeDraft>().eq(KnowledgeDraft::getWorkspaceId, ws.getId()));
+        if (drafts.isEmpty()) {
+            throw new BusinessException("工作区内没有草稿，无法发布");
+        }
+        for (KnowledgeDraft d : drafts) {
+            String st = d.getStatus();
+            if (!DraftStatus.CONFIRMED.name().equals(st) && !DraftStatus.PUSHED.name().equals(st)) {
+                throw new BusinessException("模块 " + d.getModuleName()
+                        + " 尚未确认（当前: " + st + "），无法创建版本或推送");
             }
         }
     }
