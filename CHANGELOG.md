@@ -4,6 +4,182 @@
 
 ---
 
+## [v0.1.9] - 2026-07-03
+
+### 🧭 增量影响分析：反向 BFS 追溯入口类
+
+增量场景从「路径 / classPaths 直接命中」升级为「变更类 → 调用链反向 BFS → 入口类 → 模块」的业务语义判定，落地 [#9 P1](docs/roadmap-8-9-plan.md)。
+
+- **新模块 `modules/callchain`**：
+  - [MethodCallReverseGraphService](backend/src/main/java/com/company/codeinsight/modules/callchain/service/MethodCallReverseGraphService.java) + [Impl](backend/src/main/java/com/company/codeinsight/modules/callchain/service/impl/MethodCallReverseGraphServiceImpl.java)：基于 `ci_method_call` 维护反向邻接表，对给定类做反向 BFS（默认深度上限 15）。
+  - [IncrementalImpactAnalyzer](backend/src/main/java/com/company/codeinsight/modules/callchain/service/IncrementalImpactAnalyzer.java) + [Impl](backend/src/main/java/com/company/codeinsight/modules/callchain/service/impl/IncrementalImpactAnalyzerImpl.java)：产出 [IncrementalImpact](backend/src/main/java/com/company/codeinsight/modules/callchain/model/IncrementalImpact.java)（`hierarchyRetargetEntries` + `docRetargetModuleIds` + `traces` + `degradedModuleCount`）。
+  - [IncrementalImpactPersistence](backend/src/main/java/com/company/codeinsight/modules/callchain/service/IncrementalImpactPersistence.java) + [Impl](backend/src/main/java/com/company/codeinsight/modules/callchain/service/impl/IncrementalImpactPersistenceImpl.java) + [Support](backend/src/main/java/com/company/codeinsight/modules/callchain/support/IncrementalImpactSupport.java)：落表 / 上下文传递。
+  - [MethodCall](backend/src/main/java/com/company/codeinsight/modules/callchain/entity/MethodCall.java) 扩字段：`target_class` / `target_method` 已可用。
+  - [IncrementalImpactQueryService](backend/src/main/java/com/company/codeinsight/modules/task/service/IncrementalImpactQueryService.java) + [Impl](backend/src/main/java/com/company/codeinsight/modules/task/service/impl/IncrementalImpactQueryServiceImpl.java)：暴露 `GET /api/tasks/{id}/incremental-impact`。
+- **流水线接入**：
+  - [DecompileTaskServiceImpl](backend/src/main/java/com/company/codeinsight/modules/task/service/impl/DecompileTaskServiceImpl.java)：在 PARSING_CODE 之后、MODULE_HIERARCHY 之前调用影响分析；`TaskExecutionLogger` 输出「入口重算 N / 反向命中 M 模块 / 降级 K」。
+  - [ModuleHierarchyServiceImpl](backend/src/main/java/com/company/codeinsight/modules/hierarchy/service/impl/ModuleHierarchyServiceImpl.java)：以 `hierarchyRetargetEntries` 替代纯 `isPathChanged(entry.filePath)`。
+  - [AiSummaryServiceImpl](backend/src/main/java/com/company/codeinsight/modules/ai/service/impl/AiSummaryServiceImpl.java)：与现有 `moduleTouchedByChange` **取并集**，反向命中模块也重生成文档。
+- **降级策略**：反查失败时 `classPaths` 直接命中仍纳入 `docRetargetModuleIds`，确保不丢模块。
+- **测试**：[MethodCallReverseGraphServiceTest](backend/src/test/java/com/company/codeinsight/modules/callchain/MethodCallReverseGraphServiceTest.java) 覆盖反向 BFS 命中 / 深度超限 / 入口变更场景。
+
+### 🌐 知识查询三页拆分（#7 主体）
+
+知识查看从单页重构为「入口 / 层级 / 文档」三页 + 共享上下文，详见 [knowledge-query-split-plan.md](docs/knowledge-query-split-plan.md)。
+
+- **页面拆分**：
+  - [entrypoints.tsx](frontend/src/pages/knowledge/entrypoints.tsx)：扫描入口清单（`ci_repository_entrypoint`）。
+  - [hierarchy.tsx](frontend/src/pages/knowledge/hierarchy.tsx)：已发布模块层级（`ci_repository_module_hierarchy`）。
+  - [documents.tsx](frontend/src/pages/knowledge/documents.tsx)：知识文档（`releases/{sys}/{repo}/{versionNum}/`）。
+  - 旧路由 `/knowledge/browse` 重定向至 `/knowledge/documents`。
+- **共享壳层**：[KnowledgeContextBar](frontend/src/pages/knowledge/KnowledgeContextBar.tsx) + [useKnowledgeQueryContext](frontend/src/pages/knowledge/useKnowledgeQueryContext.ts)：系统 / 仓库跨页记忆（localStorage 键 `ci-knowledge-query-context`），展示当前生效 `versionNum` 与 `taskId`。
+- **纠错（Remediation）API**：
+  - `POST /api/knowledge/remediation/entrypoints`：排除入口后从 `AI_ANALYZING` 续跑。
+  - `POST /api/knowledge/remediation/hierarchy`：从 `GENERATING_DOC` 续跑层级调整。
+  - `POST /api/knowledge/remediation/documents`：按 `moduleIds` 重跑文档。
+  - `POST /api/knowledge/remediation/documents/edit` + `/{id}/approve`：发布版 Markdown 人工修订（待审 → 批准后直写 NAS release 文件，并打标 `contentOrigin: HUMAN_EDITED`）。
+- **数据模型扩展**：`ci_task` 增 `remediation_kind` / `base_version_id` / `base_task_id` / `resume_from` / `remediation_scope_json`；`trigger_source` 扩为 VARCHAR(40) 容纳 `KNOWLEDGE_REMEDIATION`。
+- **新表**：[ci_knowledge_release_edit](backend/src/main/resources/db/schema.sql)：人工修订待审记录。
+- **流水线改造**：
+  - [TaskQueueDispatcher](backend/src/main/java/com/company/codeinsight/modules/task/service/TaskQueueDispatcher.java)：纠错任务按 `resume_from` 跳到指定阶段。
+  - [TaskStateMachineServiceImpl](backend/src/main/java/com/company/codeinsight/modules/task/service/impl/TaskStateMachineServiceImpl.java)：允许纠错跳转路径。
+  - [DecompileTaskServiceImpl](backend/src/main/java/com/company/codeinsight/modules/task/service/impl/DecompileTaskServiceImpl.java)：纠错阶段幂等，避免重复 `transitTo`。
+
+### 📤 增量任务门禁 + 推送 Merge
+
+增量任务不再静默降级为全量；推送时与已有 NAS `releases` merge，不丢模块，详见 [incremental-release-merge-plan.md](docs/incremental-release-merge-plan.md)。
+
+- **决策落地**：
+  - D1：Merge 权威来源 = `last_published_version_id` 对应的 NAS `releases` 目录。
+  - D2：任务内种子化时机 = `pullAndScan` 之后、`MODULE_HIERARCHY` 之前。
+  - D3：删除文件在 merge 时同步剔除（层级 classPaths、入口、模块文档）。
+  - D4：增量任务门禁 = 仓库必须有 PUSHED 版本 + `last_commit_id` 非空，否则拒绝创建。
+  - D5：索引类文件 merge 后基于完整模块集全量重算。
+- **代码改动**：
+  - [DecompileTaskServiceImpl](backend/src/main/java/com/company/codeinsight/modules/task/service/impl/DecompileTaskServiceImpl.java)：写入 `ci_task.source_commit`；门禁校验；任务内种子化。
+  - [RepositoryPublishService](backend/src/main/java/com/company/codeinsight/modules/push/service/RepositoryPublishService.java)：推送时按 `applyFromTask` 与已有 release merge，刷新 `last_published_version_id` / `last_published_task_id`。
+  - [RepositoryActiveKnowledgeResolver](backend/src/main/java/com/company/codeinsight/modules/knowledge/service/RepositoryActiveKnowledgeResolver.java)：知识查看读 `last_published_version_id` 指向的 release。
+- **测试**：[RepositoryPublishServiceRollbackTest](backend/src/test/java/com/company/codeinsight/modules/push/impl/RepositoryPublishServiceRollbackTest.java)、[TaskQueueDispatcherRemediationTest](backend/src/test/java/com/company/codeinsight/modules/task/TaskQueueDispatcherRemediationTest.java)、[TaskStateMachineRemediationTransitTest](backend/src/test/java/com/company/codeinsight/modules/task/TaskStateMachineRemediationTransitTest.java)。
+
+### 📚 文档同步
+
+- **[docs/roadmap-8-9-plan.md](docs/roadmap-8-9-plan.md)**（新增）：#7 收尾 → #9 后端影响分析 → #8 UI 三阶段路线图，含强制执行顺序与里程碑甘特图。
+- **[docs/incremental-hierarchy-doc-plan.md](docs/incremental-hierarchy-doc-plan.md)**（新增）：入口类 / 非入口类变更对模块层级 / 文档重生成的两条规则。
+- **[docs/method-binding-reverse-index.md](docs/method-binding-reverse-index.md)**（新增）：方法→功能反向绑定表 `ci_method_function_binding`，规避 `function.method_signatures` 回填污染。
+- **[docs/incremental-release-merge-plan.md](docs/incremental-release-merge-plan.md)**（新增）：D1—D5 决策记录 + 典型故障场景。
+- **[docs/knowledge-query-split-plan.md](docs/knowledge-query-split-plan.md)**（新增）：三页导航 + 纠错 API + 已知限制。
+- **[docs/cluster-readiness.md](docs/cluster-readiness.md)**（新增）：单机 → 集群架构变更、Leader 选举、Redis 分布式并发配置。
+
+---
+
+## [v0.1.8] - 2026-07-02
+
+### 📚 知识查看：列表 / 树形双模式 + NAS 发布仓库
+
+知识查看新增树形模式（默认），且与 NAS 发布仓库解耦，详见 [knowledge-browse-dual-view-plan.md](docs/knowledge-browse-dual-view-plan.md)。
+
+- **双模式 API**：
+  - `GET /api/knowledge/browse`（分页）：列表模式，可选系统 / 仓库 / 搜索。
+  - `GET /api/knowledge/browse/tree`：树形模式，系统 + 仓库必选，三层结构（模块 → 子模块 → 功能叶子）。
+- **后端改造**：
+  - [KnowledgeBrowseQuery](backend/src/main/java/com/company/codeinsight/modules/knowledge/dto/KnowledgeBrowseQuery.java) 支持 `systemId` / `repositoryId` 可选。
+  - 已选 `repositoryId` 时读 `ci_repository.last_published_version_id` → `releases/{sys}/{repo}/{versionNum}/`；跨仓库 / 未选仓库仍走 DB + temp_repos（开发调试路径）。
+  - 树形层级来源 `ci_repository_module_hierarchy`（仓库已发布态）。
+- **前端**：
+  - [documents.tsx](frontend/src/pages/knowledge/documents.tsx) 默认树形，`localStorage` 键 `ci-knowledge-view-mode` 记忆偏好。
+  - 选仓库后展示「当前生效：vX.Y.Z」；预览支持 `contentUri`（`release:...`）读取 NAS 正文。
+- **发布 / 回滚联动**：发布成功更新 `last_published_version_id` + `ci_repository_publish_snapshot`；「回滚到该版本」恢复仓库配置并切换生效指针；知识查看自动读对应 release 目录。
+
+### 🏷️ 业务知识维护 + 系统级提示词绑定
+
+- **业务知识**：
+  - 新模块 [modules/businessknowledge](backend/src/main/java/com/company/codeinsight/modules/businessknowledge/)：实体 / Mapper / Service / Controller。
+  - 前端 [SystemBusinessKnowledgeModal](frontend/src/pages/systems/SystemBusinessKnowledgeModal.tsx)：在系统层维护业务术语 / 规则 / 合规口径。
+  - 知识查看「业务知识」入口与代码知识统一索引。
+- **提示词绑定**：`ci_system` / `ci_repository` 增 `modularize_prompt_id` / `document_prompt_id`；任务创建回退到「仓库级 → 系统级」提示词链。
+  - 前端 [SystemPromptBindModal](frontend/src/pages/systems/SystemPromptBindModal.tsx) + [SystemPromptEditorModal](frontend/src/pages/systems/SystemPromptEditorModal.tsx) 重构绑定与编辑流。
+
+### 🪟 扫描窗口 + 试跑
+
+- **扫描窗口**：
+  - 新模块 [modules/scanwindow](backend/src/main/java/com/company/codeinsight/modules/scanwindow/)：实体 / Service / Controller。
+  - 前端 [ScanWindowModal](frontend/src/pages/systems/ScanWindowModal.tsx) + [ScanWindowHeatmap](frontend/src/pages/basic/ScanWindowHeatmap.tsx)：以热力图展示时间窗口，调度器仅在窗口内拉起任务。
+- **扫描配置试跑**：
+  - 新增 `ci_entry_scan_trial` 表 + [EntryScanTrial](backend/src/main/java/com/company/codeinsight/modules/entrypoint/trial/) 系列。
+  - 前端 [RepositoryScanConfigModal](frontend/src/pages/systems/RepositoryScanConfigModal.tsx) 提供「试跑」入口，提交配置后不创建正式任务，仅展示匹配到的入口数 / 样本。
+- **提示词试跑**：[SystemPromptTrialModal](frontend/src/pages/systems/SystemPromptTrialModal.tsx)：单条变量替换试跑。
+
+### 🛠️ 内部优化
+
+- **存储抽象**：
+  - 新增 [StorageMode](backend/src/main/java/com/company/codeinsight/common/storage/StorageMode.java) + [StorageProperties](backend/src/main/java/com/company/codeinsight/common/storage/StorageProperties.java) + [TaskWorkspacePaths](backend/src/main/java/com/company/codeinsight/common/storage/TaskWorkspacePaths.java)。
+  - 默认 `LOCAL`；集群模式共享同一 `local-path` / `workspace-root` 卷。
+- **AI 调用重试**：
+  - 新增 [AiRetryProperties](backend/src/main/java/com/company/codeinsight/common/config/AiRetryProperties.java) + [PipelineAiCaller](backend/src/main/java/com/company/codeinsight/modules/ai/service/PipelineAiCaller.java)：封装通用重试 + 上下文清理。
+  - 配套 [AiResponseJsonExtractor](backend/src/main/java/com/company/codeinsight/common/util/AiResponseJsonExtractor.java) 统一 JSON 抽取。
+- **方法→功能绑定**：[ci_method_function_binding](backend/src/main/resources/db/schema.sql) 新表，由 Java 端解析 AI 输出时填充，每方法 1 行指向功能（权威源），规避 `function.method_signatures` 回填污染。
+- **入口配置**：[EntryPointConfig](backend/src/main/java/com/company/codeinsight/modules/entrypoint/model/EntryPointConfig.java) + [TypeIncludeRules](backend/src/main/java/com/company/codeinsight/modules/entrypoint/model/TypeIncludeRules.java) + [ExcludeTarget](backend/src/main/java/com/company/codeinsight/modules/entrypoint/model/ExcludeTarget.java) 三件套，配置 / 排除 / 包含类型可序列化；扫描配置写到 `ci_repository.entry_scan_config` 与 `ci_task.entry_scan_config`。
+
+### ⚠️ 已知遗留
+
+- **#7 联调补丁**：`TaskQueueDispatcher` / `TaskStateMachineServiceImpl` / `DecompileTaskServiceImpl` 在工作区已改但未提交，#9 开工前需先入库并手工验收。
+- **#8 依赖 #9 产出**：任务详情增量影响 UI 需等 `IncrementalImpact` API 稳定后才能联调。
+- **scope 外模块不回填**：纠错任务在层级 / 文档场景下，未在 scope 内的模块不会自动从 release 导入草稿，复核页可能不完整（见 `knowledge-query-split-plan.md`）。
+- **文档人工修订 MVP**：待审 / 批准直写在同一页，无独立审批工作台。
+
+---
+
+## [v0.1.7] - 2026-07-01
+
+### 🌲 知识查看：树形查看 + NAS 存储
+
+- **树形浏览**：仓库级模块 / 子模块 / 功能三层结构（`ci_repository_module_hierarchy`），替代纯平铺列表。
+- **NAS 仓库解耦**：已确认知识不再依赖 DB temp_repos，统一写入 NAS `releases/{sys}/{repo}/{versionNum}/`；`ci_repository_publish_snapshot` 记录发布快照。
+- **API 拆分**：`/api/knowledge/browse/tree` 与 `/api/knowledge/browse` 分开。
+
+---
+
+## [v0.1.6] - 2026-07-01
+
+### 🛠️ 提示词绑定仓库 + 扫描配置试跑
+
+- `ci_prompt.scope_id` 支持「系统级 / 仓库级」作用域；任务创建时按「任务 → 仓库 → 系统」回退。
+- 扫描配置 `entry_scan_config` 在仓库 / 任务两处可独立覆盖，并提供试跑入口（见 [docs/incremental-hierarchy-doc-plan.md](docs/incremental-hierarchy-doc-plan.md) 关联设计）。
+
+### 🗑️ JOB 配置下线
+
+- 移除任务中心旧的 JOB 创建入口，统一走「任务创建向导」（`/tasks?openCreate=1`）；见 commit `1e42a0d JOB配置删除`。
+
+---
+
+## [v0.1.5] - 2026-06-30
+
+### 🌐 分布式 / 集群就绪
+
+单机 MVP 演进到多节点集群的能力开关与基础配置，详见 [docs/cluster-readiness.md](docs/cluster-readiness.md)。
+
+- **集群开关**：`code-insight.cluster.enabled`（`CLUSTER_ENABLED`），本地开发默认 `false`。
+- **Leader 选举**：`ci:leader:task-dispatcher` / `ci:leader:schedule-executor` 持有者运行调度器。
+- **任务认领**：`SELECT … FOR UPDATE SKIP LOCKED` + `claimed_by` / `lease_until` 预留 `PENDING` 行。
+- **Redis 并发**：全局 `ci:permits:task:global` + 每系统 `ci:permits:task:sys:{id}`，holder=`task:{id}`。
+- **AI 并发**：JVM `Semaphore` → Redis Set `ci:permits:ai:global`；配置变更通过 Pub/Sub `ci:config:refresh` 广播。
+- **共享存储**：所有节点挂载同一 `local-path` / `workspace-root` 卷（`TaskWorkspacePaths` 统一解析 `{workspace-root}/task_{id}`）。
+- **存储抽象**：新增 [StorageProperties](backend/src/main/java/com/company/codeinsight/common/storage/StorageProperties.java) / [StorageMode](backend/src/main/java/com/company/codeinsight/common/storage/StorageMode.java)。
+
+### ⏰ 定时任务（Schedule）
+
+- **新模块** [modules/scanwindow](backend/src/main/java/com/company/codeinsight/modules/scanwindow/)：扫描窗口实体 / Service。
+- 新表：`ci_schedule_task` / `ci_schedule_fire_record`。
+- 定时计划与扫描窗口协同：窗口外定时计划排队等待，窗口内由 Leader 节点的 `ScheduleExecutor` 拉起。
+- 任务详情支持 `schedule_id` 反查定时计划。
+
+### 🎨 前端 UI 优化
+
+- 工作台 / 任务中心 / 草稿复核区视觉细节调整；移动端适配进一步收敛（多次「【YYYYMMDDHHMM：优化】前端UI」commit）。
+- 知识查看 Beta：树形结构初版落地。
+
+---
+
 ## [v0.1.4] - 2026-06-28
 
 ### 🔄 增量扫描（INCREMENTAL）全链路贯通

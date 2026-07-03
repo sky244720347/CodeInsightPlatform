@@ -745,7 +745,11 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     changedFqSet.add(fq);
                 }
             }
-            log.info("增量草稿生成 — taskId={} 变更文件映射到 FQ 类名 {} 个", taskId, changedFqSet.size());
+            // Phase 3：把多态 ancestors 一起加入扩展集，避免 moduleTouchedByChange 漏命中
+            changedFqSet = com.company.codeinsight.modules.callchain.support.IncrementalImpactSupport
+                    .expandChangedFqSetWithPolymorphicAncestors(taskId, changedFqSet, methodCallMapper);
+            log.info("增量草稿生成 — taskId={} 变更文件映射到 FQ 类名（含多态 ancestors） {} 个",
+                    taskId, changedFqSet.size());
         }
 
         // 6. 根据 granularity 分发到整模块或按功能粒度

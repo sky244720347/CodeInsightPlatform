@@ -22,6 +22,7 @@ import com.company.codeinsight.common.storage.StorageProperties;
 import com.company.codeinsight.modules.repository.publish.entity.RepositoryPublishSnapshot;
 import com.company.codeinsight.modules.repository.publish.service.RepositoryPublishService;
 import com.company.codeinsight.common.util.DraftFileUtil;
+import com.company.codeinsight.common.util.DraftPathValidator;
 import com.company.codeinsight.modules.draft.entity.DraftWorkspace;
 import com.company.codeinsight.modules.draft.entity.KnowledgeDraft;
 import com.company.codeinsight.modules.draft.enums.DraftStatus;
@@ -188,11 +189,17 @@ public class PushServiceImpl implements PushService {
             }
         }
 
-        String illegalChars = ".*[\\\\/:*?\"<>|].*";
+        String pathError = null;
+        KnowledgeDraft invalidDraft = null;
         for (KnowledgeDraft draft : drafts) {
-            if (draft.getModuleName().matches(illegalChars)) {
-                throw new BusinessException("模块名 " + draft.getModuleName() + " 包含非法字符，无法推送！");
+            pathError = DraftPathValidator.validatePushFilePath(draft.getFilePath());
+            if (pathError != null) {
+                invalidDraft = draft;
+                break;
             }
+        }
+        if (pathError != null) {
+            throw new BusinessException("模块 " + invalidDraft.getModuleName() + " 的" + pathError + "，无法推送！");
         }
 
         // 校验草稿内容中不能残留 `- [ ]` 待确认标记

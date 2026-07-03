@@ -1,5 +1,6 @@
 package com.company.codeinsight.modules.callchain.service.impl;
 
+import com.company.codeinsight.modules.callchain.mapper.MethodCallMapper;
 import com.company.codeinsight.modules.callchain.model.EntryMethodHit;
 import com.company.codeinsight.modules.callchain.model.ImpactTrace;
 import com.company.codeinsight.modules.callchain.model.ImpactTraceKind;
@@ -33,6 +34,7 @@ public class IncrementalImpactAnalyzerImpl implements IncrementalImpactAnalyzer 
     private static final int DEFAULT_MAX_DEPTH = 15;
 
     private final MethodCallReverseGraphService reverseGraphService;
+    private final MethodCallMapper methodCallMapper;
 
     @Override
     public IncrementalImpact analyze(Long taskId,
@@ -95,10 +97,19 @@ public class IncrementalImpactAnalyzerImpl implements IncrementalImpactAnalyzer 
             }
         }
 
+        // Phase 3：扩展 changedFqSet，把"具象实现改动"隐含扩展到所有 polymorphic ancestors
+        // 这样 module.classPaths 里只引接口不引具象的函数也会被判定为受改动影响。
+        Set<String> expandedChangedFqSet = IncrementalImpactSupport.expandChangedFqSetWithPolymorphicAncestors(
+                taskId, changedFqSet, methodCallMapper);
+        if (expandedChangedFqSet.size() > changedFqSet.size()) {
+            log.debug("IncrementalImpactAnalyzer 多态扩展 — taskId={} 原始 changedFqCount={} 扩展后={}",
+                    taskId, changedFqSet.size(), expandedChangedFqSet.size());
+        }
+
         int degradedCount = 0;
         if (hierarchy != null && hierarchy.getModules() != null) {
             for (ModuleDto module : hierarchy.getModules().values()) {
-                if (!IncrementalImpactSupport.moduleTouchedByChange(module, changedFqSet)) {
+                if (!IncrementalImpactSupport.moduleTouchedByChange(module, expandedChangedFqSet)) {
                     continue;
                 }
                 if (!docModules.contains(module.getId())) {

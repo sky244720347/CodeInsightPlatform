@@ -63,30 +63,35 @@ mvn -DskipTests clean package                # 打包 JAR
 
 ```mermaid
 flowchart TD
-    A[系统接入] --> B[代码库配置<br/>（基线 Commit ID 落库）] --> C[提示词配置]
+    A[系统接入] --> B[代码库配置<br/>（基线 Commit ID 落库）] --> C[提示词与扫描配置]
     C --> D{选择任务类型}
     D -- INITIAL 全量 --> E[拉取与全量扫描]
-    D -- INCREMENTAL 增量 --> E2[git diff 与变更文件清单]
+    D -- INCREMENTAL 增量 --> E2[git diff 与变更文件清单<br/>推送 merge 不丢模块]
     E --> F[静态解析与切片]
     E2 --> F
-    F --> G[模块识别与 AI 归纳]
+    F --> F0[增量影响分析<br/>反向 BFS 追溯入口]
+    F0 --> G[模块识别与 AI 归纳]
     G --> H{模块层级调试断点<br/>requireHierarchyReview}
     H -- 启用 --> I[人工复核模块层级]
     H -- 跳过 --> J[生成 Markdown 草稿]
     I --> J
     J --> K[负责人复核与确认] --> L[知识版本]
-    L --> M[Git 推送或 ZIP 导出] --> N[Token 与操作日志审计]
+    L --> L2[知识查看<br/>入口 / 层级 / 文档 三页]
+    L2 --> M[Git 推送或 ZIP 导出] --> N[Token 与操作日志审计]
+    L2 -.纠错重跑.-> M
 ```
 
 ### 后端模块分层
 
 `backend/src/main/java/com/company/codeinsight/`
-- `common/` — config / exception / response / model（共享基础设施）
+- `common/` — config / exception / response / storage / util（共享基础设施）
 - `modules/<domain>/` — 每个领域模块统一使用 `entity/`、`mapper/`、`service/`（接口）、`service/impl/`、`controller/` 四层。
 
-当前领域模块清单（共 16 个）：`system`、`repository`、`prompt`、`task`、`scanner`、`parser`、`callchain`、`chunk`、`entrypoint`、`hierarchy`、`ai`、`draft`、`knowledge`、`model`、`auth`、`token`、`log`。模块清单直接看 `modules/` 目录。
+当前领域模块清单（共 22 个）：`system`、`repository`、`prompt`、`task`、`scanner`、`scanwindow`、`parser`、`callchain`、`chunk`、`entrypoint`、`hierarchy`、`ai`、`draft`、`knowledge`、`push`、`model`、`auth`、`token`、`log`、`quotacontrol`、`dashboard`、`businessknowledge`。模块清单直接看 `modules/` 目录。
 
-任务状态机实现在 `modules/task/`，跨阶段推进由 `TaskStateMachineService` 负责；任何状态变更都需在 `ci_operation_log` 留痕。
+任务状态机实现在 `modules/task/`，跨阶段推进由 `TaskStateMachineService` 负责；纠错任务（`trigger_source=KNOWLEDGE_REMEDIATION` + `remediation_kind`）可按 `resume_from` 字段跳到 `AI_ANALYZING` 或 `GENERATING_DOC`，由 `TaskQueueDispatcher` 派发。任何状态变更都需在 `ci_operation_log` 留痕。
+
+数据库表 34 张，schema 启动时由 `backend/src/main/resources/db/schema.sql` 幂等初始化（`CREATE TABLE IF NOT EXISTS` + `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`）。
 
 ### 前端 API 对齐
 
@@ -97,6 +102,8 @@ flowchart TD
 ```
 
 页面代码拿到的就是 `data` 内容，code 非零时拦截器会按 `message` 抛错。
+
+当前前端页面（`frontend/src/pages/`）：`dashboard/`、`login/`、`systems/`、`tasks/`（含 `hierarchy-review` / `entrypoint-review` 子页与 `IncrementalImpactCard`）、`drafts/`、`knowledge/`（`entrypoints` / `hierarchy` / `documents` 三页 + `KnowledgeContextBar` + `useKnowledgeQueryContext`）、`push/`、`token-audit/`、`logs/`、`schedules/`、`basic/`（`ScanWindowHeatmap` / `orchestration`）。
 
 ### 任务状态机
 
@@ -118,7 +125,7 @@ DRAFT
                                                               └─> PUSHED
 ```
 
-终止状态：`FAILED` / `CANCELLED` / `ARCHIVED`。`PUSHED` 为终态。状态机禁止非法跳转。`ci_task.require_hierarchy_review` 默认 `true`；关闭后 `MODULE_HIERARCHY` 直接进入 `GENERATING_DOC`，跳过人工断点。
+终止状态：`FAILED` / `CANCELLED` / `ARCHIVED`。`PUSHED` 为终态。状态机禁止非法跳转；纠错任务（`trigger_source=KNOWLEDGE_REMEDIATION`）按 `resume_from` 字段跳到 `AI_ANALYZING` / `GENERATING_DOC`。`ci_task.require_hierarchy_review` 默认 `true`；关闭后 `MODULE_HIERARCHY` 直接进入 `GENERATING_DOC`，跳过人工断点。
 
 ### 增量扫描（INCREMENTAL 任务）
 
@@ -126,18 +133,65 @@ DRAFT
 
 - `IncrementalContext` — 不可变上下文，封装 `changedPaths` / `deletedPaths`，提供 `isPathChanged/Deleted/Unchanged` 判定方法。`IncrementalContext.fullScan()` 走全量分支。
 - `ScanResult` — `pullAndScan` 的返回值：`projectDir + IncrementalContext`。
+- `IncrementalImpact` — `IncrementalImpactAnalyzer` 的产物，含 `hierarchyRetargetEntries` / `docRetargetModuleIds` / `traces` / `degradedModuleCount`，由 `IncrementalImpactPersistence` 落表。
+- `MethodCallReverseGraphService` — 基于 `ci_method_call` 维护反向邻接表，对变更类做反向 BFS（默认深度上限 15），让「非入口类变更」也能精准命中其入口所属模块。
 
-下游 5 个阶段的增量语义：
+下游 6 个阶段的增量语义：
 
 | 阶段 | 接口重载 | 增量行为 |
 | --- | --- | --- |
 | `scanner.pullAndScan` | — | `git diff` 算 changed/deleted；仅重写变更文件 snapshot；删被删文件 snapshot；刷新 `repo.lastCommitId` |
 | `callchain.persistAstForTask` | `(taskId, projectDir, ctx)` | 删变更 + 删除文件的旧调用链；仅对 changedPaths 中 .java 重解析 |
+| `IncrementalImpactAnalyzer` | `analyze(ctx)` | 在 PARSING_CODE 之后算 `hierarchyRetargetEntries` + `docRetargetModuleIds`（反向 BFS 命中入口） |
 | `chunk.chunkAndEstimate` | `(taskId, snapshots, ctx)` | 删变更 + 删除文件的旧 chunk；仅对 changedPaths 重建 FILE/CLASS/METHOD |
-| `hierarchy.buildAndPersist` | `(taskId, projectDir, ctx)` | 跳过未变入口的 AI；按 Maven 路径推 FQ 类名从 `function.classPaths` 移除被删引用；落表仍走 `deleteByTaskId + 全量 insert` |
-| `ai.generateDraftDocument` | `(taskId, chunks, promptContent, ctx)` | 仅对「function.classPaths 命中变更 FQ」的模块重跑 AI；其余模块旧草稿保留 |
+| `hierarchy.buildAndPersist` | `(taskId, projectDir, ctx)` | 以 `hierarchyRetargetEntries` 替代纯路径命中；按 Maven 路径推 FQ 类名从 `function.classPaths` 移除被删引用；落表仍走 `deleteByTaskId + 全量 insert` |
+| `ai.generateDraftDocument` | `(taskId, chunks, promptContent, ctx)` | `moduleTouchedByChange` ∪ `docRetargetModuleIds` 决定重跑集合；其余模块旧草稿保留 |
 
-降级路径（不会让流水线挂在增量分支）：无 `lastCommitId` 基线 / 本地路径 / Mock 降级 / `resolve(ref^{tree})` 失败（force-push / rebase）→ 警告日志 + 全量扫描。
+降级路径（不会让流水线挂在增量分支）：无 `lastCommitId` 基线 / 本地路径 / Mock 降级 / `resolve(ref^{tree})` 失败（force-push / rebase）→ 警告日志 + 全量扫描。增量任务门禁：仓库必须有 PUSHED 版本 + `lastCommitId` 非空，否则拒绝创建（见 [docs/incremental-release-merge-plan.md](./docs/incremental-release-merge-plan.md)）。
+
+### 知识查看（入口 / 层级 / 文档 三页）
+
+知识查看按 [docs/knowledge-query-split-plan.md](./docs/knowledge-query-split-plan.md) 拆为三页，共享 `KnowledgeContextBar` + `useKnowledgeQueryContext`（localStorage 键 `ci-knowledge-query-context`）：
+
+| 子项 | 路由 | 数据源 |
+| --- | --- | --- |
+| 扫描入口 | `/knowledge/entrypoints` | `ci_repository_entrypoint` |
+| 模块层级 | `/knowledge/hierarchy` | `ci_repository_module_hierarchy` |
+| 知识文档 | `/knowledge/documents` | NAS `releases/{sys}/{repo}/{versionNum}/` |
+
+旧路由 `/knowledge/browse` 重定向至 `/knowledge/documents`。已选仓库时只读 `last_published_version_id` 对应 release；纠错入口（`POST /api/knowledge/remediation/{entrypoints,hierarchy,documents}` + `documents/edit` / `edit/{id}/approve`）支持排除入口、调整层级、文档重跑与人工修订直写。
+
+### 知识输出目录
+
+负责人 `CONFIRMED` 后，平台在目标仓库生成：
+
+```text
+/docs/code-insight
+  index.md
+  module-index.md
+  architecture-overview.md
+  frontend-overview.md
+  backend-overview.md
+  api-index.md
+  database-index.md
+  dependency-index.md
+  pending-confirmation.md
+  /modules
+  /changes
+  /meta
+```
+
+元数据包括 `knowledge-version.json`、`module-map.yaml` 和 `prompt-used.json`。仓库级已发布快照写在 `ci_repository_publish_snapshot`；生效版本指针 `ci_repository.last_published_version_id` 由推送成功 / 回滚更新（见 `modules/push/RepositoryPublishService`）。
+
+### 集群 / 分布式
+
+集群开关 `code-insight.cluster.enabled`（`CLUSTER_ENABLED`）默认 `false`（本地开发）。集群模式行为变更见 [docs/cluster-readiness.md](./docs/cluster-readiness.md)：
+
+- Leader 选举：`ci:leader:task-dispatcher` / `ci:leader:schedule-executor`。
+- 任务认领：`SELECT … FOR UPDATE SKIP LOCKED` + `claimed_by` / `lease_until` 预留 `PENDING` 行。
+- Redis 并发：全局 `ci:permits:task:global` + 每系统 `ci:permits:task:sys:{id}`。
+- AI 并发：JVM `Semaphore` → Redis Set `ci:permits:ai:global`，配置变更通过 Pub/Sub `ci:config:refresh` 广播。
+- 共享存储：所有节点挂载同一 `local-path` / `workspace-root` 卷（`TaskWorkspacePaths` 统一解析 `{workspace-root}/task_{id}`）。
 
 ### 存储边界（不要把正文塞进数据库）
 

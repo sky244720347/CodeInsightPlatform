@@ -1,5 +1,8 @@
 package com.company.codeinsight.modules.callchain.support;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.company.codeinsight.modules.callchain.entity.MethodCall;
+import com.company.codeinsight.modules.callchain.mapper.MethodCallMapper;
 import com.company.codeinsight.modules.callchain.model.EntryMethodHit;
 import com.company.codeinsight.modules.hierarchy.model.FunctionDto;
 import com.company.codeinsight.modules.hierarchy.model.ModuleDto;
@@ -8,14 +11,68 @@ import com.company.codeinsight.modules.hierarchy.model.SubModuleDto;
 import org.springframework.util.StringUtils;
 
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
- * 增量影响分析共享工具：模块命中判定、入口→模块映射。
+ * 增量影响分析共享工具：模块命中判定、入口→模块映射、Phase 3 多态扩展。
  */
 public final class IncrementalImpactSupport {
 
     private IncrementalImpactSupport() {
+    }
+
+    /**
+     * Phase 3 多态扩展：把 changedFqSet 扩展为"包含所有 polymorphic ancestors 的集合"。
+     *
+     * <p>动机：当 fq 是接口/父类 {@code Notifier} 的具象实现 {@code EmailNotifierImpl} 改了，
+     * {@code function.classPaths} 里只引用 {@code Notifier} 的函数也应该被视作受影响。
+     * 直查 {@code classPaths.contains("EmailNotifierImpl")} 必然漏——本方法用
+     * {@code ci_method_call.dependency_candidates} 反查所有"将 {@code EmailNotifierImpl} 列
+     * 为多态候选"且依赖名是某个父类型的 ci_method_call 行，把那个父类型 FQ 加进扩展集。</p>
+     *
+     * <p>注意：LIKE '%fq%' 仍可能误撞同名长尾（如 {@code EmailNotifierImplHelper}），所以
+     * 这里拿到候选后再用 {@link #candidatesContainExact} 做 token 级精确过滤。</p>
+     */
+    public static Set<String> expandChangedFqSetWithPolymorphicAncestors(Long taskId,
+                                                                        Set<String> changedFqSet,
+                                                                        MethodCallMapper mapper) {
+        if (changedFqSet == null || changedFqSet.isEmpty()) {
+            return changedFqSet == null ? Set.of() : new LinkedHashSet<>(changedFqSet);
+        }
+        if (taskId == null || mapper == null) {
+            return new LinkedHashSet<>(changedFqSet);
+        }
+        Set<String> expanded = new LinkedHashSet<>(changedFqSet);
+        for (String changedFq : changedFqSet) {
+            if (!StringUtils.hasText(changedFq)) continue;
+            List<MethodCall> rows = mapper.selectList(
+                    new LambdaQueryWrapper<MethodCall>()
+                            .eq(MethodCall::getTaskId, taskId)
+                            .like(MethodCall::getDependencyCandidates, changedFq)
+                            .select(MethodCall::getDependencyName, MethodCall::getDependencyCandidates)
+            );
+            for (MethodCall mc : rows) {
+                String declared = mc.getDependencyName();
+                if (!StringUtils.hasText(declared)) continue;
+                if (candidatesContainExact(mc.getDependencyCandidates(), changedFq)) {
+                    expanded.add(declared);
+                }
+            }
+        }
+        return expanded;
+    }
+
+    /**
+     * 在逗号分隔的 FQ 字符串里检查是否存在某个 FQ（精确 token）。
+     * 避免 LIKE '%fq%' 把 'EmailNotifierImplHelper' 当作 'EmailNotifierImpl' 的祖先。
+     */
+    private static boolean candidatesContainExact(String candidatesCsv, String fqcn) {
+        if (!StringUtils.hasText(candidatesCsv)) return false;
+        for (String token : candidatesCsv.split(",")) {
+            if (fqcn.equals(token.trim())) return true;
+        }
+        return false;
     }
 
     public static boolean moduleTouchedByChange(ModuleDto moduleDto, Set<String> changedFqSet) {
