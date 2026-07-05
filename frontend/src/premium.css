@@ -181,22 +181,32 @@ button, input, textarea, select { font: inherit; }
   font-size: 13px;
   font-weight: 550;
   border-radius: 9px;
-  transition: color 180ms ease, background 180ms ease;
+  transition: color 180ms ease, background 180ms ease, box-shadow 180ms ease;
 }
 .ci-menu .ant-menu-submenu-title .ant-menu-title-content { font-weight: 550; }
 .ci-menu .ant-menu-submenu-title .anticon { color: #818ca2; font-size: 16px; }
 .ci-menu .ant-menu-submenu-title:hover {
-  color: #f3f5fa !important;
-  background: rgba(255, 255, 255, 0.055) !important;
+  color: var(--ci-primary) !important;
+  background: var(--ci-primary-bg-hover) !important;
 }
-.ci-menu .ant-menu-submenu-title:hover .anticon { color: #c7ccff; }
+.ci-menu .ant-menu-submenu-title:hover .anticon { color: var(--ci-primary); }
 /* 父菜单被选中（子项命中）：与 .ant-menu-item-selected 视觉一致 */
 .ci-menu .ant-menu-submenu-selected > .ant-menu-submenu-title {
-  color: #fff !important;
-  background: linear-gradient(90deg, rgba(76, 82, 220, 0.38), rgba(76, 82, 220, 0.2)) !important;
-  box-shadow: inset 0 0 0 1px rgba(120, 127, 245, 0.08);
+  color: var(--ci-primary) !important;
+  background: var(--ci-primary-bg) !important;
+  font-weight: 600;
 }
-.ci-menu .ant-menu-submenu-selected > .ant-menu-submenu-title .anticon { color: #8de8f1; }
+.ci-menu .ant-menu-submenu-selected > .ant-menu-submenu-title::before {
+  position: absolute;
+  top: 8px;
+  bottom: 8px;
+  left: 0;
+  width: 2px;
+  background: var(--ci-primary);
+  border-radius: 0 2px 2px 0;
+  content: '';
+}
+.ci-menu .ant-menu-submenu-selected > .ant-menu-submenu-title .anticon { color: var(--ci-primary); }
 
 .ci-sider-footer {
   /* flex 三段式:底部,固定不缩 */

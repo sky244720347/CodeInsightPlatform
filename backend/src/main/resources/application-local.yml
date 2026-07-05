@@ -15,9 +15,9 @@ spring:
       schema-locations: classpath:db/schema.sql
   data:
     redis:
-      host: ${REDIS_HOST:localhost}
+      host: ${REDIS_HOST:47.97.114.189}
       port: ${REDIS_PORT:6379}
-      password: ${REDIS_PASSWORD:}
+      password: ${REDIS_PASSWORD:YourStrongPassword123}
       timeout: 3000ms
   mvc:
     pathmatch:
