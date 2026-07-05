@@ -120,7 +120,7 @@ const SystemPromptEditorModal: React.FC<Props> = ({
     message.success('已加载默认提示词内容到编辑区');
   };
 
-  /** 提交:创建新提示词(DRAFT 草稿) */
+  /** 提交:创建新提示词（Wizard 场景下直接 RELEASED,无需手动发布） */
   const handleSubmit = async () => {
     const values = await form.validateFields();
     if (!values.content?.trim()) {
@@ -133,12 +133,12 @@ const SystemPromptEditorModal: React.FC<Props> = ({
         name: values.name,
         content: values.content,
         promptType,
-        lifecycle: 'DRAFT',
+        // 自定义提示词在 Wizard 里需要「创建即可用」,不强制写死 DRAFT,走后端缺省(lifecycle 留空 → RELEASED)
         isDefault: 0,
         category: scopeId != null ? 'USER' : 'DEFAULT',
         scopeId: scopeId ?? null,
       });
-      message.success(`已创建${promptTypeLabel}提示词草稿`);
+      message.success(`已创建${promptTypeLabel}提示词:${created.name}（已发布,可直接绑定）`);
       onCreated(created);
       onClose();
     } finally {
@@ -149,8 +149,8 @@ const SystemPromptEditorModal: React.FC<Props> = ({
   const title = mode === 'custom' ? '自定义提示词' : '复制默认后修改';
   const desc =
     mode === 'custom'
-      ? '从空白开始编写。提交后保存为 DRAFT 草稿，可在当前页面的下拉框中选择使用。'
-      : '已预填默认提示词内容,可在其基础上修改。提交后保存为新的 DRAFT 草稿。';
+      ? '从空白开始编写。提交后直接以「已发布」状态创建，可在当前页面的下拉框中选择并绑定到仓库。'
+      : '已预填默认提示词内容,可在其基础上修改。提交后直接以「已发布」状态创建新副本。';
 
   return (
     <>
@@ -195,7 +195,14 @@ const SystemPromptEditorModal: React.FC<Props> = ({
           type="info"
           showIcon
           style={{ marginBottom: 16 }}
-          message={desc}
+          message={
+            <Space direction="vertical" size={4}>
+              <Text>{desc}</Text>
+              <Text type="secondary">
+                Wizard 自定义提示词将直接以「已发布」状态创建，绑定到仓库后即可在创建任务时使用，无需再到「基础配置 → 提示词」手动发布。
+              </Text>
+            </Space>
+          }
         />
         <Form
           form={form}
@@ -244,18 +251,8 @@ const SystemPromptEditorModal: React.FC<Props> = ({
           promptTypeLabel={promptTypeLabel}
           onClose={() => setTrialOpen(false)}
           onRun={async (params) => {
-            // 编辑器里的草稿（id=0）尚未落库，后端无法跑：直接展示 resolvedContent 并提示
-            if (trialPreview.id === 0) {
-              return {
-                inputTokens: 0,
-                outputTokens: 0,
-                durationMs: 0,
-                result: params.resolvedContent,
-                errorReason:
-                  '当前是未保存的草稿预览，未真正调用 AI；点「创建」保存为草稿后再次试跑才会调用大模型。',
-              };
-            }
             try {
+              // id=0 未落库：后端在 resolvedContent 非空时跳过按 id 查库，直接试跑
               return await testRunPrompt(
                 trialPreview.id,
                 params.sampleCode,

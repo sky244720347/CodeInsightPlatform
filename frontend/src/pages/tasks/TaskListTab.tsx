@@ -87,7 +87,7 @@ const GROUP_STATUSES: Record<GroupKey, string[] | null> = {
   RUNNING: ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'SPLITTING_TASK', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'GENERATING_DOC', 'PUSHING'],
   PENDING_REVIEW: ['PENDING_REVIEW', 'REVIEWING'],
   CONFIRMED: ['CONFIRMED', 'PUSHED'],
-  CLOSED: ['FAILED', 'CANCELLED', 'ARCHIVED', 'DRAFT'],
+  CLOSED: ['FAILED', 'CANCELLED', 'ARCHIVED'],
 };
 
 const GROUP_LABELS: Record<GroupKey, { label: string; hint: string }> = {
@@ -95,7 +95,7 @@ const GROUP_LABELS: Record<GroupKey, { label: string; hint: string }> = {
   RUNNING: { label: '进行中', hint: '拉取/解析/切片/AI/推送' },
   PENDING_REVIEW: { label: '待处理', hint: '待复核 + 复核中（含驳回待重跑）' },
   CONFIRMED: { label: '已确认', hint: '已通过 + 已推送' },
-  CLOSED: { label: '已终止', hint: '失败 / 取消 / 归档 / 草稿' },
+  CLOSED: { label: '已终止', hint: '失败 / 取消 / 归档' },
 };
 
 /**

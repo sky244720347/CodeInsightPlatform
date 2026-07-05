@@ -116,6 +116,11 @@
   width: 100%;
 }
 
+.ci-prompt-trial-modal .ant-space-item {
+  width: 100%;
+  max-width: 100%;
+}
+
 .ci-prompt-trial-body {
   margin-top: 16px;
 }
@@ -155,13 +160,17 @@
 }
 
 .ci-prompt-result-shell {
+  display: flex;
+  flex-direction: column;
   width: 100%;
+  min-height: 0;
   overflow: hidden;
   border: 1px solid #e3e6ed;
   border-radius: 8px;
 }
 
 .ci-prompt-result-header {
+  flex-shrink: 0;
   justify-content: space-between;
   padding: 8px 12px;
   background: #f8f9fb;
@@ -172,29 +181,35 @@
   font-size: 13px;
 }
 
-.ci-prompt-result-preview {
-  max-height: 520px;
-  margin: 0;
-  background: #ffffff;
+/* 固定高度 + 原生 textarea 滚动，避免 pre 在 flex/Modal 内无法滚轮下滑 */
+.ci-prompt-result-textarea,
+.ci-prompt-result-textarea.ant-input,
+.ci-prompt-result-textarea.ant-input-outlined,
+.ci-prompt-result-textarea.ant-input-outlined:focus-within {
+  flex: 1 1 auto;
+  min-height: 0;
   border: none;
   border-radius: 0;
+  box-shadow: none;
+  background: #ffffff;
 }
 
-.ci-prompt-result-preview-streaming::after {
-  display: inline-block;
-  width: 7px;
-  height: 15px;
-  margin-left: 3px;
-  vertical-align: -2px;
-  background: #3863b9;
-  content: "";
-  animation: ci-prompt-stream-caret 0.9s steps(2, start) infinite;
-}
-
-@keyframes ci-prompt-stream-caret {
-  50% {
-    opacity: 0;
-  }
+.ci-prompt-result-textarea textarea,
+.ci-prompt-result-textarea textarea.ant-input {
+  display: block;
+  height: 360px !important;
+  min-height: 360px !important;
+  max-height: min(360px, 42vh) !important;
+  overflow-y: auto !important;
+  overflow-x: auto !important;
+  resize: none !important;
+  cursor: default;
+  padding: 12px 14px;
+  color: #344054;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
 }
 
 .ci-prompt-form {

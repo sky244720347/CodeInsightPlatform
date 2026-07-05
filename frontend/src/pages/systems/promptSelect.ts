@@ -9,10 +9,10 @@ import type { Prompt } from '../../types';
 export interface ApplyPromptCreatedCtx {
   /** 把新 prompt 推入到当前 Select 的 options 列表 */
   setPrompts: (updater: (prev: Prompt[]) => Prompt[]) => void;
-  /** MODULARIZE 的 pending 选择 ID */
-  setPendingModularizeId: (id: number | null) => void;
-  /** DOCUMENT_GENERATION 的 pending 选择 ID */
-  setPendingDocumentId: (id: number | null) => void;
+  /** 可选：MODULARIZE 的 pending 选择 ID（Form.Item 独占时不需要） */
+  setPendingModularizeId?: (id: number | null) => void;
+  /** 可选：DOCUMENT_GENERATION 的 pending 选择 ID（Form.Item 独占时不需要） */
+  setPendingDocumentId?: (id: number | null) => void;
   /** 可选：Ant Design Form 实例。需要 setFieldsValue 把 Form.Item name 的字段也同步上—— */
   /** 否则 <Select> 用 value 受控，但 <Form.Item> 的内部 form 状态可能对不上 */
   form?: FormInstance;
@@ -47,11 +47,11 @@ export function applyPromptCreated(
     prev.some((x) => x.id === newPrompt.id) ? prev : [...prev, newPrompt],
   );
 
-  // 2) pending 选择状态（驱动 Select 的 `value`）
+  // 2) pending 选择状态（可选，Form.Item 独占时不需要）
   if (ctx.promptType === 'MODULARIZE') {
-    ctx.setPendingModularizeId(newPrompt.id);
+    ctx.setPendingModularizeId?.(newPrompt.id);
   } else {
-    ctx.setPendingDocumentId(newPrompt.id);
+    ctx.setPendingDocumentId?.(newPrompt.id);
   }
 
   // 3) 把 Form.Item 字段也同步——这一步修复了用户报告的"创建后再去人工点一下"

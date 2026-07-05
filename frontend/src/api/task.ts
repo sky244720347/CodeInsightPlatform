@@ -57,7 +57,7 @@ export const listTasks = (params: {
  * - RUNNING：进行中（PENDING / PULLING_CODE / ... / PUSHING）
  * - PENDING_REVIEW：待复核 + 复核中
  * - CONFIRMED：已确认 + 已推送
- * - CLOSED：已终止（FAILED / CANCELLED / ARCHIVED / DRAFT）
+ * - CLOSED：已终止（FAILED / CANCELLED / ARCHIVED）
  */
 export interface TaskStatusSummary {
   ALL: number;

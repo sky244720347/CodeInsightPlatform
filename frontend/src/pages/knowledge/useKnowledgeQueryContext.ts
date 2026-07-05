@@ -4,38 +4,12 @@ import { getKnowledgeContext, type KnowledgeContextView } from '../../api/knowle
 import { listSystems } from '../../api/system';
 import type { Repository, System } from '../../types';
 
-const STORAGE_KEY = 'ci-knowledge-query-context';
-
-interface StoredContext {
-  systemId?: number;
-  repositoryId?: number;
-}
-
-function readStored(): StoredContext {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    if (!raw) return {};
-    return JSON.parse(raw) as StoredContext;
-  } catch {
-    return {};
-  }
-}
-
-function writeStored(value: StoredContext) {
-  try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(value));
-  } catch {
-    /* ignore */
-  }
-}
-
 export function useKnowledgeQueryContext() {
   const [systems, setSystems] = useState<System[]>([]);
   const [repositories, setRepositories] = useState<Repository[]>([]);
-  const [systemId, setSystemIdState] = useState<number | undefined>(() => readStored().systemId);
-  const [repositoryId, setRepositoryIdState] = useState<number | undefined>(
-    () => readStored().repositoryId,
-  );
+  // 默认空,由用户进入页面后自行选择系统 / 仓库
+  const [systemId, setSystemIdState] = useState<number | undefined>(undefined);
+  const [repositoryId, setRepositoryIdState] = useState<number | undefined>(undefined);
   const [context, setContext] = useState<KnowledgeContextView | null>(null);
   const [contextLoading, setContextLoading] = useState(false);
 
@@ -58,13 +32,11 @@ export function useKnowledgeQueryContext() {
   const setSystemId = useCallback((id?: number) => {
     setSystemIdState(id);
     setRepositoryIdState(undefined);
-    writeStored({ systemId: id });
   }, []);
 
   const setRepositoryId = useCallback((id?: number) => {
     setRepositoryIdState(id);
-    writeStored({ systemId, repositoryId: id });
-  }, [systemId]);
+  }, []);
 
   const refreshContext = useCallback(async () => {
     if (repositoryId == null) {
@@ -77,7 +49,6 @@ export function useKnowledgeQueryContext() {
       setContext(data);
       if (data.systemId != null && data.systemId !== systemId) {
         setSystemIdState(data.systemId);
-        writeStored({ systemId: data.systemId, repositoryId });
       }
     } catch {
       setContext(null);

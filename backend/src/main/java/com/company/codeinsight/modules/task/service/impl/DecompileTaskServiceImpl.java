@@ -194,7 +194,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             "RUNNING",         List.of("PENDING", "PULLING_CODE", "PARSING_CODE", "SPLITTING_TASK", "ENTRYPOINT_REVIEW", "AI_ANALYZING", "MODULE_HIERARCHY", "MODULE_HIERARCHY_REVIEW", "GENERATING_DOC", "PUSHING"),
             "PENDING_REVIEW",  List.of("PENDING_REVIEW", "REVIEWING"),
             "CONFIRMED",       List.of("CONFIRMED", "PUSHED"),
-            "CLOSED",          List.of("FAILED", "CANCELLED", "ARCHIVED", "DRAFT")
+            "CLOSED",          List.of("FAILED", "CANCELLED", "ARCHIVED")
     );
 
     @Override

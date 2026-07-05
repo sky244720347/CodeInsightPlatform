@@ -28,10 +28,10 @@ import {
   extractPlaceholders,
   formatPlaceholderToken,
   formatVariableLabel,
-  isFilledBySampleCode,
   JAVA_CODE_VAR_NAMES,
   substitutePlaceholders,
 } from '../utils/promptPlaceholders';
+import '../pages/basic/prompts/prompts.css';
 import { getModelOptionDisabled, getPreferredModel } from '../pages/basic/prompts/utils';
 
 const { Text, Paragraph } = Typography;
@@ -46,11 +46,11 @@ export interface PromptTrialModalProps {
   onClose: () => void;
   /**
    * 触发试跑。
-   * - sampleCode: 用户填的 Java 代码
+   * - sampleCode: 下方「Java 示例代码」参考区内容（仅提示用，不自动写入占位符）
    * - variables: 用户为占位符填的值（key 为占位符名，不含花括号）
-   * - resolvedContent: 已把 variables + sampleCode 替换进 prompt.content 的最终字符串
+   * - resolvedContent: 已把 variables 替换进 prompt.content 的最终字符串
    * 返回 PromptTestResult（由父组件决定如何调后端 API）。
-   * 对于 id=0 的预览 prompt，父组件可拒绝调用并返回 errorReason 即可。
+   * 未落库草稿（id=0）可传 resolvedContent，后端会直接试跑而不查库。
    */
   onRun: (params: {
     sampleCode: string;
@@ -79,11 +79,11 @@ const DEFAULT_SAMPLE = `public class OrderService {
  * 设计要点：
  * - 「自管 state」：sampleCode / variables / models / selectedModelId / running / result 全部在内部 useState；
  *   父组件只需提供 prompt + onRun + onClose，不再管理 6 个受控 prop。
- * - 占位符识别：自动从 prompt.content 抽取 {var} / ${var}，动态生成输入框；
- *   java_code / source_code / java.code 可由下方示例代码自动替换。
+ * - 占位符识别：自动从 prompt.content 抽取 {var} / ${var}，由用户在占位符变量区自行填写。
+ * - 「Java 示例代码」仅为参考提示，不会自动替换 java_code 等占位符。
  * - 「最终 prompt 预览」：实时合成 resolvedContent 并展示。
  * - 模型选择：自动选 isDefault='true'，无 key 的模型灰显。
- * - 支持 id=0 的预览草稿（编辑器内试跑）：父组件 onRun 决定是否调后端。
+ * - 支持 id=0 的未保存草稿：父组件传 resolvedContent 调 `/prompts/{id}/test-run` 即可。
  */
 const PromptTrialModal: React.FC<PromptTrialModalProps> = ({
   open,
@@ -132,17 +132,11 @@ const PromptTrialModal: React.FC<PromptTrialModalProps> = ({
     [prompt?.content],
   );
 
-  /** 把用户填的变量 + sampleCode 合成最终发送给 AI 的字符串 */
+  /** 仅使用用户在占位符变量区填写的值；未填写的保留模板原文 */
   const resolvedContent = useMemo(() => {
     if (!prompt) return '';
-    const merged: Record<string, string> = { ...variables };
-    if (sampleCode) {
-      for (const name of JAVA_CODE_VAR_NAMES) {
-        if (!merged[name]?.trim()) merged[name] = sampleCode;
-      }
-    }
-    return substitutePlaceholders(prompt.content, merged);
-  }, [prompt, variables, sampleCode]);
+    return substitutePlaceholders(prompt.content, variables);
+  }, [prompt, variables]);
 
   const updateVariable = (name: string, value: string) => {
     setVariables((prev) => ({ ...prev, [name]: value }));
@@ -151,10 +145,6 @@ const PromptTrialModal: React.FC<PromptTrialModalProps> = ({
   const handleRun = async () => {
     if (!prompt) {
       message.error('未选择提示词');
-      return;
-    }
-    if (!sampleCode.trim()) {
-      message.warning('请输入一段示例 Java 代码');
       return;
     }
     setRunning(true);
@@ -177,6 +167,7 @@ const PromptTrialModal: React.FC<PromptTrialModalProps> = ({
 
   return (
     <Modal
+      className="ci-prompt-trial-modal"
       title={
         <Space>
           <PlayCircleOutlined />
@@ -189,6 +180,12 @@ const PromptTrialModal: React.FC<PromptTrialModalProps> = ({
       width={880}
       destroyOnClose
       footer={null}
+      styles={{
+        body: {
+          maxHeight: 'calc(100vh - 120px)',
+          overflowY: 'auto',
+        },
+      }}
     >
       {!prompt ? (
         <Empty description="未选择提示词" />
@@ -248,7 +245,7 @@ const PromptTrialModal: React.FC<PromptTrialModalProps> = ({
             }
             extra={
               placeholders.length > 0 && (
-                <Tooltip title="识别模板中的 {var} 或 ${var} 占位符，均可选填；未填写的保留原文。java_code / java.code 若有下方示例代码会自动替换。">
+                <Tooltip title="识别模板中的 {var} 或 ${var} 占位符；请在下方逐项填写，未填写的保留原文。">
                   <Text type="secondary" style={{ fontSize: 12 }}>使用说明</Text>
                 </Tooltip>
               )
@@ -261,10 +258,10 @@ const PromptTrialModal: React.FC<PromptTrialModalProps> = ({
             ) : (
               <Row gutter={[12, 8]}>
                 {placeholders.map((name) => {
-                  const canUseSampleCode = isFilledBySampleCode(name, sampleCode);
                   const value = variables[name] ?? '';
+                  const isCodeVar = JAVA_CODE_VAR_NAMES.has(name);
                   return (
-                    <Col xs={24} md={12} key={name}>
+                    <Col xs={24} md={isCodeVar ? 24 : 12} key={name}>
                       <div className="ci-prompt-var-row">
                         <Text strong className="ci-prompt-var-label">
                           <code>{formatPlaceholderToken(name, prompt?.content)}</code>
@@ -272,20 +269,22 @@ const PromptTrialModal: React.FC<PromptTrialModalProps> = ({
                             {formatVariableLabel(name)}
                           </Text>
                         </Text>
-                        <Input
-                          placeholder={
-                            canUseSampleCode
-                              ? '可选；留空时若有下方示例代码会自动替换'
-                              : '可选；留空时保留占位符原文'
-                          }
-                          value={value}
-                          onChange={(e) => updateVariable(name, e.target.value)}
-                          allowClear
-                        />
-                        {canUseSampleCode && (
-                          <Text type="secondary" style={{ fontSize: 12 }}>
-                            未填时，若有下方「Java 示例代码」会自动用于替换。
-                          </Text>
+                        {isCodeVar ? (
+                          <Input.TextArea
+                            autoSize={{ minRows: 4, maxRows: 12 }}
+                            className="ci-code-input"
+                            placeholder="请粘贴或输入 Java 代码（可参考下方示例代码区）"
+                            value={value}
+                            onChange={(e) => updateVariable(name, e.target.value)}
+                            allowClear
+                          />
+                        ) : (
+                          <Input
+                            placeholder="请填写；留空时保留占位符原文"
+                            value={value}
+                            onChange={(e) => updateVariable(name, e.target.value)}
+                            allowClear
+                          />
                         )}
                       </div>
                     </Col>
@@ -317,21 +316,23 @@ const PromptTrialModal: React.FC<PromptTrialModalProps> = ({
               />
               {prompt.version != null && <Tag color="blue">v{prompt.version}</Tag>}
               {prompt.isDefault === 1 && <Tag color="gold">默认</Tag>}
-              {isPreview && <Tag color="orange">预览（不会真正调用 AI）</Tag>}
             </Space>
           </div>
 
-          {/* 示例代码 */}
+          {/* 示例代码（仅供参考，不自动写入占位符） */}
           <div>
             <Text strong className="ci-prompt-field-label">
-              Java 示例代码
+              Java 示例代码（参考）
             </Text>
+            <Paragraph type="secondary" style={{ fontSize: 12, marginBottom: 6 }}>
+              仅供编写提示词时参考；试跑前请将代码手动填入上方 <code>{'{java_code}'}</code> 等等占位符。
+            </Paragraph>
             <Input.TextArea
               autoSize={{ minRows: 6, maxRows: 16 }}
               className="ci-code-input"
               value={sampleCode}
               onChange={(e) => setSampleCode(e.target.value)}
-              placeholder="在此输入 Java 示例代码，作为 java_code / java.code 等占位符的默认值"
+              placeholder="可在此粘贴示例 Java 代码，再复制到占位符变量区"
             />
           </div>
 
@@ -406,7 +407,7 @@ const PromptTrialModal: React.FC<PromptTrialModalProps> = ({
                   description={result.errorReason}
                 />
               ) : (
-                <div className="ci-editor-shell ci-prompt-result-shell">
+                <div className="ci-prompt-result-shell">
                   <div className="ci-prompt-result-header">
                     <Text strong className="ci-prompt-result-title">
                       AI 归纳结果输出
@@ -424,13 +425,12 @@ const PromptTrialModal: React.FC<PromptTrialModalProps> = ({
                       </Button>
                     )}
                   </div>
-                  <pre
-                    className={`ci-result-preview ci-prompt-result-preview${
-                      running ? ' ci-prompt-result-preview-streaming' : ''
-                    }`}
-                  >
-                    {result.result}
-                  </pre>
+                  <Input.TextArea
+                    readOnly
+                    value={result.result}
+                    rows={18}
+                    className="ci-code-input ci-prompt-result-textarea"
+                  />
                 </div>
               )}
             </Space>

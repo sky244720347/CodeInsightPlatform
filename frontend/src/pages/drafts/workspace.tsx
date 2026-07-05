@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Button,
@@ -268,6 +268,9 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   const [confirmModalOpen, setConfirmModalOpen] = useState(false);
   const [confirmComment, setConfirmComment] = useState('');
   const [confirmLoading, setConfirmLoading] = useState(false);
+  const [confirmPreflightLoading, setConfirmPreflightLoading] = useState(false);
+  const [approveInFlight, setApproveInFlight] = useState(false);
+  const approveInFlightRef = useRef(false);
   const [rerunLoading, setRerunLoading] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [autoSaveRetrying, setAutoSaveRetrying] = useState(false);
@@ -386,7 +389,30 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   );
 
   const canTaskOverallPass =
-    allDraftsConfirmed && !taskOverallConfirmed && !isTaskLocked && !demoMode && flatLeaves.length > 0;
+    allDraftsConfirmed
+    && !taskOverallConfirmed
+    && !isTaskLocked
+    && !demoMode
+    && !approveInFlight
+    && flatLeaves.length > 0;
+
+  const isCurrentDraftConfirmed = useMemo(
+    () => selectedDraft?.status === 'CONFIRMED' || selectedDraft?.status === 'PUSHED',
+    [selectedDraft],
+  );
+
+  /** 从服务端拉取最新草稿树并同步 hierarchyTree（逐篇通过与任务整体通过的前置真值源） */
+  const syncWorkspaceTreeFromServer = useCallback(async () => {
+    if (!selectedTaskId) return null;
+    const [tree, hierarchy] = await Promise.all([
+      getWorkspaceTreeForTask(selectedTaskId),
+      getModuleHierarchy(selectedTaskId).catch(() => null),
+    ]);
+    const built = buildDraftHierarchyTree(hierarchy, tree);
+    setTreeData(tree);
+    setHierarchyTree(built);
+    return { tree, hierarchyTree: built };
+  }, [selectedTaskId]);
 
   /* ===================================================================
    *  数据拉取
@@ -619,21 +645,45 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   };
 
   const handleApprove = async () => {
-    if (!selectedDraftId) return;
+    if (!selectedDraftId || !selectedTaskId || approveInFlightRef.current) return;
+    if (isCurrentDraftConfirmed) return;
+
+    const draftIdToApprove = selectedDraftId;
+
+    if (autoSaveTimer.current) {
+      window.clearTimeout(autoSaveTimer.current);
+      autoSaveTimer.current = null;
+    }
+
+    approveInFlightRef.current = true;
+    setApproveInFlight(true);
     try {
-      await approveDraft(selectedDraftId);
-      message.success("已审核通过，文档已锁定");
-      // 更新本地选中草稿状态
-      if (selectedDraft) setSelectedDraft({ ...selectedDraft, status: "CONFIRMED" });
-      // 更新左侧树节点状态
-      setTreeData((prev) => updateDraftStatusInTree(prev, selectedDraftId, "CONFIRMED"));
-      // 通过后自动跳转到下一个文档
-      if (currentLeafIndex >= 0 && currentLeafIndex < documentLeaves.length - 1) {
-        setSelectedDraftId(documentLeaves[currentLeafIndex + 1].draftId);
+      await approveDraft(draftIdToApprove);
+      message.success('已审核通过，文档已锁定');
+
+      const synced = await syncWorkspaceTreeFromServer();
+      if (!synced) return;
+
+      const freshLeaves = collectDocumentLeaves(synced.hierarchyTree);
+      const approvedIndex = freshLeaves.findIndex((leaf) => leaf.draftId === draftIdToApprove);
+      if (approvedIndex >= 0 && approvedIndex < freshLeaves.length - 1) {
+        setSelectedDraftId(freshLeaves[approvedIndex + 1].draftId);
+      } else if (areAllDraftLeavesConfirmed(synced.tree)) {
+        message.success('全部文档已逐篇通过，可点击「任务整体通过」');
       } else {
-        message.success('已是最后一篇，全部文档已逐篇通过时可点击「任务整体通过」');
+        message.info('当前已是最后一篇，仍有其他文档未通过，请从目录中继续复核');
       }
-    } catch (e) { message.error("审核通过失败"); }
+    } catch {
+      message.error('审核通过失败');
+      try {
+        await syncWorkspaceTreeFromServer();
+      } catch {
+        /* 刷新失败时保留当前树，避免误导 */
+      }
+    } finally {
+      approveInFlightRef.current = false;
+      setApproveInFlight(false);
+    }
   };
 
   const handleRegenerate = async () => {
@@ -689,10 +739,29 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     }
   };
 
-  const handleConfirm = () => {
-    if (!selectedTaskId) return;
-    setConfirmComment('');
-    setConfirmModalOpen(true);
+  const handleConfirm = async () => {
+    if (!selectedTaskId || confirmPreflightLoading) return;
+    setConfirmPreflightLoading(true);
+    try {
+      const synced = await syncWorkspaceTreeFromServer();
+      if (!synced || !areAllDraftLeavesConfirmed(synced.tree)) {
+        const pending = flattenDraftLeaves(synced?.tree ?? treeData).filter(
+          (leaf) => leaf.status !== 'CONFIRMED' && leaf.status !== 'PUSHED',
+        ).length;
+        message.warning(
+          pending > 0
+            ? `仍有 ${pending} 篇文档未逐篇通过，请继续复核后再操作`
+            : '草稿树为空或尚未加载完成，请刷新后重试',
+        );
+        return;
+      }
+      setConfirmComment('');
+      setConfirmModalOpen(true);
+    } catch {
+      message.error('刷新复核进度失败，请稍后重试');
+    } finally {
+      setConfirmPreflightLoading(false);
+    }
   };
 
   /**
@@ -706,6 +775,11 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     if (!selectedTaskId) return;
     setConfirmLoading(true);
     try {
+      const synced = await syncWorkspaceTreeFromServer();
+      if (!synced || !areAllDraftLeavesConfirmed(synced.tree)) {
+        message.warning('仍有文档未逐篇通过，请核对目录后重试');
+        return;
+      }
       await confirmTask(
         selectedTaskId,
         getCurrentOperator(),
@@ -714,11 +788,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
       message.success('任务已整体确认通过，可前往推送页创建版本');
       setConfirmModalOpen(false);
       setConfirmComment('');
-      // 重新拉取 treeData 让目录树每个节点状态从最新数据派生
-      const tree = await getWorkspaceTreeForTask(selectedTaskId);
-      setTreeData(tree);
-      const hierarchy = await getModuleHierarchy(selectedTaskId).catch(() => null);
-      setHierarchyTree(buildDraftHierarchyTree(hierarchy, tree));
+      await syncWorkspaceTreeFromServer();
       // 当前选中 draft 可能已被推到 CONFIRMED，重新拉评论列表保持一致
       if (selectedDraftId) {
         setComments(await getComments(selectedDraftId));
@@ -981,7 +1051,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
           <Button
             icon={<ArrowLeftOutlined />}
             onClick={() => hasPrev && setSelectedDraftId(documentLeaves[currentLeafIndex - 1].draftId)}
-            disabled={!hasPrev}
+            disabled={!hasPrev || approveInFlight}
           />
         </Tooltip>
         <span className="ci-nav-progress">
@@ -991,7 +1061,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
           <Button
             icon={<ArrowRightOutlined />}
             onClick={() => hasNext && setSelectedDraftId(documentLeaves[currentLeafIndex + 1].draftId)}
-            disabled={!hasNext}
+            disabled={!hasNext || approveInFlight}
           />
         </Tooltip>
       </div>
@@ -1031,8 +1101,21 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
             保存
           </Button>
         </Tooltip>
-        <Tooltip title="审核通过此文档（锁定，不可再编辑）">
-          <Button icon={<CheckCircleOutlined />} onClick={handleApprove} disabled={isTaskLocked}>
+        <Tooltip
+          title={
+            approveInFlight
+              ? '正在提交通过，请稍候'
+              : isCurrentDraftConfirmed
+                ? '当前文档已通过'
+                : '审核通过此文档（锁定，不可再编辑）'
+          }
+        >
+          <Button
+            icon={<CheckCircleOutlined />}
+            onClick={handleApprove}
+            loading={approveInFlight}
+            disabled={isTaskLocked || approveInFlight || isCurrentDraftConfirmed}
+          >
             通过
           </Button>
         </Tooltip>
@@ -1091,7 +1174,8 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
             icon={<SafetyCertificateOutlined />}
             type="primary"
             onClick={handleConfirm}
-            disabled={!canTaskOverallPass}
+            loading={confirmPreflightLoading}
+            disabled={!canTaskOverallPass || confirmPreflightLoading}
           >
             任务整体通过
           </Button>
@@ -2016,19 +2100,11 @@ function findDraftInTree(nodes: DraftTreeNode[], id: number): KnowledgeDraft | n
   return null;
 }
 
-/**
- * 递归更新树中指定草稿节点的状态。
- */
-function updateDraftStatusInTree(nodes: DraftTreeNode[], draftId: number, newStatus: string): DraftTreeNode[] {
-  return nodes.map((n) => {
-    if (n.id === draftId) {
-      return { ...n, status: newStatus };
-    }
-    if (n.children && n.children.length > 0) {
-      return { ...n, children: updateDraftStatusInTree(n.children, draftId, newStatus) };
-    }
-    return n;
-  });
+/** 服务端草稿树是否已全部逐篇 CONFIRMED / PUSHED */
+function areAllDraftLeavesConfirmed(nodes: DraftTreeNode[]): boolean {
+  const leaves = flattenDraftLeaves(nodes);
+  if (leaves.length === 0) return false;
+  return leaves.every((leaf) => leaf.status === 'CONFIRMED' || leaf.status === 'PUSHED');
 }
 
 /**

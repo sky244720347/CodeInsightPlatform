@@ -23,6 +23,8 @@ import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 
 import java.io.File;
 import java.time.Duration;
@@ -46,6 +48,9 @@ public class TrialRunServiceImpl implements TrialRunService {
     private static final int MAX_HISTORY_PER_REPO = 50;
 
     private static final String STALE_ERROR = "试跑中断或超时（服务重启/进程异常）";
+    /** 异步线程读库重试：应对 commit 后极短窗口内的可见性延迟 */
+    private static final int LOAD_TRIAL_MAX_ATTEMPTS = 5;
+    private static final long LOAD_TRIAL_RETRY_MS = 100;
 
     private final EntryScanTrialMapper trialMapper;
     private final StringRedisTemplate stringRedisTemplate;
@@ -108,7 +113,7 @@ public class TrialRunServiceImpl implements TrialRunService {
             stringRedisTemplate.opsForValue().set(lockKey, String.valueOf(trialId),
                     LOCK_TTL.toSeconds(), TimeUnit.SECONDS);
 
-            CompletableFuture.runAsync(() -> executeAsync(trialId));
+            scheduleExecuteAfterCommit(trialId, repositoryId);
             return trial;
         } catch (RuntimeException e) {
             safeUnlock(lockKey, null);
@@ -118,11 +123,39 @@ public class TrialRunServiceImpl implements TrialRunService {
 
     @Override
     public void executeAsync(Long trialId) {
-        String lockKey = null;
+        executeAsyncInternal(trialId, null);
+    }
+
+    /** 事务提交后再调度，避免异步线程在 insert 未 commit 时 selectById 读不到记录 */
+    private void scheduleExecuteAfterCommit(Long trialId, Long repositoryId) {
+        Runnable task = () -> executeAsyncInternal(trialId, repositoryId);
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    CompletableFuture.runAsync(task);
+                }
+            });
+        } else {
+            CompletableFuture.runAsync(task);
+        }
+    }
+
+    private void executeAsyncInternal(Long trialId, Long repositoryIdHint) {
+        String lockKey = repositoryIdHint != null ? LOCK_KEY_PREFIX + repositoryIdHint : null;
         try {
-            EntryScanTrialEntity trial = trialMapper.selectById(trialId);
-            if (trial == null) return;
-            if (isTerminal(trial.getStatus())) return;
+            EntryScanTrialEntity trial = loadTrialWithRetry(trialId);
+            if (trial == null) {
+                log.error("trial run aborted: trialId={} record not found after commit", trialId);
+                if (lockKey != null) {
+                    safeUnlock(lockKey, null);
+                }
+                return;
+            }
+            if (isTerminal(trial.getStatus())) {
+                safeUnlock(LOCK_KEY_PREFIX + trial.getRepositoryId(), null);
+                return;
+            }
 
             lockKey = LOCK_KEY_PREFIX + trial.getRepositoryId();
             renewLock(lockKey, trialId);
@@ -157,6 +190,24 @@ public class TrialRunServiceImpl implements TrialRunService {
         } finally {
             if (lockKey != null) safeUnlock(lockKey, null);
         }
+    }
+
+    private EntryScanTrialEntity loadTrialWithRetry(Long trialId) {
+        for (int attempt = 0; attempt < LOAD_TRIAL_MAX_ATTEMPTS; attempt++) {
+            EntryScanTrialEntity trial = trialMapper.selectById(trialId);
+            if (trial != null) {
+                return trial;
+            }
+            if (attempt < LOAD_TRIAL_MAX_ATTEMPTS - 1) {
+                try {
+                    Thread.sleep(LOAD_TRIAL_RETRY_MS);
+                } catch (InterruptedException e) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        return null;
     }
 
     @Override
