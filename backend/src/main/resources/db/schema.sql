@@ -658,7 +658,7 @@ CREATE TABLE IF NOT EXISTS ci_task (
     type VARCHAR(50) DEFAULT 'INITIAL' NOT NULL,
     progress INT DEFAULT 0 NOT NULL,
     error_reason TEXT,
-    duration_ms BIGINT DEFAULT 0 NOT NULL,
+    duration_ms BIGINT,
     started_at TIMESTAMP,
     ended_at TIMESTAMP,
     entry_scan_config TEXT,
@@ -708,6 +708,9 @@ ALTER TABLE ci_task DROP COLUMN IF EXISTS prompt_version;
 ALTER TABLE ci_task DROP COLUMN IF EXISTS modularize_prompt_version;
 ALTER TABLE ci_task DROP COLUMN IF EXISTS document_prompt_version;
 ALTER TABLE ci_task DROP COLUMN IF EXISTS log_uri;
+-- duration_ms 允许 NULL：重试/重跑时状态机显式置 null，避免基于旧值累加
+ALTER TABLE ci_task ALTER COLUMN duration_ms DROP NOT NULL;
+ALTER TABLE ci_task ALTER COLUMN duration_ms DROP DEFAULT;
 
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_task_system_id ON ci_task (system_id);
