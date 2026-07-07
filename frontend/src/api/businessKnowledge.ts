@@ -22,7 +22,7 @@ export interface BusinessKnowledge {
  * <p>无配置时后端返回 null，前端按空内容处理。</p>
  */
 export const getBusinessKnowledge = (systemId: number): Promise<BusinessKnowledge | null> => {
-  return request.get<BusinessKnowledge | null>('/business-knowledge', { params: { systemId } });
+  return request.get('/business-knowledge', { params: { systemId } });
 };
 
 /**
@@ -34,5 +34,5 @@ export const upsertBusinessKnowledge = (params: {
   content: string;
   updatedBy?: string;
 }): Promise<BusinessKnowledge> => {
-  return request.put<BusinessKnowledge>('/business-knowledge', params);
+  return request.put('/business-knowledge', params);
 };

@@ -37,7 +37,6 @@ import {
   ReloadOutlined,
   SafetyCertificateOutlined,
   SaveOutlined,
-  CloudUploadOutlined,
   BarsOutlined,
   ColumnHeightOutlined,
 } from '@ant-design/icons';
@@ -56,7 +55,6 @@ import {
   getRevisions,
   getWorkspaceByTask,
   getWorkspaceTree,
-  listTaskComments,
   releaseDraftEditLock,
   renewDraftEditLock,
   saveDraft,
@@ -81,7 +79,7 @@ import {
   flattenDraftLeaves,
 } from '../../utils/draftHierarchyTree';
 import { buildHierarchyAntTreeNodes } from '../../utils/draftHierarchyTreeUi';
-import { confirmTask, getTask, retryTask } from '../../api/task';
+import { confirmTask, getTask } from '../../api/task';
 import { getCurrentOperator } from '../../api/auth';
 
 const { Text } = Typography;
@@ -251,9 +249,9 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   // ============ 任务级复核意见（task-level comments） ============
   // 复核工作区「复核意见」按钮的真实语义入口：按任务粒度聚合整组草稿的意见。
   // 与单文件 comments 区分：前者面向整组（含任务级 [任务级通过] 记录），后者面向单篇。
-  const [taskComments, setTaskComments] = useState<TaskCommentDto[]>([]);
   const [taskCommentsModalOpen, setTaskCommentsModalOpen] = useState(false);
-  const [taskCommentsLoading, setTaskCommentsLoading] = useState(false);
+  const taskComments: TaskCommentDto[] = [];
+  const taskCommentsLoading = false;
 
   // ============ 左侧模块目录（hover/pin 抽屉） ============
   const [moduleDirOpen, setModuleDirOpen] = useState(false);
@@ -271,7 +269,6 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   const [confirmPreflightLoading, setConfirmPreflightLoading] = useState(false);
   const [approveInFlight, setApproveInFlight] = useState(false);
   const approveInFlightRef = useRef(false);
-  const [rerunLoading, setRerunLoading] = useState(false);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [autoSaveRetrying, setAutoSaveRetrying] = useState(false);
   const editorRef = useRef<any>(null);
@@ -811,78 +808,6 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
       message.error('确认失败，请重试');
     } finally {
       setConfirmLoading(false);
-    }
-  };
-
-  const handleRerun = async () => {
-    if (!selectedTaskId) return;
-    setRerunLoading(true);
-    message.loading({ content: '正在为当前任务发送重跑指令...', key: 'rerun' });
-    try {
-      // 走通用任务 API 重跑
-      await retryTask(selectedTaskId);
-      message.success({
-        content: '任务已重新启动，系统正在后台解析并重新生成草稿',
-        key: 'rerun',
-      });
-      // 简单延迟后刷新工作区
-      setTimeout(() => {
-        if (selectedTaskId) {
-          getWorkspaceByTask(selectedTaskId)
-            .then((res) => {
-              setWorkspace(res.workspace);
-              getWorkspaceTreeForTask(selectedTaskId).then(setTreeData);
-            })
-            .catch(() => {});
-        }
-      }, 1500);
-    } catch {
-      message.error({ content: '重跑指令发送失败', key: 'rerun' });
-    } finally {
-      setRerunLoading(false);
-    }
-  };
-
-  const handlePush = () => {
-    if (selectedTask?.status !== 'CONFIRMED') {
-      message.warning('请先在复核页完成「任务整体通过」，任务状态为已确认后才可推送');
-      return;
-    }
-    // 推送前最后一道人工防线：让复核人确认"无变更"再进推送页面。
-    // 后端 pushVersion / pushToGit 已有 CONFIRMED 校验兜底，前端这里只做 UX 确认。
-    const sysName = selectedTask?.systemId != null ? `系统 #${selectedTask.systemId}` : '当前系统';
-    Modal.confirm({
-      title: '确认开始推送？',
-      content: (
-        <Space direction="vertical" size={6} style={{ width: '100%' }}>
-          <Text>请确认所有草稿内容已确认无变更。点击确认后前往推送页面。</Text>
-          <Text type="secondary" style={{ fontSize: 12 }}>
-            当前任务：#{selectedTaskId} · {sysName}
-          </Text>
-        </Space>
-      ),
-      okText: '确认无变更，去推送',
-      cancelText: '取消',
-      onOk: () => navigate('/push', { state: { systemId: selectedTask?.systemId } }),
-    });
-  };
-
-  /**
-   * 任务级「复核意见」按钮处理：拉取 task 下整组草稿的复核意见并打开弹窗。
-   * 粒度是任务，不是单文件 — 即使当前只看了某一篇 draft，弹窗里也是整组任务的全部意见
-   * （含 confirmTask 写入的 [任务级通过] 任务级记录 + 各篇草稿的普通意见）。
-   */
-  const handleOpenTaskComments = async () => {
-    if (!selectedTaskId) return;
-    setTaskCommentsModalOpen(true);
-    setTaskCommentsLoading(true);
-    try {
-      const list = await listTaskComments(selectedTaskId);
-      setTaskComments(list);
-    } catch {
-      message.error('加载任务级复核意见失败');
-    } finally {
-      setTaskCommentsLoading(false);
     }
   };
 

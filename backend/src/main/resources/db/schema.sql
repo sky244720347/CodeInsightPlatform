@@ -26,7 +26,6 @@ CREATE TABLE IF NOT EXISTS ci_system (
     name_cn VARCHAR(200),
     description VARCHAR(500),
     owner VARCHAR(50) NOT NULL,
-    status SMALLINT DEFAULT 1 NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     deleted_at TIMESTAMP
@@ -46,7 +45,6 @@ COMMENT ON COLUMN ci_system.name IS '系统名称';
 COMMENT ON COLUMN ci_system.name_cn IS '系统中文名称';
 COMMENT ON COLUMN ci_system.description IS '系统描述';
 COMMENT ON COLUMN ci_system.owner IS '系统负责人';
-COMMENT ON COLUMN ci_system.status IS '0-停用，1-启用';
 COMMENT ON COLUMN ci_system.deleted_at IS '逻辑删除时间，NULL=未删除';
 COMMENT ON COLUMN ci_system.modularize_prompt_id IS '已废弃：模块提取提示词 ID（运行时未设置则回退到 ci_prompt.is_default=1）';
 COMMENT ON COLUMN ci_system.document_prompt_id IS '已废弃：文档生成提示词 ID（运行时未设置则回退到 ci_prompt.is_default=1）';
@@ -580,7 +578,8 @@ SceneMonitorServiceImpl.doSomething();
 - 不要臆造未在源码中出现的数据表名、接口路径、配置项
 - 章节标题严格使用中文数字（一、二、三、...）
 - 如果某章节没有相关信息，输出"暂无相关信息"占位，不要省略章节
-',7,1,1,'2026-07-03 17:28:39.696974','2026-07-03 17:28:52.508313','DOCUMENT_GENERATION','RELEASED','DEFAULT',NULL);
+',7,1,1,'2026-07-03 17:28:39.696974','2026-07-03 17:28:52.508313','DOCUMENT_GENERATION','RELEASED','DEFAULT',NULL)
+ON CONFLICT (prompt_type) WHERE is_default = 1 AND category = 'DEFAULT' DO NOTHING;
 
 
 -- ============================================================

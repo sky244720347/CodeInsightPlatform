@@ -183,7 +183,6 @@ const SystemBusinessKnowledgeModal: React.FC<Props> = ({ open, system, onClose, 
       <Input.TextArea
         value={content}
         onChange={(e) => setContent(e.target.value)}
-        loading={loading}
         disabled={loading}
         autoSize={{ minRows: 16, maxRows: 28 }}
         className="ci-code-input"

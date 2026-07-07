@@ -62,7 +62,7 @@ const PipelineAnalysis: React.FC = () => {
         const label = STAGE_LABELS[v] ?? v;
         const colorMap: Record<string, string> = {
           PULLING_CODE: 'blue', PARSING_CODE: 'cyan', ENTRYPOINT_DISCOVERY: 'geekblue', ENTRYPOINT_REVIEW: 'gold',
-          ENTRYPOINT_REVIEW: 'purple', AI_ANALYZING: 'orange', MODULE_HIERARCHY: 'gold',
+          AI_ANALYZING: 'orange', MODULE_HIERARCHY: 'gold',
           MODULE_HIERARCHY_REVIEW: 'geekblue', GENERATING_DOC: 'lime',
           PENDING_REVIEW: 'magenta', CONFIRMED: 'green', PUSHED: 'green', FAILED: 'red',
         };
