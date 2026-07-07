@@ -5,7 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 项目概述
 
 代码洞察平台（CodeInsight Platform）将代码库转化为可维护、可追溯、可复核的知识资产。
-**核心流程**：代码拉取 → Java 静态解析 → 代码切片 → AI 归纳 → 草稿复核 → 知识版本 → Git/ZIP 输出 → Token/操作日志。
+**核心流程**：代码拉取 → Java 静态解析 → 入口识别 → AI 归纳 → 草稿复核 → 知识版本 → Git/ZIP 输出 → Token/操作日志。
 **关键约束**：AI 内容必须经人工复核后才能进入正式知识库，绝不直接推送到 Git。
 
 详细业务背景、当前 MVP 进度与已知限制见 [README.md](./README.md)。
@@ -67,7 +67,7 @@ flowchart TD
     C --> D{选择任务类型}
     D -- INITIAL 全量 --> E[拉取与全量扫描]
     D -- INCREMENTAL 增量 --> E2[git diff 与变更文件清单<br/>推送 merge 不丢模块]
-    E --> F[静态解析与切片]
+    E --> F[静态解析 + 调用链落表]
     E2 --> F
     F --> F0[增量影响分析<br/>反向 BFS 追溯入口]
     F0 --> G[模块识别与 AI 归纳]
@@ -87,7 +87,7 @@ flowchart TD
 - `common/` — config / exception / response / storage / util（共享基础设施）
 - `modules/<domain>/` — 每个领域模块统一使用 `entity/`、`mapper/`、`service/`（接口）、`service/impl/`、`controller/` 四层。
 
-当前领域模块清单（共 22 个）：`system`、`repository`、`prompt`、`task`、`scanner`、`scanwindow`、`parser`、`callchain`、`chunk`、`entrypoint`、`hierarchy`、`ai`、`draft`、`knowledge`、`push`、`model`、`auth`、`token`、`log`、`quotacontrol`、`dashboard`、`businessknowledge`。模块清单直接看 `modules/` 目录。
+当前领域模块清单（共 21 个）：`system`、`repository`、`prompt`、`task`、`scanner`、`scanwindow`、`parser`、`callchain`、`entrypoint`、`hierarchy`、`ai`、`draft`、`knowledge`、`push`、`model`、`auth`、`token`、`log`、`quotacontrol`、`dashboard`、`businessknowledge`。模块清单直接看 `modules/` 目录。
 
 任务状态机实现在 `modules/task/`，跨阶段推进由 `TaskStateMachineService` 负责；纠错任务（`trigger_source=KNOWLEDGE_REMEDIATION` + `remediation_kind`）可按 `resume_from` 字段跳到 `AI_ANALYZING` 或 `GENERATING_DOC`，由 `TaskQueueDispatcher` 派发。任何状态变更都需在 `ci_operation_log` 留痕。
 
@@ -112,8 +112,9 @@ DRAFT
   └─> PENDING
         └─> PULLING_CODE
               └─> PARSING_CODE
-                    └─> SPLITTING_TASK
-                          └─> AI_ANALYZING
+                    └─> ENTRYPOINT_DISCOVERY（入口识别落表）
+                          ├─> ENTRYPOINT_REVIEW（requireEntrypointReview=true 时的断点）
+                          └─> AI_ANALYZING（跳过入口复核时）
                                 ├─> MODULE_HIERARCHY
                                 │     └─> MODULE_HIERARCHY_REVIEW (requireHierarchyReview=true 时的断点)
                                 │           └─> GENERATING_DOC
@@ -124,6 +125,8 @@ DRAFT
                                                         └─> PUSHING
                                                               └─> PUSHED
 ```
+
+`SPLITTING_TASK` 已废弃（历史任务可经状态机恢复流转）；`ci_chunk` 表已从 schema 移除，已有库需手动 `DROP TABLE` 清理。
 
 终止状态：`FAILED` / `CANCELLED` / `ARCHIVED`。`PUSHED` 为终态。状态机禁止非法跳转；纠错任务（`trigger_source=KNOWLEDGE_REMEDIATION`）按 `resume_from` 字段跳到 `AI_ANALYZING` / `GENERATING_DOC`。`ci_task.require_hierarchy_review` 默认 `true`；关闭后 `MODULE_HIERARCHY` 直接进入 `GENERATING_DOC`，跳过人工断点。
 
@@ -136,16 +139,15 @@ DRAFT
 - `IncrementalImpact` — `IncrementalImpactAnalyzer` 的产物，含 `hierarchyRetargetEntries` / `docRetargetModuleIds` / `traces` / `degradedModuleCount`，由 `IncrementalImpactPersistence` 落表。
 - `MethodCallReverseGraphService` — 基于 `ci_method_call` 维护反向邻接表，对变更类做反向 BFS（默认深度上限 15），让「非入口类变更」也能精准命中其入口所属模块。
 
-下游 6 个阶段的增量语义：
+下游 5 个阶段的增量语义：
 
 | 阶段 | 接口重载 | 增量行为 |
 | --- | --- | --- |
 | `scanner.pullAndScan` | — | `git diff` 算 changed/deleted；仅重写变更文件 snapshot；删被删文件 snapshot；刷新 `repo.lastCommitId` |
 | `callchain.persistAstForTask` | `(taskId, projectDir, ctx)` | 删变更 + 删除文件的旧调用链；仅对 changedPaths 中 .java 重解析 |
-| `IncrementalImpactAnalyzer` | `analyze(ctx)` | 在 PARSING_CODE 之后算 `hierarchyRetargetEntries` + `docRetargetModuleIds`（反向 BFS 命中入口） |
-| `chunk.chunkAndEstimate` | `(taskId, snapshots, ctx)` | 删变更 + 删除文件的旧 chunk；仅对 changedPaths 重建 FILE/CLASS/METHOD |
+| `IncrementalImpactAnalyzer` | `analyze(ctx)` | 在 PARSING_CODE 之后算 `hierarchyRetargetEntries` + `docRetargetModuleIds`（反向 BFS 命中入口；无调用链命中时从源码 AST 提取方法名作种子） |
 | `hierarchy.buildAndPersist` | `(taskId, projectDir, ctx)` | 以 `hierarchyRetargetEntries` 替代纯路径命中；按 Maven 路径推 FQ 类名从 `function.classPaths` 移除被删引用；落表仍走 `deleteByTaskId + 全量 insert` |
-| `ai.generateDraftDocument` | `(taskId, chunks, promptContent, ctx)` | `moduleTouchedByChange` ∪ `docRetargetModuleIds` 决定重跑集合；其余模块旧草稿保留 |
+| `ai.generateDraftDocument` | `(taskId, promptContent, ctx)` | `moduleTouchedByChange` ∪ `docRetargetModuleIds` 决定重跑集合；其余模块旧草稿保留 |
 
 降级路径（不会让流水线挂在增量分支）：无 `lastCommitId` 基线 / 本地路径 / Mock 降级 / `resolve(ref^{tree})` 失败（force-push / rebase）→ 警告日志 + 全量扫描。增量任务门禁：仓库必须有 PUSHED 版本 + `lastCommitId` 非空，否则拒绝创建（见 [docs/incremental-release-merge-plan.md](./docs/incremental-release-merge-plan.md)）。
 

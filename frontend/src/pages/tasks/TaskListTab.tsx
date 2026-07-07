@@ -6,6 +6,7 @@ import {
   DatePicker,
   Form,
   Input,
+  Popconfirm,
   Progress,
   Row,
   Select,
@@ -17,6 +18,7 @@ import {
   message,
 } from 'antd';
 import {
+  DeleteOutlined,
   EditOutlined,
   CheckCircleOutlined,
   CloseCircleOutlined,
@@ -37,11 +39,12 @@ import {
   retryTask,
   startTask,
   terminateTask,
+  deleteTask,
   type TaskStatusSummary,
 } from '../../api/task';
 import { listSystems } from '../../api/system';
 import type { System, Task } from '../../types';
-import ModuleHierarchyEditorDrawer from '../../components/ModuleHierarchyEditorDrawer';
+import { isTaskDeletable } from '../../utils/taskActions';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -50,7 +53,6 @@ const runningStatuses = [
   'PENDING',
   'PULLING_CODE',
   'PARSING_CODE',
-  'SPLITTING_TASK',
   'ENTRYPOINT_REVIEW',
   'AI_ANALYZING',
   'MODULE_HIERARCHY_REVIEW',
@@ -65,7 +67,8 @@ const statusMeta: Record<string, { color: string; label: string; loading?: boole
   PENDING: { color: 'blue', label: '排队中', loading: true },
   PULLING_CODE: { color: 'blue', label: '拉取代码', loading: true },
   PARSING_CODE: { color: 'cyan', label: '解析代码', loading: true },
-  SPLITTING_TASK: { color: 'purple', label: '任务切片', loading: true },
+  /** @deprecated 历史任务 */
+  SPLITTING_TASK: { color: 'default', label: '任务切片（已废弃）' },
   AI_ANALYZING: { color: 'orange', label: 'AI 分析中', loading: true },
   MODULE_HIERARCHY: { color: 'gold', label: '模块层级提炼' },
   ENTRYPOINT_REVIEW: { color: 'cyan', label: '入口复核' },
@@ -84,7 +87,7 @@ type GroupKey = 'ALL' | 'RUNNING' | 'PENDING_REVIEW' | 'CONFIRMED' | 'CLOSED';
 
 const GROUP_STATUSES: Record<GroupKey, string[] | null> = {
   ALL: null,
-  RUNNING: ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'SPLITTING_TASK', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'GENERATING_DOC', 'PUSHING'],
+  RUNNING: ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'GENERATING_DOC', 'PUSHING'],
   PENDING_REVIEW: ['PENDING_REVIEW', 'REVIEWING'],
   CONFIRMED: ['CONFIRMED', 'PUSHED'],
   CLOSED: ['FAILED', 'CANCELLED', 'ARCHIVED'],
@@ -139,10 +142,6 @@ const TaskListTab: React.FC = () => {
 
   // 系统下拉
   const [systems, setSystems] = useState<System[]>([]);
-
-  // 模块层级调试抽屉
-  const [reviewDrawerOpen, setReviewDrawerOpen] = useState(false);
-  const [reviewTaskId, setReviewTaskId] = useState<number | null>(null);
 
   const fetchTasks = useCallback(
     async (page = current, pageSize = size) => {
@@ -260,13 +259,15 @@ const TaskListTab: React.FC = () => {
     fetchTasks();
   };
 
-  const openReviewDrawer = (taskId: number) => {
-    setReviewTaskId(taskId);
-    setReviewDrawerOpen(true);
-  };
-  const closeReviewDrawer = () => {
-    setReviewDrawerOpen(false);
-    setReviewTaskId(null);
+  const handleDelete = async (id: number) => {
+    try {
+      await deleteTask(id);
+      message.success('任务已删除');
+      fetchTasks();
+      fetchSummary();
+    } catch {
+      // request 拦截器已提示
+    }
   };
 
   const getStatusTag = (status: string) => {
@@ -367,7 +368,7 @@ const TaskListTab: React.FC = () => {
       ),
     },
     {
-      title: '耗时',
+      title: '执行耗时',
       dataIndex: 'durationMs',
       key: 'durationMs',
       width: 120,
@@ -383,7 +384,7 @@ const TaskListTab: React.FC = () => {
     {
       title: '操作',
       key: 'action',
-      width: 280,
+      width: 340,
       fixed: 'right' as const,
       render: (_: unknown, record: Task) => (
         <Space size={8} wrap>
@@ -416,7 +417,7 @@ const TaskListTab: React.FC = () => {
               size="small"
               type="primary"
               icon={<EyeOutlined />}
-              onClick={() => openReviewDrawer(record.id)}
+              onClick={() => navigate(`/tasks/hierarchy-review/${record.id}`)}
             >
               开始调试
             </Button>
@@ -441,6 +442,20 @@ const TaskListTab: React.FC = () => {
             <Button size="small" icon={<ReloadOutlined />} onClick={() => handleRetry(record.id)}>
               重试
             </Button>
+          )}
+          {isTaskDeletable(record.status) && (
+            <Popconfirm
+              title="确认删除该任务？"
+              description="删除后不可恢复，关联扫描/草稿等中间数据将一并清除。"
+              okText="删除"
+              cancelText="取消"
+              okButtonProps={{ danger: true }}
+              onConfirm={() => handleDelete(record.id)}
+            >
+              <Button size="small" danger icon={<DeleteOutlined />}>
+                删除
+              </Button>
+            </Popconfirm>
           )}
         </Space>
       ),
@@ -653,13 +668,6 @@ const TaskListTab: React.FC = () => {
           }}
         />
       </Card>
-
-      <ModuleHierarchyEditorDrawer
-        open={reviewDrawerOpen}
-        taskId={reviewTaskId}
-        onClose={closeReviewDrawer}
-        onSubmitted={() => fetchTasks()}
-      />
     </div>
   );
 };

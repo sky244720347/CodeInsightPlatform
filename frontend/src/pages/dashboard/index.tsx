@@ -23,7 +23,7 @@ import './index.css';
 const { Text } = Typography;
 
 // 运行中状态定义：这些状态下的任务被视为活跃中的分析任务
-const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'SPLITTING_TASK', 'AI_ANALYZING', 'GENERATING_DOC'];
+const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'GENERATING_DOC'];
 
 // 分页查询空值兜底模板
 const emptyPage = <T,>(): PageResult<T> => ({
@@ -50,7 +50,7 @@ const statusMeta: Record<string, { color: string; label: string }> = {
   PENDING: { color: 'blue', label: '排队中' },
   PULLING_CODE: { color: 'blue', label: '拉取代码' },
   PARSING_CODE: { color: 'cyan', label: '解析代码' },
-  SPLITTING_TASK: { color: 'purple', label: '任务切片' },
+  ENTRYPOINT_REVIEW: { color: 'gold', label: '入口复核' },
   AI_ANALYZING: { color: 'gold', label: 'AI 分析中' },
   GENERATING_DOC: { color: 'orange', label: '生成文档' },
   PENDING_REVIEW: { color: 'magenta', label: '待复核' },
@@ -456,7 +456,7 @@ const Dashboard: React.FC = () => {
                           </Tag>
                         </Space>
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          耗时 {(task.durationMs / 1000 || 0).toFixed(1)} 秒
+                          执行耗时 {(task.durationMs / 1000 || 0).toFixed(1)} 秒
                         </Text>
                       </div>
                       <div className="ci-task-meta-row">

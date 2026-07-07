@@ -115,6 +115,36 @@ public class TaskExecutionLogger {
 
     /** 异常 */
     public void logError(Long taskId, String message, Throwable e) {
-        log(taskId, "!!! " + message + (e != null ? " — " + e.getMessage() : ""));
+        logException(taskId, message, e);
+    }
+
+    /**
+     * 将异常写入 pipeline.log，供任务详情「查看完整日志」展示。
+     */
+    public void logException(Long taskId, String context, Throwable e) {
+        if (taskId == null) {
+            return;
+        }
+        if (e == null) {
+            log(taskId, "!!! " + context);
+            return;
+        }
+        log(taskId, "!!! " + context + ": " + e.getClass().getSimpleName() + " — " + e.getMessage());
+        int lines = 0;
+        final int maxLines = 15;
+        for (StackTraceElement ste : e.getStackTrace()) {
+            if (!ste.getClassName().contains("codeinsight")) {
+                continue;
+            }
+            log(taskId, "    at " + ste.getClassName() + "." + ste.getMethodName()
+                    + "(" + ste.getFileName() + ":" + ste.getLineNumber() + ")");
+            if (++lines >= maxLines) {
+                break;
+            }
+        }
+        Throwable cause = e.getCause();
+        if (cause != null && cause != e) {
+            log(taskId, "    caused by: " + cause.getClass().getSimpleName() + " — " + cause.getMessage());
+        }
     }
 }

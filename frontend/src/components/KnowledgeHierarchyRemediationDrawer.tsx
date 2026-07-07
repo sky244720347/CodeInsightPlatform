@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import {
-  Alert,
   Button,
   Drawer,
   Modal,
@@ -10,7 +9,9 @@ import {
   message,
 } from 'antd';
 import type { ModuleHierarchy } from '../types';
+import PageHelpHint from './PageHelpHint';
 import ModuleHierarchyEditor from './ModuleHierarchyEditor';
+import { knowledgeHierarchyRemediationHelp } from '../constants/knowledgeQueryPageHelp';
 
 const { Text } = Typography;
 
@@ -83,7 +84,15 @@ const KnowledgeHierarchyRemediationDrawer: React.FC<KnowledgeHierarchyRemediatio
 
   return (
     <Drawer
-      title="调整模块层级并重跑"
+      title={
+        <Space size={8} align="center">
+          <span>调整模块层级并重跑</span>
+          <PageHelpHint
+            title={knowledgeHierarchyRemediationHelp.title}
+            content={knowledgeHierarchyRemediationHelp.content}
+          />
+        </Space>
+      }
       width={1080}
       open={open}
       onClose={onClose}
@@ -97,26 +106,6 @@ const KnowledgeHierarchyRemediationDrawer: React.FC<KnowledgeHierarchyRemediatio
         </Space>
       }
     >
-      <Alert
-        type="info"
-        showIcon
-        style={{ marginBottom: 16 }}
-        message="在树形/JSON 双视图调整层级结构，并选择需要重生成文档的模块（默认仅 scope 内模块调 AI）。"
-        description={
-          <ul style={{ margin: 0, paddingLeft: 18 }}>
-            <li>
-              「树形编辑」支持节点改名、新增/删除、拖拽排序/跨级移动，逐项编辑类路径与方法签名。
-            </li>
-            <li>
-              「JSON 编辑」适合大批量文本替换。两侧通过「应用」按钮双向同步。
-            </li>
-            <li>
-              「重跑文档的模块范围」决定哪些模块走 AI 重跑；其他模块保留原草稿。
-            </li>
-          </ul>
-        }
-      />
-
       <div
         style={{
           marginBottom: 16,
@@ -151,6 +140,7 @@ const KnowledgeHierarchyRemediationDrawer: React.FC<KnowledgeHierarchyRemediatio
           onSubmit={() => {
             /* 不走这里：提交由抽屉底部「确认并重跑」按钮触发 */
           }}
+          renderAlert={() => null}
         />
       )}
     </Drawer>

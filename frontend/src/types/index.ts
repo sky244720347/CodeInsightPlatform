@@ -77,7 +77,7 @@ export interface Task {
   entryScanConfig?: EntryScanConfig;
   /** 是否启用模块层级调试（人工复核断点）；undefined 时按 TRUE 处理 */
   requireHierarchyReview?: boolean;
-  /** 是否启用知识入口复核（人工复核断点，介于 SPLITTING_TASK 与 AI_ANALYZING 之间）；undefined 时按 TRUE 处理 */
+  /** 是否启用知识入口复核（人工复核断点，介于 PARSING_CODE 与 AI_ANALYZING 之间）；undefined 时按 TRUE 处理 */
   requireEntrypointReview?: boolean;
   /** 触发来源：MANUAL 手动触发 / SCHEDULED 定时调度触发 */
   triggerSource?: 'MANUAL' | 'SCHEDULED' | string;
@@ -146,11 +146,6 @@ export interface TaskLogSummary {
   pipeline: PipelineStageStat[];
   counters: {
     totalFiles: number;
-    totalChunks: number;
-    chunksByType: { FILE: number; CLASS: number; METHOD: number; DIFF: number };
-    chunksAnalyzed: number;
-    chunksFailed: number;
-    chunksPending: number;
   };
   aiCalls: { total: number; success: number; failed: number };
   /** AI_ANALYZING / MODULE_HIERARCHY 阶段（第一段 AI）的调用统计 */
@@ -159,10 +154,7 @@ export interface TaskLogSummary {
   docAiCalls?: { total: number; success: number; failed: number };
   /** 当前正在处理的进度索引；-1 表示未知 */
   current: {
-    fileIndex: number;
     totalFiles: number;
-    chunkIndex: number;
-    totalChunks: number;
     moduleIndex: number;
     moduleTotal: number;
   };

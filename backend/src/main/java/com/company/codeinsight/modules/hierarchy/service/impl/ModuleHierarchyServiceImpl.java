@@ -231,6 +231,11 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         // 6. 全量重写（保证幂等；增量模式下未变节点仍会被原样重写）
         persistAll(taskId, task.getSystemId(), hierarchy);
 
+        int failedByAi = toProcess.size() - processedByAi;
+        execLog.log(taskId, String.format(
+                "  入口提炼汇总 = 成功 %d / 共 %d（失败 %d，增量跳过 %d）",
+                processedByAi, toProcess.size(), failedByAi, skippedByIncremental));
+
         log.info("ModuleHierarchyService.buildAndPersist done. taskId={} modules={} functions={} aiCalls={} skipped={}",
                 taskId, hierarchy.getModules().size(), countFunctions(hierarchy), processedByAi, skippedByIncremental);
         return hierarchy;
@@ -425,8 +430,7 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
             return objectMapper.readTree(aiPayload);
         } catch (Exception e) {
             log.error("callAiForEntry failed for {}: {}", entryLabel, e.getMessage(), e);
-            execLog.log(taskId, "[AI-FAIL] stage=MODULE_HIERARCHY target=" + entryLabel
-                    + " reason=unexpected: " + e.getMessage());
+            execLog.logException(taskId, "[AI-FAIL] stage=MODULE_HIERARCHY target=" + entryLabel, e);
         }
         return null;
     }
@@ -506,8 +510,13 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         if (!modulesNode.isArray()) {
             return;
         }
-        // 一次 SQL 收集 task 内所有现存 caller_signature 的全集，作为白名单存在性校验
-        Set<String> candidateCrossCheck = collectAllKnownCallerSignaturesFromCallGraph(taskId);
+        // 一次 SQL 收集 task 内调用图白名单：signatures（Tier 1 严格匹配）+ classNames（Tier 2 兜底）。
+        // Tier 1 用 caller 端完整签名白名单校验 (cp, sig) 元组；
+        // Tier 2 用 caller + callee 端类名白名单兜底，避免 Service/Repository 这类 leaf callee
+        // 因不出现在 caller_signature 而被误剔除。
+        CallGraphWhitelist whitelist = collectCallGraphWhitelist(taskId);
+        Set<String> signatureSet = whitelist.signatures();
+        Set<String> classSet = whitelist.classNames();
 
         List<MethodFunctionBinding> rows = new ArrayList<>();
         int skippedEmptyCartesian = 0;
@@ -538,13 +547,22 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     // 笛卡尔积 → (class, sig) 元组
                     int before = rows.size();
                     for (String cp : classPaths) {
+                        // AI 输出 class_paths 是 FQ（如 com.demo.UserController）；
+                        // 白名单里的 className 是短名，caller_signature 也是短类名拼接。
+                        // 因此把 cp 截短为短类名用于 Tier 1 匹配。
+                        String cpShort = stripPackage(cp);
+                        boolean cpClassHit = !classSet.isEmpty()
+                                && (classSet.contains(cp) || classSet.contains(cpShort));
                         for (String sig : methodSigs) {
-                            String full = cp + "#" + sig;
-                            // 与 ci_method_call 交叉校验：仅保留 DB 真有 caller 边的元组
-                            if (!candidateCrossCheck.isEmpty() && !candidateCrossCheck.contains(full)) {
+                            // Tier 1：caller_signature 严格命中（短类名#完整签名）
+                            String fullShort = cpShort + "#" + sig;
+                            boolean sigHit = !signatureSet.isEmpty() && signatureSet.contains(fullShort);
+                            // Tier 2 兜底：class 出现在调用图里（caller 或 callee 端均可）
+                            boolean classHit = cpClassHit;
+                            if (!sigHit && !classHit) {
                                 skippedNotExisting++;
-                                log.warn("modules 元组不存在于 ci_method_call, 跳过 (entry={}, tuple={})",
-                                        entryClassName, full);
+                                log.warn("modules 元组既不在 caller_signature 也不在调用图 class 白名单, 跳过 (entry={}, tuple={})",
+                                        entryClassName, fullShort);
                                 continue;
                             }
                             MethodFunctionBinding row = new MethodFunctionBinding();
@@ -590,32 +608,100 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     }
 
     /**
-     * 取该任务下 {@code ci_method_call} 的全部 caller_signature，作为反向绑定交叉校验的白名单。
-     * <p>实现方式：通过 {@link MethodCallMapper} 的 {@code selectExistingCallerSignatures}
-     * 一次查询汇总。表为空（新任务还未持久化 AST）或查询失败时返回空集合——空集合视为"跳过交叉校验"
-     * 而不是"全部丢弃"，避免回退路径被锁死。</p>
+     * 调用图交叉校验白名单容器。
+     *
+     * <p>两套集合按用途区分：</p>
+     * <ul>
+     *   <li>{@code signatures} — Tier 1：caller 端方法签名白名单（"短类名#methodName(ParamTypes)"）。
+     *       用于精确校验 AI 输出的 (class, sig) 元组是否在调用图里有 caller 边。</li>
+     *   <li>{@code classNames} — Tier 2：caller 端 + callee 端类名白名单（短类名 + FQ 名）。
+     *       当 Tier 1 未命中时兜底：只要 AI 输出的 class 在调用图里作为 caller 或 callee
+     *       出现过，就接受其元组（容忍 AI 输出的方法签名格式差异与 Service/Repository
+     *       这类 leaf callee 的方法不出现在 caller_signature 的情况）。</li>
+     * </ul>
      */
-    private Set<String> collectAllKnownCallerSignaturesFromCallGraph(Long taskId) {
-        Set<String> known = new HashSet<>();
+    private record CallGraphWhitelist(Set<String> signatures, Set<String> classNames) {
+        static final CallGraphWhitelist EMPTY = new CallGraphWhitelist(Set.of(), Set.of());
+    }
+
+    /**
+     * 取该任务下 {@code ci_method_call} 的 caller_signature + 所有出现过的类名，
+     * 作为反向绑定交叉校验的两套白名单。
+     *
+     * <p>实现方式：一次查询汇总 task 内所有 method_call 行，挑选：
+     * <ul>
+     *   <li>{@code caller_signature} → signatures 集合（Tier 1 严格匹配）</li>
+     *   <li>{@code className}（caller 端短类名）+ {@code dependencyName} 解析出的类名（callee 端）→ classNames 集合（Tier 2 兜底）</li>
+     * </ul>
+     * 表为空（新任务还未持久化 AST）或查询失败时返回空白名单——空集合视为"跳过交叉校验"
+     * 而不是"全部丢弃"，避免回退路径被锁死。</p>
+     *
+     * <p>格式不匹配的处理（关键）：AI 输出 class_paths 是 FQ（如 {@code com.demo.UserController}），
+     * 而 {@code ci_method_call.caller_signature} 落库时是短类名（如 {@code UserController#listUsers(...)}）。
+     * 因此 Tier 1 校验时需要把 AI 的 FQ 截短为短类名再拼签名；Tier 2 同时存 FQ 与短名以兼容。</p>
+     */
+    private CallGraphWhitelist collectCallGraphWhitelist(Long taskId) {
+        Set<String> signatures = new HashSet<>();
+        Set<String> classNames = new HashSet<>();
         try {
-            // 一次查询拿全部：把 task 内所有 caller_signature 选中。我们约定一次性查 ≤ 5k 行；
-            // 超出时分批，避免内存爆。本 MVP 阶段简单取首 5000 行。
+            // 一次查询拿全部：把 task 内所有 caller_signature + className + dependencyName 选中。
+            // 约定一次性查 ≤ 5k 行；超出时分批，本 MVP 阶段简单取首 5000 行。
             com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.company.codeinsight.modules.callchain.entity.MethodCall> all =
                     new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<>();
             all.eq(com.company.codeinsight.modules.callchain.entity.MethodCall::getTaskId, taskId)
-               .isNotNull(com.company.codeinsight.modules.callchain.entity.MethodCall::getCallerSignature)
-               .select(com.company.codeinsight.modules.callchain.entity.MethodCall::getCallerSignature)
+               .select(
+                       com.company.codeinsight.modules.callchain.entity.MethodCall::getCallerSignature,
+                       com.company.codeinsight.modules.callchain.entity.MethodCall::getClassName,
+                       com.company.codeinsight.modules.callchain.entity.MethodCall::getDependencyName
+               )
                .last("LIMIT 5000");
             List<com.company.codeinsight.modules.callchain.entity.MethodCall> rows = methodCallMapper.selectList(all);
             for (com.company.codeinsight.modules.callchain.entity.MethodCall row : rows) {
                 if (row.getCallerSignature() != null) {
-                    known.add(row.getCallerSignature());
+                    signatures.add(row.getCallerSignature());
+                }
+                if (row.getClassName() != null) {
+                    classNames.add(row.getClassName());           // caller 端短类名
+                    // 兜底补一个去掉包前缀后的纯短名（虽然 parser 通常已是短名，防御一下）
+                    String shortName = stripPackage(row.getClassName());
+                    if (shortName != null && !shortName.equals(row.getClassName())) {
+                        classNames.add(shortName);
+                    }
+                }
+                if (row.getDependencyName() != null) {
+                    // dependencyName 格式："variableName:TypeFQ"，如 "userService:com.demo.UserService"
+                    String depType = stripVariableFromDependencyName(row.getDependencyName());
+                    if (depType != null) {
+                        classNames.add(depType);                  // callee 端（可能 FQ）
+                        String depShort = stripPackage(depType);
+                        if (depShort != null && !depShort.equals(depType)) {
+                            classNames.add(depShort);
+                        }
+                    }
                 }
             }
         } catch (Exception e) {
-            log.warn("collectAllKnownCallerSignaturesFromCallGraph 失败, 回退为跳过交叉校验: {}", e.getMessage());
+            log.warn("collectCallGraphWhitelist 失败, 回退为跳过交叉校验: {}", e.getMessage());
         }
-        return known;
+        return new CallGraphWhitelist(signatures, classNames);
+    }
+
+    /**
+     * 去掉 FQ 类名的包前缀，返回短类名。已是短名则原样返回。
+     */
+    private static String stripPackage(String fqOrShortClassName) {
+        if (fqOrShortClassName == null) return null;
+        int dotIdx = fqOrShortClassName.lastIndexOf('.');
+        return dotIdx >= 0 ? fqOrShortClassName.substring(dotIdx + 1) : fqOrShortClassName;
+    }
+
+    /**
+     * 解析 dependencyName（"variable:Type"）中的类型部分。
+     */
+    private static String stripVariableFromDependencyName(String dependencyName) {
+        if (dependencyName == null) return null;
+        int colonIdx = dependencyName.indexOf(':');
+        return colonIdx >= 0 ? dependencyName.substring(colonIdx + 1) : dependencyName;
     }
 
     private void backfillFunctionMethodSignatures(FunctionDto fn,

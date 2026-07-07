@@ -8,7 +8,7 @@ const { Text, Title } = Typography;
 const STAGE_LABELS: Record<string, string> = {
   PULLING_CODE: '代码拉取',
   PARSING_CODE: '静态解析',
-  SPLITTING_TASK: '代码切片',
+  ENTRYPOINT_DISCOVERY: '入口识别',
   ENTRYPOINT_REVIEW: '知识入口复核',
   AI_ANALYZING: 'AI 分析',
   MODULE_HIERARCHY: '模块层级提炼',
@@ -61,7 +61,7 @@ const PipelineAnalysis: React.FC = () => {
       render: (v: string) => {
         const label = STAGE_LABELS[v] ?? v;
         const colorMap: Record<string, string> = {
-          PULLING_CODE: 'blue', PARSING_CODE: 'cyan', SPLITTING_TASK: 'geekblue',
+          PULLING_CODE: 'blue', PARSING_CODE: 'cyan', ENTRYPOINT_DISCOVERY: 'geekblue', ENTRYPOINT_REVIEW: 'gold',
           ENTRYPOINT_REVIEW: 'purple', AI_ANALYZING: 'orange', MODULE_HIERARCHY: 'gold',
           MODULE_HIERARCHY_REVIEW: 'geekblue', GENERATING_DOC: 'lime',
           PENDING_REVIEW: 'magenta', CONFIRMED: 'green', PUSHED: 'green', FAILED: 'red',

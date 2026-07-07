@@ -5,8 +5,6 @@ import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.modules.callchain.entity.MethodCall;
 import com.company.codeinsight.modules.callchain.mapper.MethodCallMapper;
-import com.company.codeinsight.modules.chunk.entity.CodeChunk;
-import com.company.codeinsight.modules.chunk.mapper.CodeChunkMapper;
 import com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity;
 import com.company.codeinsight.modules.entrypoint.mapper.EntrypointMapper;
 import com.company.codeinsight.modules.repository.publish.entity.RepositoryEntrypointEntity;
@@ -34,7 +32,6 @@ public class TaskArtifactCloneService {
     private final TaskWorkspacePaths taskWorkspacePaths;
     private final CodeFileSnapshotMapper snapshotMapper;
     private final MethodCallMapper methodCallMapper;
-    private final CodeChunkMapper chunkMapper;
     private final EntrypointMapper entrypointMapper;
     private final RepositoryArtifactService artifactService;
 
@@ -71,7 +68,6 @@ public class TaskArtifactCloneService {
         cloneWorkspace(baseTaskId, newTaskId);
         copySnapshots(baseTaskId, newTaskId);
         copyMethodCalls(baseTaskId, newTaskId);
-        copyChunks(baseTaskId, newTaskId);
     }
 
     @Transactional(rollbackFor = Exception.class)
@@ -133,29 +129,6 @@ public class TaskArtifactCloneService {
             dst.setTargetSignature(src.getTargetSignature());
             dst.setCreatedAt(now);
             methodCallMapper.insert(dst);
-        }
-    }
-
-    private void copyChunks(Long baseTaskId, Long newTaskId) {
-        chunkMapper.delete(new LambdaQueryWrapper<CodeChunk>().eq(CodeChunk::getTaskId, newTaskId));
-        List<CodeChunk> rows = chunkMapper.selectList(
-                new LambdaQueryWrapper<CodeChunk>().eq(CodeChunk::getTaskId, baseTaskId));
-        LocalDateTime now = LocalDateTime.now();
-        for (CodeChunk src : rows) {
-            CodeChunk dst = new CodeChunk();
-            dst.setTaskId(newTaskId);
-            dst.setFilePath(src.getFilePath());
-            dst.setClassName(src.getClassName());
-            dst.setMethodName(src.getMethodName());
-            dst.setChunkType(src.getChunkType());
-            dst.setContentHash(src.getContentHash());
-            dst.setStartLine(src.getStartLine());
-            dst.setEndLine(src.getEndLine());
-            dst.setTokenEstimate(src.getTokenEstimate());
-            dst.setStatus(src.getStatus());
-            dst.setErrorReason(src.getErrorReason());
-            dst.setCreatedAt(now);
-            chunkMapper.insert(dst);
         }
     }
 }

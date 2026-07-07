@@ -77,18 +77,34 @@ public class DecompileTask extends BaseEntity {
     private String errorReason;
 
     /**
-     * 任务运行的总耗时时长（单位：毫秒）
+     * 流水线自动执行累计耗时（毫秒），不含人工断点 / 排队 / 待推送等待。
+     * 挂钟历时可按 {@link #startedAt} 与 {@link #endedAt} 另行计算。
+     * <p>重试 / 重跑时需显式置 null 落库（避免基于旧值累加），故 updateStrategy=ALWAYS。</p>
      */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private Long durationMs;
 
     /**
-     * 任务启动时间
+     * 当前自动执行段的起点；断点或排队时为 null。
+     * <p>重试时需显式置 null 落库（避免下一次起算从断点残留值继续累加），故 updateStrategy=ALWAYS。</p>
      */
+    @TableField(value = "active_segment_started_at", updateStrategy = FieldStrategy.ALWAYS)
+    private LocalDateTime activeSegmentStartedAt;
+
+    /**
+     * 任务启动时间
+     * <p>重试时需显式置 null 落库（否则 MyBatis-Plus 默认 NOT_NULL 策略会保留旧值），
+     * 待 PENDING → PULLING_CODE 时由状态机重新写入当前时间。故 updateStrategy=ALWAYS。</p>
+     */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private LocalDateTime startedAt;
 
     /**
      * 任务结束时间（完成或失败）
+     * <p>重试时需显式置 null 落库（避免详情页「结束时间」一直展示上次运行的值），
+     * 故 updateStrategy=ALWAYS。</p>
      */
+    @TableField(updateStrategy = FieldStrategy.ALWAYS)
     private LocalDateTime endedAt;
 
     /**
@@ -134,15 +150,15 @@ public class DecompileTask extends BaseEntity {
     private Integer priority;
 
     /** 集群：认领该任务的实例 ID（{@link com.company.codeinsight.common.cluster.ClusterInstanceId}） */
-    @TableField("claimed_by")
+    @TableField(value = "claimed_by", updateStrategy = FieldStrategy.ALWAYS)
     private String claimedBy;
 
     /** 认领时间 */
-    @TableField("claimed_at")
+    @TableField(value = "claimed_at", updateStrategy = FieldStrategy.ALWAYS)
     private LocalDateTime claimedAt;
 
     /** 认领租约到期时间；过期后其他节点可重新认领 PENDING 预留 */
-    @TableField("lease_until")
+    @TableField(value = "lease_until", updateStrategy = FieldStrategy.ALWAYS)
     private LocalDateTime leaseUntil;
 
     /** 知识纠错类型：ENTRYPOINT / HIERARCHY / DOCUMENT */

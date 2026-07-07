@@ -21,4 +21,9 @@ public class AiRetryProperties {
      * 相邻两次重试之间的基础退避毫秒数；实际等待 = backoffMs × 当前 attempt 序号。
      */
     private long backoffMs = 1000L;
+
+    /**
+     * 并发槽位不足时的退避基数（毫秒）；实际等待 = concurrencyBackoffMs × attempt 序号。
+     */
+    private long concurrencyBackoffMs = 2000L;
 }

@@ -1,6 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react';
 import { useLocation } from 'react-router-dom';
-import { Alert, Button, Card, Descriptions, Form, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
+import { Button, Card, Descriptions, Form, Input, Modal, Select, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { CloudUploadOutlined, DownloadOutlined, HistoryOutlined, PlusOutlined, PullRequestOutlined, ReloadOutlined, RollbackOutlined } from '@ant-design/icons';
 import {
   createVersion,
@@ -18,6 +18,8 @@ import { listRepositories } from '../../api/repository';
 import { listTasks } from '../../api/task';
 import type { Repository, System, Task } from '../../types';
 import { getCurrentOperator } from '../../api/auth';
+import PageHelpHint from '../../components/PageHelpHint';
+import { knowledgePushHelp } from '../../constants/pushPageHelp';
 
 const { Text } = Typography;
 
@@ -428,17 +430,14 @@ const Push: React.FC = () => {
 
   return (
     <div className="ci-page ci-push-page">
-      <Alert
-        className="ci-guardrail-alert"
-        type="info"
-        showIcon
-        message="知识发布说明"
-        description="发布成功后将知识文档写入 NAS（或 Git），并强制把任务的扫描配置、提示词、入口复核、模块层级同步到仓库维度。已发布版本支持「回滚到该版本」切换生效配置与知识浏览版本。"
-      />
-
       <Card
         className="ci-workspace-card ci-push-console"
-        title="知识发布控制台"
+        title={
+          <Space size={8} align="center">
+            <span>知识发布控制台</span>
+            <PageHelpHint title={knowledgePushHelp.title} content={knowledgePushHelp.content} />
+          </Space>
+        }
         extra={
           <Space wrap>
             <Select

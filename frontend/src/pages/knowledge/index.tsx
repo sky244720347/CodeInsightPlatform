@@ -32,6 +32,7 @@ import {
   ReloadOutlined,
   SearchOutlined,
   SyncOutlined,
+  ToolOutlined,
   UnorderedListOutlined,
 } from '@ant-design/icons';
 import { Dayjs } from 'dayjs';
@@ -43,7 +44,12 @@ import {
   submitReleaseDocumentEdit,
 } from '../../api/knowledge-remediation';
 import { listTasks } from '../../api/task';
-import KnowledgeContextBar from './KnowledgeContextBar';
+import PageHelpHint from '../../components/PageHelpHint';
+import {
+  knowledgeDocumentsHelp,
+  knowledgeDocumentsReleaseEditHelp,
+  knowledgeDocumentsRemediationHelp,
+} from '../../constants/knowledgeQueryPageHelp';
 import { useKnowledgeQueryContext } from './useKnowledgeQueryContext';
 import {
   getKnowledgeBrowseContent,
@@ -651,38 +657,100 @@ const KnowledgeBrowse: React.FC = () => {
 
   return (
     <div className="ci-page ci-knowledge-browse-page">
-      <KnowledgeContextBar
-        pageTitle="知识文档"
-        pageDescription="浏览当前生效发布版的 Markdown 文档、索引与清单文件。"
-        remediationHint="可批量选择模块重跑文档生成；预览发布版 Markdown 时可人工修订并直写 NAS。"
-        systems={systems}
-        repositories={repositories}
-        systemId={systemId}
-        repositoryId={repositoryId}
-        onSystemChange={(v) => {
-          setSystemId(v);
-          setListPage(1);
-        }}
-        onRepositoryChange={(v) => {
-          setRepositoryId(v);
-          setListPage(1);
-        }}
-        context={context}
-        contextLoading={contextLoading}
-        onRefresh={() => {
-          refreshContext();
-          if (viewMode === 'list') fetchList();
-          else fetchTree();
-        }}
-        requireRepository={viewMode === 'tree'}
-        remediationEnabled={remediationReady && viewMode === 'tree' && moduleOptions.length > 0}
-        onRemediate={() => {
-          setDocRerunModuleIds([]);
-          setDocRerunOpen(true);
-        }}
-      />
-
       <Card>
+        {/* 顶部 toolbar：标题 + 系统/仓库下拉 + 调整并重跑 + 刷新（原 KnowledgeContextBar 内容内联进 Card） */}
+        <Space
+          wrap
+          style={{ width: '100%', justifyContent: 'space-between' }}
+          size={12}
+        >
+          <Space size={8} align="center" wrap>
+            <Text strong style={{ fontSize: 16 }}>
+              知识文档
+            </Text>
+            <PageHelpHint title={knowledgeDocumentsHelp.title} content={knowledgeDocumentsHelp.content} />
+            {context?.versionId != null && context?.releaseDirExists && (
+              <Tag color="processing">
+                当前生效：{context.versionNum}
+                {context.taskId != null ? ` · 任务 #${context.taskId}` : ''}
+              </Tag>
+            )}
+            {repositoryId != null && !(context?.releaseDirExists) && !contextLoading && (
+              <Tag color="warning">尚无生效发布版</Tag>
+            )}
+          </Space>
+          <Space wrap size={12}>
+            <Space size={4}>
+              <Text type="secondary">系统</Text>
+              <Select
+                placeholder="请选择系统"
+                value={systemId}
+                onChange={(v) => {
+                  setSystemId(v);
+                  setListPage(1);
+                }}
+                style={{ width: 200 }}
+                showSearch
+                optionFilterProp="label"
+                options={systems.map((s) => ({ value: s.id, label: s.name }))}
+                allowClear={viewMode !== 'tree'}
+              />
+            </Space>
+            <Space size={4}>
+              <Text type="secondary">仓库</Text>
+              <Select
+                placeholder="请选择仓库"
+                value={repositoryId}
+                onChange={(v) => {
+                  setRepositoryId(v);
+                  setListPage(1);
+                }}
+                style={{ width: 240 }}
+                showSearch
+                optionFilterProp="label"
+                options={repositories.map((r) => {
+                  const base = r.gitUrl?.split('/').pop()?.replace(/\.git$/, '') ?? `仓库 #${r.id}`;
+                  return { value: r.id, label: `${base} (${r.branch})` };
+                })}
+                disabled={systemId == null}
+                allowClear={viewMode !== 'tree'}
+              />
+            </Space>
+            {remediationReady && viewMode === 'tree' && moduleOptions.length > 0 ? (
+              <Button
+                type="primary"
+                icon={<ToolOutlined />}
+                onClick={() => {
+                  setDocRerunModuleIds([]);
+                  setDocRerunOpen(true);
+                }}
+              >
+                调整并重跑
+              </Button>
+            ) : (
+              <Tooltip title="树形视图 + 已选仓库 + 存在生效发布版 时可调整并重跑">
+                <Button icon={<ToolOutlined />} disabled>
+                  调整并重跑
+                </Button>
+              </Tooltip>
+            )}
+            <Tooltip title="刷新">
+              <Button
+                icon={<ReloadOutlined />}
+                loading={contextLoading}
+                onClick={() => {
+                  refreshContext();
+                  if (viewMode === 'list') fetchList();
+                  else fetchTree();
+                }}
+              />
+            </Tooltip>
+          </Space>
+        </Space>
+
+        <div style={{ height: 12 }} />
+
+        {/* 第二行 toolbar：视图切换 + 文件类型 + 搜索框 + 高级筛选（去掉原重复的刷新按钮） */}
         <Space size={12} wrap style={{ width: '100%', justifyContent: 'space-between' }}>
           <Space size={12} wrap>
             <Segmented
@@ -743,13 +811,6 @@ const KnowledgeBrowse: React.FC = () => {
                 </Badge>
               </Tooltip>
             )}
-            <Tooltip title="刷新">
-              <Button
-                icon={<ReloadOutlined />}
-                loading={viewMode === 'list' ? listLoading : treeLoading}
-                onClick={() => (viewMode === 'list' ? fetchList() : fetchTree())}
-              />
-            </Tooltip>
           </Space>
         </Space>
       </Card>
@@ -933,12 +994,18 @@ const KnowledgeBrowse: React.FC = () => {
       <Drawer
         title={
           previewItem ? (
-            <Space>
+            <Space size={8} align="center" wrap>
               <Text strong>{previewItem.name}</Text>
               <Tag color={TYPE_TAG_META[previewItem.type]?.color}>
                 {TYPE_TAG_META[previewItem.type]?.label}
               </Tag>
               {previewItem.taskId && <Text type="secondary">#{previewItem.taskId}</Text>}
+              {previewEditing && (
+                <PageHelpHint
+                  title={knowledgeDocumentsReleaseEditHelp.title}
+                  content={knowledgeDocumentsReleaseEditHelp.content}
+                />
+              )}
             </Space>
           ) : (
             '文件内容'
@@ -988,12 +1055,6 @@ const KnowledgeBrowse: React.FC = () => {
           <Empty description="无可显示内容（文件可能为空或读取失败）" />
         ) : previewEditing ? (
           <>
-            <Alert
-              type="warning"
-              showIcon
-              style={{ marginBottom: 12 }}
-              message="人工修订将直写当前生效发布版 NAS 文件，不创建新版本或推送任务。"
-            />
             <Input.TextArea
               value={editDraftText}
               onChange={(e) => setEditDraftText(e.target.value)}
@@ -1023,7 +1084,15 @@ const KnowledgeBrowse: React.FC = () => {
       </Drawer>
 
       <Modal
-        title="选择模块并重跑文档"
+        title={
+          <Space size={8} align="center">
+            <span>选择模块并重跑文档</span>
+            <PageHelpHint
+              title={knowledgeDocumentsRemediationHelp.title}
+              content={knowledgeDocumentsRemediationHelp.content}
+            />
+          </Space>
+        }
         open={docRerunOpen}
         onCancel={() => setDocRerunOpen(false)}
         onOk={() => rerunModuleDocs(docRerunModuleIds)}

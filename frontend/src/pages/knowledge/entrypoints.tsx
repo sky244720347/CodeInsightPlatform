@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   Button,
   Card,
   Empty,
@@ -23,6 +22,7 @@ import { listPublishedEntrypoints } from '../../api/knowledge-query';
 import { remediateEntrypoints } from '../../api/knowledge-remediation';
 import type { EntrypointReviewItem, ExcludeTarget } from '../../types';
 import KnowledgeContextBar from './KnowledgeContextBar';
+import { knowledgeEntrypointsHelp, knowledgeEntrypointsRemediationHelp } from '../../constants/knowledgeQueryPageHelp';
 import { useKnowledgeQueryContext } from './useKnowledgeQueryContext';
 
 const { Text } = Typography;
@@ -193,9 +193,8 @@ const KnowledgeEntrypointsPage: React.FC = () => {
   return (
     <div className="ci-page ci-knowledge-entrypoints-page">
       <KnowledgeContextBar
-        pageTitle="扫描入口"
-        pageDescription="查看并调整当前生效发布版的仓库级入口清单。"
-        remediationHint="排除入口类/方法后，将从模块层级 AI 阶段重跑（全量重算层级）。"
+        pageTitle={editMode ? '扫描入口 · 纠错编辑' : '扫描入口'}
+        pageHelp={editMode ? knowledgeEntrypointsRemediationHelp : knowledgeEntrypointsHelp}
         systems={ctx.systems}
         repositories={ctx.repositories}
         systemId={ctx.systemId}
@@ -214,27 +213,30 @@ const KnowledgeEntrypointsPage: React.FC = () => {
 
       <Card>
         {editMode && (
-          <Alert
-            type="warning"
-            showIcon
-            style={{ marginBottom: 16 }}
-            message="编辑模式：点击类/方法旁的 × 将其排除；确认后将创建纠错任务。"
-            action={
-              <Space>
-                <Button
-                  onClick={() => {
-                    setEditMode(false);
-                    setPendingExcludes([]);
-                  }}
-                >
-                  取消
-                </Button>
-                <Button type="primary" loading={submitting} onClick={handleSubmitRemediation}>
-                  确认并重跑
-                </Button>
-              </Space>
-            }
-          />
+          <div
+            style={{
+              marginBottom: 16,
+              display: 'flex',
+              justifyContent: 'flex-end',
+              flexWrap: 'wrap',
+              gap: 8,
+            }}
+          >
+            <Space wrap>
+              <Tag color="warning">编辑模式</Tag>
+              <Button
+                onClick={() => {
+                  setEditMode(false);
+                  setPendingExcludes([]);
+                }}
+              >
+                取消
+              </Button>
+              <Button type="primary" loading={submitting} onClick={handleSubmitRemediation}>
+                确认并重跑
+              </Button>
+            </Space>
+          </div>
         )}
         {pendingExcludes.length > 0 && (
           <Space wrap style={{ marginBottom: 12 }}>

@@ -1,6 +1,7 @@
 package com.company.codeinsight.modules.ai;
 
 import com.company.codeinsight.common.config.AiRetryProperties;
+import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.modules.ai.service.AiSummaryService;
 import com.company.codeinsight.modules.ai.service.PipelineAiCaller;
 import com.company.codeinsight.modules.task.service.TaskExecutionLogger;
@@ -35,6 +36,7 @@ class PipelineAiCallerTest {
     void setUp() {
         when(retryProperties.getMaxAttempts()).thenReturn(3);
         when(retryProperties.getBackoffMs()).thenReturn(0L);
+        when(retryProperties.getConcurrencyBackoffMs()).thenReturn(0L);
     }
 
     @Test
@@ -84,5 +86,49 @@ class PipelineAiCallerTest {
         assertEquals("{}", result);
         verify(aiSummaryService, times(3)).summarizeWithPrompt(eq(2L), anyString(), anyString(), any());
         verify(execLog).log(eq(2L), argThat(msg -> msg.contains("[AI-FAIL]")));
+    }
+
+    @Test
+    void retriesOnConcurrencyLimitThenSucceeds() {
+        when(aiSummaryService.summarizeWithPrompt(eq(3L), anyString(), anyString(), any()))
+                .thenThrow(new BusinessException("AI 调用并发已达上限，请稍后重试"))
+                .thenReturn("{\"modules\":[]}");
+
+        String result = pipelineAiCaller.callWithRetry(
+                3L,
+                "MODULE_HIERARCHY",
+                "com.example.BarController",
+                "prompt",
+                "test-model",
+                new AiSummaryService.AiCallMeta(),
+                response -> PipelineAiCaller.ValidationResult.ok(response),
+                null
+        );
+
+        assertEquals("{\"modules\":[]}", result);
+        verify(aiSummaryService, times(2)).summarizeWithPrompt(eq(3L), anyString(), anyString(), any());
+        verify(execLog).log(eq(3L), argThat(msg -> msg.contains("[AI-RETRY]") && msg.contains("并发已达上限")));
+        verify(execLog).log(eq(3L), argThat(msg -> msg.contains("[AI-OK]")));
+    }
+
+    @Test
+    void doesNotRetryOnQuotaExceeded() {
+        when(aiSummaryService.summarizeWithPrompt(eq(4L), anyString(), anyString(), any()))
+                .thenThrow(new BusinessException("Token 消耗额度超限"));
+
+        String result = pipelineAiCaller.callWithRetry(
+                4L,
+                "MODULE_HIERARCHY",
+                "com.example.BazController",
+                "prompt",
+                "test-model",
+                new AiSummaryService.AiCallMeta(),
+                response -> PipelineAiCaller.ValidationResult.ok(response),
+                null
+        );
+
+        assertEquals("{}", result);
+        verify(aiSummaryService, times(1)).summarizeWithPrompt(eq(4L), anyString(), anyString(), any());
+        verify(execLog).log(eq(4L), argThat(msg -> msg.contains("non-retryable")));
     }
 }

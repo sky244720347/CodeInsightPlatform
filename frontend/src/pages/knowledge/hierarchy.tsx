@@ -20,6 +20,7 @@ import KnowledgeHierarchyRemediationDrawer from '../../components/KnowledgeHiera
 import type { FunctionNode, ModuleHierarchy, ModuleNode, SubModuleNode } from '../../types';
 import { renderFunctionMetaTags } from '../../utils/hierarchyReadOnlyTags';
 import KnowledgeContextBar from './KnowledgeContextBar';
+import { knowledgeHierarchyHelp } from '../../constants/knowledgeQueryPageHelp';
 import { useKnowledgeQueryContext } from './useKnowledgeQueryContext';
 
 const { Text } = Typography;
@@ -133,8 +134,7 @@ const KnowledgeHierarchyPage: React.FC = () => {
     <div className="ci-page ci-knowledge-hierarchy-page">
       <KnowledgeContextBar
         pageTitle="模块层级"
-        pageDescription="查看并调整当前生效发布版的模块层级。"
-        remediationHint="调整层级后，可指定模块范围从文档生成阶段重跑。"
+        pageHelp={knowledgeHierarchyHelp}
         systems={ctx.systems}
         repositories={ctx.repositories}
         systemId={ctx.systemId}

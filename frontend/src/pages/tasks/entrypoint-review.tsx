@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   Button,
   Card,
   Empty,
@@ -21,6 +20,8 @@ import { useNavigate } from 'react-router-dom';
 import { listTasks } from '../../api/task';
 import { listSystems } from '../../api/system';
 import type { System, Task } from '../../types';
+import PageHelpHint from '../../components/PageHelpHint';
+import { entrypointReviewHelp } from '../../constants/reviewPageHelp';
 
 const { Text } = Typography;
 
@@ -177,8 +178,9 @@ const EntrypointReview: React.FC = () => {
     <div className="ci-page ci-entrypoint-review-page">
       <Card
         title={
-          <Space>
+          <Space size={8} align="center">
             <span>待复核任务</span>
+            <PageHelpHint title={entrypointReviewHelp.title} content={entrypointReviewHelp.content} />
             <Tag color="cyan">等待复核 {reviewCount}</Tag>
           </Space>
         }
@@ -201,32 +203,6 @@ const EntrypointReview: React.FC = () => {
           </Space>
         }
       >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="知识入口复核说明"
-          description={
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              <li>仅启用「知识入口复核」的任务会停在此状态等待人工确认。</li>
-              <li>点击「开始复核」进入详情页，可查看入口类清单并确认或驳回。</li>
-              <li>
-                复核页是<strong>只读视图</strong>：展示识别到的入口类与关键方法；
-                只能<strong>确认并继续</strong>或<strong>驳回任务</strong>，不能直接增删改入口。
-              </li>
-              <li>
-                如发现入口清单与预期不一致（例如少了 Controller / 混入测试类），请回到
-                「创建任务」或「代码库配置」调整 <Text code>entry_scan_config</Text>（include / exclude
-                规则）后重新创建任务。
-              </li>
-              <li>
-                「确认」后任务进入 AI_ANALYZING → 模块层级（按 requireHierarchyReview 决定是否再触发模块层级复核）；
-                「驳回」后任务直接终止（CANCELLED），不会留下任何知识资产。
-              </li>
-            </ul>
-          }
-        />
-
         {tasks.length === 0 && !loading ? (
           <Empty description="暂无需要复核的任务" />
         ) : (

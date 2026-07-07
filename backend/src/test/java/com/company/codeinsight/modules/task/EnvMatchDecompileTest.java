@@ -1,8 +1,6 @@
 package com.company.codeinsight.modules.task;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.company.codeinsight.modules.chunk.entity.CodeChunk;
-import com.company.codeinsight.modules.chunk.service.CodeChunkService;
 import com.company.codeinsight.modules.draft.entity.DraftWorkspace;
 import com.company.codeinsight.modules.draft.entity.KnowledgeDraft;
 import com.company.codeinsight.modules.draft.mapper.DraftWorkspaceMapper;
@@ -55,9 +53,6 @@ public class EnvMatchDecompileTest {
 
     @Autowired
     private CodeScannerService codeScannerService;
-
-    @Autowired
-    private CodeChunkService codeChunkService;
 
     @Autowired
     private DraftWorkspaceMapper draftWorkspaceMapper;
@@ -169,12 +164,7 @@ public class EnvMatchDecompileTest {
             System.out.println(" - Snapshot file: " + snapshot.getFilePath() + " (" + snapshot.getFileType() + ", lines: " + snapshot.getLineCount() + ")");
         }
 
-        // 9. Verify chunking
-        List<CodeChunk> chunks = codeChunkService.getChunksByTaskId(taskId);
-        System.out.println("Generated Code Chunks Count: " + chunks.size());
-        Assertions.assertTrue(chunks.size() > 0, "No chunks found for the task!");
-
-        // 10. Verify generated draft workspace and drafts
+        // 9. Verify generated draft workspace and drafts
         DraftWorkspace workspace = draftWorkspaceMapper.selectOne(
                 new LambdaQueryWrapper<DraftWorkspace>().eq(DraftWorkspace::getTaskId, taskId)
         );
@@ -188,7 +178,7 @@ public class EnvMatchDecompileTest {
             System.out.println(" - Draft file path: " + draft.getFilePath() + ", Module: " + draft.getModuleName());
         }
 
-        // 11. Verify draft preservation in target directory
+        // 10. Verify draft preservation in target directory
         java.io.File targetDraftDir = new java.io.File(repo.getGitUrl(), "docs/code-insight/drafts");
         System.out.println("Checking draft preservation directory: " + targetDraftDir.getAbsolutePath());
         Assertions.assertTrue(targetDraftDir.exists() && targetDraftDir.isDirectory(), "Target draft directory does not exist!");

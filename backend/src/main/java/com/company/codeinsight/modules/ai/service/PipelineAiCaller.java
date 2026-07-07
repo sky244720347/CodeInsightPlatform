@@ -74,6 +74,7 @@ public class PipelineAiCaller {
         }
         int maxAttempts = Math.max(1, retryProperties.getMaxAttempts());
         long backoffMs = Math.max(0L, retryProperties.getBackoffMs());
+        long concurrencyBackoffMs = Math.max(0L, retryProperties.getConcurrencyBackoffMs());
         String stageTag = StringUtils.hasText(stage) ? stage : "AI";
         String target = StringUtils.hasText(targetLabel) ? targetLabel : "-";
         String currentPrompt = initialPrompt;
@@ -111,7 +112,10 @@ public class PipelineAiCaller {
                 execLog.log(taskId, String.format(
                         "[AI-RETRY] stage=%s target=%s attempt=%d/%d reason=%s",
                         stageTag, target, attempt, maxAttempts, truncate(lastReason)));
-                sleepBackoff(backoffMs, attempt);
+                long waitMs = isConcurrencyLimit(lastReason)
+                        ? concurrencyBackoffMs * attempt
+                        : backoffMs * attempt;
+                sleepBackoff(waitMs);
                 if (promptMutator != null) {
                     currentPrompt = promptMutator.mutate(initialPrompt, currentPrompt, attempt, lastReason);
                 }
@@ -124,21 +128,25 @@ public class PipelineAiCaller {
         return "{}";
     }
 
+    /** 额度 / Token 硬限制：重试无意义。并发槽位不足可重试，不在此列。 */
     private static boolean isNonRetryable(String reason) {
         if (!StringUtils.hasText(reason)) {
             return false;
         }
-        return reason.contains("并发已达上限")
-                || reason.contains("额度")
+        return reason.contains("额度")
                 || reason.contains("Token 消耗额度超限");
     }
 
-    private static void sleepBackoff(long backoffMs, int attempt) {
-        if (backoffMs <= 0) {
+    private static boolean isConcurrencyLimit(String reason) {
+        return StringUtils.hasText(reason) && reason.contains("并发已达上限");
+    }
+
+    private static void sleepBackoff(long waitMs) {
+        if (waitMs <= 0) {
             return;
         }
         try {
-            Thread.sleep(backoffMs * attempt);
+            Thread.sleep(waitMs);
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
         }

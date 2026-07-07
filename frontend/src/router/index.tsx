@@ -13,6 +13,7 @@ import TaskQueuePage from '../pages/tasks/queue';
 import TaskDispatchPage from '../pages/tasks/dispatch';
 import TaskDetail from '../pages/tasks/detail';
 import HierarchyReview from '../pages/tasks/hierarchy-review';
+import HierarchyReviewDetail from '../pages/tasks/hierarchy-review-detail';
 import EntrypointReview from '../pages/tasks/entrypoint-review';
 import EntrypointReviewDetail from '../pages/tasks/entrypoint-review-detail';
 import KnowledgeDocuments from '../pages/knowledge/documents';
@@ -105,6 +106,10 @@ export const router = createHashRouter([
       {
         path: 'tasks/hierarchy-review', // 模块层级调试专用页
         element: <HierarchyReview />,
+      },
+      {
+        path: 'tasks/hierarchy-review/:taskId', // 模块层级复核详情(全屏工作区,替代原先的抽屉)
+        element: <HierarchyReviewDetail />,
       },
       {
         path: 'tasks/entrypoint-review',

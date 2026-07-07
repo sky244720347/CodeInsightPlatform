@@ -83,6 +83,7 @@ public interface DecompileTaskService extends IService<DecompileTask> {
     void rejectEntrypointReview(Long id, String reason);
     void cancelQueuedTask(Long id);
     void adjustPriority(Long id, Integer newPriority);
+    void deleteTask(Long id);
     Page<DecompileTask> listQueuedTasks(int current, int size, Long systemId);
     Map<String, Object> getQueueSummary();
     void runPipeline(Long taskId);

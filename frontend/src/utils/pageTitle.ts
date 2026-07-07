@@ -53,6 +53,9 @@ export function getPageTitle(pathname: string): string {
   const entryReviewMatch = pathname.match(/^\/tasks\/entrypoint-review\/(\d+)$/);
   if (entryReviewMatch) return `入口复核 #${entryReviewMatch[1]}`;
 
+  const hierarchyReviewMatch = pathname.match(/^\/tasks\/hierarchy-review\/(\d+)$/);
+  if (hierarchyReviewMatch) return `模块层级复核 #${hierarchyReviewMatch[1]}`;
+
   // 知识复核详情 /drafts/:taskId
   const draftReviewMatch = pathname.match(/^\/drafts\/(\d+)$/);
   if (draftReviewMatch) return `知识复核 #${draftReviewMatch[1]}`;
@@ -76,6 +79,7 @@ export const isSidebarRoute = (pathname: string): boolean => {
   if (PATH_META[pathname]) return true;
   if (/^\/tasks\/(\d+)$/.test(pathname)) return true;
   if (/^\/tasks\/entrypoint-review\/(\d+)$/.test(pathname)) return true;
+  if (/^\/tasks\/hierarchy-review\/(\d+)$/.test(pathname)) return true;
   if (/^\/drafts\/(\d+)$/.test(pathname)) return true;
   if (/^\/tasks\/jobs\/(\d+)(?:\/edit)?$/.test(pathname)) return true;
   return false;

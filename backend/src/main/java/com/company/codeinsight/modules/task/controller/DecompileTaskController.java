@@ -381,6 +381,16 @@ public class DecompileTaskController {
         return ApiResponse.success();
     }
 
+    @Operation(summary = "删除任务（仅草稿/排队/失败/取消/归档等未执行中状态）")
+    @DeleteMapping("/{id}")
+    public ApiResponse<Void> deleteTask(@PathVariable Long id) {
+        DecompileTask task = decompileTaskService.getById(id);
+        decompileTaskService.deleteTask(id);
+        Long systemId = task != null ? task.getSystemId() : null;
+        operationLogService.logOperation(systemId, id, "DELETE_TASK", "删除任务, ID=" + id, null, true);
+        return ApiResponse.success();
+    }
+
     @Data
     public static class PriorityRequest {
         private Integer priority;

@@ -7,10 +7,29 @@ import com.company.codeinsight.common.cluster.ClusterInstanceId;
 import com.company.codeinsight.common.cluster.ClusterProperties;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
+import com.company.codeinsight.modules.ai.entity.AiCallRecord;
 import com.company.codeinsight.modules.ai.mapper.AiCallRecordMapper;
+import com.company.codeinsight.modules.draft.entity.DraftRevision;
+import com.company.codeinsight.modules.draft.entity.DraftReviewComment;
+import com.company.codeinsight.modules.draft.entity.DraftSourceReference;
+import com.company.codeinsight.modules.draft.entity.DraftWorkspace;
 import com.company.codeinsight.modules.draft.entity.KnowledgeDraft;
-import com.company.codeinsight.modules.draft.enums.DraftStatus;
+import com.company.codeinsight.modules.draft.mapper.DraftRevisionMapper;
+import com.company.codeinsight.modules.draft.mapper.DraftReviewCommentMapper;
+import com.company.codeinsight.modules.draft.mapper.DraftSourceReferenceMapper;
+import com.company.codeinsight.modules.draft.mapper.DraftWorkspaceMapper;
 import com.company.codeinsight.modules.draft.mapper.KnowledgeDraftMapper;
+import com.company.codeinsight.modules.entrypoint.mapper.EntrypointMapper;
+import com.company.codeinsight.modules.hierarchy.entity.ModuleHierarchyNode;
+import com.company.codeinsight.modules.hierarchy.mapper.MethodFunctionBindingMapper;
+import com.company.codeinsight.modules.hierarchy.mapper.ModuleHierarchyNodeMapper;
+import com.company.codeinsight.modules.knowledge.entity.KnowledgeVersion;
+import com.company.codeinsight.modules.knowledge.mapper.KnowledgeVersionMapper;
+import com.company.codeinsight.modules.scanner.entity.CodeFileSnapshot;
+import com.company.codeinsight.modules.scanner.mapper.CodeFileSnapshotMapper;
+import com.company.codeinsight.modules.token.entity.TokenUsageAudit;
+import com.company.codeinsight.modules.token.mapper.TokenUsageAuditMapper;
+import com.company.codeinsight.modules.draft.enums.DraftStatus;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.service.CodeRepositoryService;
 import com.company.codeinsight.modules.system.entity.SystemApplication;
@@ -20,6 +39,7 @@ import com.company.codeinsight.modules.task.enums.TaskStatus;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import com.company.codeinsight.modules.task.service.DecompileTaskService;
 import com.company.codeinsight.modules.task.service.TaskStateMachineService;
+import com.company.codeinsight.modules.task.support.TaskExecutionDuration;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -31,8 +51,10 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import com.company.codeinsight.modules.chunk.entity.CodeChunk;
+import java.util.Set;
 import java.util.concurrent.CompletableFuture;
+import java.io.Serializable;
+import java.time.LocalDateTime;
 
 /**
  * 反编译/静态扫描任务管理服务实现类
@@ -86,9 +108,6 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     private com.company.codeinsight.modules.scanner.service.CodeScannerService codeScannerService;
 
     @Autowired
-    private com.company.codeinsight.modules.chunk.service.CodeChunkService codeChunkService;
-
-    @Autowired
     private com.company.codeinsight.modules.ai.service.AiSummaryService aiSummaryService;
 
     @Autowired
@@ -128,17 +147,40 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     private AiCallRecordMapper aiCallRecordMapper;
 
     @Autowired
+    private DraftWorkspaceMapper draftWorkspaceMapper;
+
+    @Autowired
+    private KnowledgeDraftMapper knowledgeDraftMapper;
+
+    @Autowired
+    private DraftRevisionMapper draftRevisionMapper;
+
+    @Autowired
+    private DraftReviewCommentMapper draftReviewCommentMapper;
+
+    @Autowired
+    private DraftSourceReferenceMapper draftSourceReferenceMapper;
+
+    @Autowired
+    private EntrypointMapper entrypointMapper;
+
+    @Autowired
+    private ModuleHierarchyNodeMapper moduleHierarchyNodeMapper;
+
+    @Autowired
+    private MethodFunctionBindingMapper methodFunctionBindingMapper;
+
+    @Autowired
+    private CodeFileSnapshotMapper codeFileSnapshotMapper;
+
+    @Autowired
+    private KnowledgeVersionMapper knowledgeVersionMapper;
+
+    @Autowired
+    private TokenUsageAuditMapper tokenUsageAuditMapper;
+
+    @Autowired
     private com.company.codeinsight.common.config.AiRetryProperties aiRetryProperties;
-
-    /**
-     * 草稿主表映射：用于任务创建前置条件校验，
-     * 扫描 ci_knowledge_draft 中仍处于非终态的草稿。
-     */
-    @Autowired
-    private KnowledgeDraftMapper draftMapper;
-
-    @Autowired
-    private com.company.codeinsight.modules.draft.mapper.DraftWorkspaceMapper workspaceMapper;
 
     @Autowired
     private ClusterProperties clusterProperties;
@@ -183,7 +225,21 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             }
         }
 
-        return this.page(page, queryWrapper);
+        Page<DecompileTask> result = this.page(page, queryWrapper);
+        LocalDateTime now = LocalDateTime.now();
+        for (DecompileTask task : result.getRecords()) {
+            TaskExecutionDuration.enrichLiveDurationForRead(task, now);
+        }
+        return result;
+    }
+
+    @Override
+    public DecompileTask getById(Serializable id) {
+        DecompileTask task = super.getById(id);
+        if (task != null) {
+            TaskExecutionDuration.enrichLiveDurationForRead(task, LocalDateTime.now());
+        }
+        return task;
     }
 
     /**
@@ -195,6 +251,15 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             "PENDING_REVIEW",  List.of("PENDING_REVIEW", "REVIEWING"),
             "CONFIRMED",       List.of("CONFIRMED", "PUSHED"),
             "CLOSED",          List.of("FAILED", "CANCELLED", "ARCHIVED")
+    );
+
+    /** 允许物理删除的任务状态：草稿 / 排队未跑 / 已终止 */
+    private static final Set<String> DELETABLE_STATUSES = Set.of(
+            TaskStatus.DRAFT.name(),
+            TaskStatus.PENDING.name(),
+            TaskStatus.FAILED.name(),
+            TaskStatus.CANCELLED.name(),
+            TaskStatus.ARCHIVED.name()
     );
 
     @Override
@@ -261,7 +326,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                                            Boolean requireEntrypointReview) {
         // 验证系统和仓库的从属合法性
         validateTaskSource(systemId, repositoryId);
-        validateNoUnconfirmedDrafts(systemId, repositoryId);
+        validateNoPendingReviewTasks(systemId, repositoryId);
         decompilePromptService.validateRepositoryPromptBinding(repositoryId);
         DecompileTask task = new DecompileTask();
         task.setSystemId(systemId);
@@ -320,7 +385,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                                                Boolean requireHierarchyReview,
                                                Boolean requireEntrypointReview) {
         validateTaskSource(systemId, repositoryId);
-        validateNoUnconfirmedDrafts(systemId, repositoryId);
+        validateNoPendingReviewTasks(systemId, repositoryId);
         decompilePromptService.validateRepositoryPromptBinding(repositoryId);
         DecompileTask task = new DecompileTask();
         task.setSystemId(systemId);
@@ -479,41 +544,40 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     }
 
     /**
-     * 业务前置条件：基于当前系统+仓库校验未确认草稿，禁止新建任务。
+     * 业务前置条件：基于当前系统+仓库校验是否存在「待知识复核」任务，禁止新建任务。
      *
-     * <p>非终态白名单与 {@link com.company.codeinsight.modules.draft.service.impl.DraftServiceImpl#findGlobalReadiness()}
-     * 保持一致：DRAFT / EDITING 视为未完成。CONFIRMED / PUSHED / ARCHIVED 算"已消化"。
+     * <p>「知识复核」以任务级状态机为唯一权威源（{@link TaskStatus}），不再依赖草稿状态判断。
+     * 仅命中以下 2 个文档级人工复核状态之一即视为仍在等人工介入，应引导复核人先去
+     * 「任务概览 / 复核」页处置：</p>
+     * <ul>
+     *   <li>{@link TaskStatus#PENDING_REVIEW} — 待人工复核评审（文档已生成）</li>
+     *   <li>{@link TaskStatus#REVIEWING} — 复核人工编辑中</li>
+     * </ul>
      *
-     * <p>通过 DraftWorkspace 桥接 KnowledgeDraft，只检查属于当前 systemId + repositoryId 组合的草稿，
-     * 避免 A 系统的未确认草稿阻塞 B 系统创建任务。</p>
+     * <p>明确不阻塞的流水线中间断点：</p>
+     * <ul>
+     *   <li>{@link TaskStatus#ENTRYPOINT_REVIEW} — 入口类清单确认（默认开启，可关闭）</li>
+     *   <li>{@link TaskStatus#MODULE_HIERARCHY_REVIEW} — 模块层级人工编辑（默认开启，可关闭）</li>
+     * </ul>
+     * 这两个属于流水线必经步骤，新建任务会进入独立 workspace、不冲突，不应阻塞并行发起。
+     *
+     * <p>改用任务级判定后，避免了草稿被复核人在任务 CONFIRMED/PUSHED 后再次编辑回流到
+     * {@link DraftStatus#EDITING} 所带来的「伪阻塞」：草稿 EDITING ≠ 任务待知识复核，
+     * 任务状态才是「我能不能开新流水线」的真正信号。</p>
      */
-    private void validateNoUnconfirmedDrafts(Long systemId, Long repositoryId) {
-        // 1. 查询该系统+仓库下的工作区
-        List<com.company.codeinsight.modules.draft.entity.DraftWorkspace> workspaces = workspaceMapper.selectList(
-                new LambdaQueryWrapper<com.company.codeinsight.modules.draft.entity.DraftWorkspace>()
-                        .eq(com.company.codeinsight.modules.draft.entity.DraftWorkspace::getSystemId, systemId)
-                        .eq(com.company.codeinsight.modules.draft.entity.DraftWorkspace::getRepositoryId, repositoryId)
-        );
-        if (workspaces.isEmpty()) {
-            return; // 无工作区 = 该组合尚无草稿，直接放行
-        }
-        List<Long> workspaceIds = workspaces.stream()
-                .map(com.company.codeinsight.modules.draft.entity.DraftWorkspace::getId)
-                .collect(java.util.stream.Collectors.toList());
-
-        // 2. 在这些工作区中查找未确认草稿
-        long blocking = draftMapper.selectCount(
-                new LambdaQueryWrapper<KnowledgeDraft>()
-                        .in(KnowledgeDraft::getWorkspaceId, workspaceIds)
-                        .notIn(KnowledgeDraft::getStatus, java.util.List.of(
-                                DraftStatus.CONFIRMED.name(),
-                                DraftStatus.PUSHED.name(),
-                                DraftStatus.ARCHIVED.name()
+    private void validateNoPendingReviewTasks(Long systemId, Long repositoryId) {
+        long blocking = this.baseMapper.selectCount(
+                new LambdaQueryWrapper<DecompileTask>()
+                        .eq(DecompileTask::getSystemId, systemId)
+                        .eq(DecompileTask::getRepositoryId, repositoryId)
+                        .in(DecompileTask::getStatus, java.util.List.of(
+                                TaskStatus.PENDING_REVIEW.name(),
+                                TaskStatus.REVIEWING.name()
                         ))
         );
         if (blocking > 0) {
-            throw new BusinessException("当前系统和代码库下仍有 " + blocking +
-                    " 个草稿未确认，无法新建任务。请前往「复核工作区」完成确认。");
+            throw new BusinessException("当前系统下仍有 " + blocking +
+                    " 个任务的知识文档待复核，无法新建任务。请前往「任务概览 / 复核」页完成处置。");
         }
     }
 
@@ -562,12 +626,14 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
 
     /**
      * 重跑前清理上次失败/取消留下的错误信息、日志与内存上下文。
+     *
+     * @deprecated 自 v0.5 起重跑场景已升级为复用 {@link #purgeTaskArtifacts}，确保所有
+     *             ci_* 副产物表 + 草稿子表都被清零。本方法保留仅为兜底，无外部调用方。
      */
+    @Deprecated
     private void prepareTaskRerun(Long taskId, DecompileTask task) {
         task.setErrorReason(null);
-        task.setEndedAt(null);
-        task.setDurationMs(null);
-        task.setStartedAt(null);
+        TaskExecutionDuration.resetTiming(task);
         task.setClaimedBy(null);
         task.setClaimedAt(null);
         task.setLeaseUntil(null);
@@ -596,9 +662,27 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     }
 
     /**
-     * 重跑/重试任务
+     * 重跑/重试任务。
+     *
+     * <p>清理范围（彻底归零，确保详情页 / 执行日志卡片 / Token 审计计数全部刷新）：</p>
+     * <ol>
+     *   <li>{@code ci_task} 字段：errorReason / durationMs / startedAt / endedAt /
+     *       activeSegmentStartedAt / claimedBy/At/LeaseUntil / progress → null/0；status 保持
+     *       CANCELLED/FAILED，由后续 transitTo(PENDING) 翻转到 PENDING。</li>
+     *   <li>所有副产物表：incremental_impact / method_call / entrypoint /
+     *       module_hierarchy_node / method_function_binding / code_file_snapshot /
+     *       ai_call_record / token_usage_audit</li>
+     *   <li>草稿工作区链：draft_workspace / knowledge_draft / draft_revision /
+     *       draft_review_comment / draft_source_reference</li>
+     *   <li>磁盘临时目录：{storage}/task_{id}/</li>
+     *   <li>磁盘执行日志：pipeline.log</li>
+     *   <li>内存上下文：pipelineContextCache / taskCache</li>
+     * </ol>
+     *
+     * <p>整体走一个事务，保证清理与状态转换的原子性。</p>
      */
     @Override
+    @Transactional
     public void retryTask(Long id) {
         DecompileTask task = this.getById(id);
         if (task == null) {
@@ -612,8 +696,23 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         if (task.getPriority() == null) {
             task.setPriority(defaultPriorityFor(task.getTriggerSource()));
         }
-        cleanupTaskWorkspace(id); // 重试前清理旧 workspace
-        prepareTaskRerun(id, task);
+
+        // 1) 字段重置：先在内存清零 + 一次 updateById 落库，确保重试途中查 DB 也看到新值
+        task.setErrorReason(null);
+        TaskExecutionDuration.resetTiming(task);
+        task.setClaimedBy(null);
+        task.setClaimedAt(null);
+        task.setLeaseUntil(null);
+        task.setProgress(0);
+        this.updateById(task);
+
+        // 2) 副产物清理：覆盖所有 ci_* 表 + 磁盘 workspace + pipeline.log + 草稿子表
+        purgeTaskArtifacts(id);
+
+        // 3) 内存上下文清理
+        pipelineContextCache.remove(id);
+
+        // 4) 重新入队
         taskCache.put(task.getId(), task);
         // FAILED/CANCELLED → PENDING（dispatcher 在下个 tick 拉起）
         stateMachineService.transitTo(task, TaskStatus.PENDING, null);
@@ -640,18 +739,19 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         taskCache.put(task.getId(), task);
         CompletableFuture.runAsync(() -> {
             try {
+                execLog.log(id, ">>> GENERATING_DOC — 复核通过后生成文档");
                 String promptContent = decompilePromptService.requireTaskPromptContent(task,
                         com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION);
-                List<CodeChunk> chunks = codeChunkService.getChunksByTaskId(id);
-
                 // 进入草稿汇总归档阶段 (GENERATING_DOC)
                 stateMachineService.transitTo(id, TaskStatus.GENERATING_DOC, null);
-                aiSummaryService.generateDraftDocument(id, chunks, promptContent);
+                aiSummaryService.generateDraftDocument(id, promptContent);
 
                 // 流转为终态：等待人工复核 (PENDING_REVIEW)
                 stateMachineService.transitTo(id, TaskStatus.PENDING_REVIEW, null);
+                execLog.log(id, "<<< 模块层级复核后续跑完成 → PENDING_REVIEW");
             } catch (Exception e) {
                 log.error("Resume after hierarchy review failed for task " + id, e);
+                execLog.logException(id, "模块层级复核后续跑异常", e);
                 try {
                     stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
                 } catch (Exception ex) {
@@ -692,6 +792,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 execLog.log(id, "<<< 模块层级重新提炼完成");
             } catch (Exception e) {
                 log.error("Rebuild module hierarchy failed for task {}", id, e);
+                execLog.logException(id, "重新提炼模块层级异常", e);
                 try {
                     stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
                 } catch (Exception ex) {
@@ -747,6 +848,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 continueAfterEntrypointReview(id, taskRef, pctx.projectDir(), pctx.ctx(), pctx);
             } catch (Exception e) {
                 log.error("Resume after entrypoint review failed for task " + id, e);
+                execLog.logException(id, "知识入口复核后续跑异常", e);
                 try {
                     stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
                 } catch (Exception ex) {
@@ -886,14 +988,12 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         execLog.log(taskId, "  模块数         = " + modCount);
         execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
 
-        List<CodeChunk> chunks = codeChunkService.getChunksByTaskId(taskId);
-
         // 5. 调试断点 / GENERATING_DOC
         if (!Boolean.TRUE.equals(task.getRequireHierarchyReview())) {
             execLog.log(taskId, ">>> GENERATING_DOC — 生成文档");
             t1 = System.currentTimeMillis();
             stateMachineService.transitTo(taskId, TaskStatus.GENERATING_DOC, null);
-            aiSummaryService.generateDraftDocument(taskId, chunks,
+            aiSummaryService.generateDraftDocument(taskId,
                     decompilePromptService.requireTaskPromptContent(task,
                             com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
                     incrementalCtx, impact);
@@ -951,7 +1051,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                     throw new BusinessException("未知纠错续跑起点: " + resume);
                 }
             } catch (Exception e) {
-                execLog.log(taskId, "!!! 纠错流水线异常: " + e.getMessage());
+                execLog.logException(taskId, "纠错流水线异常", e);
                 try {
                     stateMachineService.transitTo(taskId, TaskStatus.FAILED, e.getMessage());
                 } catch (Exception ex) {
@@ -973,8 +1073,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         if (!TaskStatus.GENERATING_DOC.name().equals(task.getStatus())) {
             stateMachineService.transitTo(taskId, TaskStatus.GENERATING_DOC, null);
         }
-        List<CodeChunk> chunks = codeChunkService.getChunksByTaskId(taskId);
-        aiSummaryService.generateDraftDocument(taskId, chunks,
+        aiSummaryService.generateDraftDocument(taskId,
                 decompilePromptService.requireTaskPromptContent(task,
                         com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
                 incrementalCtx);
@@ -1054,20 +1153,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 execLog.log(taskId, "  方法调用链数   = " + callCount);
                 execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
 
-                // 3. SPLITTING_TASK
-                stateMachineService.transitTo(taskId, TaskStatus.SPLITTING_TASK, null);
-                execLog.log(taskId, ">>> SPLITTING_TASK — 代码切片");
-                t1 = System.currentTimeMillis();
-                codeChunkService.chunkAndEstimate(taskId, snapshots, incrementalCtx);
-
-                List<CodeChunk> allChunks = codeChunkService.getChunksByTaskId(taskId);
-                long fileCount = allChunks.stream().filter(c -> "FILE".equals(c.getChunkType())).count();
-                long clsCount = allChunks.stream().filter(c -> "CLASS".equals(c.getChunkType())).count();
-                long mtdCount = allChunks.stream().filter(c -> "METHOD".equals(c.getChunkType())).count();
-                execLog.log(taskId, "  切片总数       = " + allChunks.size() + " (FILE=" + fileCount + " CLASS=" + clsCount + " METHOD=" + mtdCount + ")");
-                execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
-
-                // 3.5 ENTRYPOINT_REVIEW — 入口识别 + 落表（无论是否启用断点都先落表，保证 AI 阶段数据一致）
+                // 3. ENTRYPOINT_DISCOVERY — 入口识别 + 落表（无论是否启用断点都先落表，保证 AI 阶段数据一致）
                 execLog.log(taskId, ">>> ENTRYPOINT_DISCOVERY — 知识入口识别与落表");
                 t1 = System.currentTimeMillis();
                 com.company.codeinsight.modules.entrypoint.model.EntryPointConfig entryPointConfig =
@@ -1095,12 +1181,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 continueAfterEntrypointReview(taskId, task, projectDir, incrementalCtx, runCtx);
                 return;
             } catch (Exception e) {
-                execLog.log(taskId, "!!! 流水线异常: " + e.getClass().getSimpleName() + " — " + e.getMessage());
-                for (StackTraceElement ste : e.getStackTrace()) {
-                    if (ste.getClassName().contains("codeinsight")) {
-                        execLog.log(taskId, "    at " + ste.getClassName() + "." + ste.getMethodName() + "(" + ste.getFileName() + ":" + ste.getLineNumber() + ")");
-                    }
-                }
+                execLog.logException(taskId, "流水线异常", e);
                 try {
                     stateMachineService.transitTo(taskId, TaskStatus.FAILED, e.getMessage());
                 } catch (Exception ex) {
@@ -1200,6 +1281,80 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         result.put("total", total);
         result.put("avgWaitSeconds", avgWaitSeconds);
         return result;
+    }
+
+    @Override
+    @Transactional
+    public void deleteTask(Long id) {
+        DecompileTask task = this.getById(id);
+        if (task == null) {
+            throw new BusinessException("任务不存在");
+        }
+        if (!DELETABLE_STATUSES.contains(task.getStatus())) {
+            throw new BusinessException("当前状态不允许删除；仅草稿、排队、失败、取消或归档任务可删除");
+        }
+        if (taskCache.containsKey(id)) {
+            throw new BusinessException("任务正在本节点执行中，请先终止后再删除");
+        }
+        assertDeletableArtifacts(id, task);
+        purgeTaskArtifacts(id);
+        this.removeById(id);
+        taskCache.remove(id);
+        pipelineContextCache.remove(id);
+        log.info("deleteTask: removed taskId={} status={}", id, task.getStatus());
+    }
+
+    private void assertDeletableArtifacts(Long taskId, DecompileTask task) {
+        Long versionCount = knowledgeVersionMapper.selectCount(
+                new LambdaQueryWrapper<KnowledgeVersion>().eq(KnowledgeVersion::getTaskId, taskId));
+        if (versionCount != null && versionCount > 0) {
+            throw new BusinessException("任务已关联知识发布版本，无法删除");
+        }
+        if (task.getRepositoryId() != null) {
+            CodeRepository repo = codeRepositoryService.getById(task.getRepositoryId());
+            if (repo != null && Objects.equals(repo.getLastPublishedTaskId(), taskId)) {
+                throw new BusinessException("该任务是仓库当前生效发布来源，无法删除");
+            }
+        }
+    }
+
+    private void purgeTaskArtifacts(Long taskId) {
+        cleanupTaskWorkspace(taskId);
+        incrementalImpactPersistence.delete(taskId);
+        methodCallService.deleteByTaskId(taskId);
+        entrypointMapper.deleteByTaskId(taskId);
+        moduleHierarchyNodeMapper.delete(
+                new LambdaQueryWrapper<ModuleHierarchyNode>().eq(ModuleHierarchyNode::getTaskId, taskId));
+        methodFunctionBindingMapper.deleteByTaskId(taskId);
+        codeFileSnapshotMapper.delete(
+                new LambdaQueryWrapper<CodeFileSnapshot>().eq(CodeFileSnapshot::getTaskId, taskId));
+        aiCallRecordMapper.delete(
+                new LambdaQueryWrapper<AiCallRecord>().eq(AiCallRecord::getTaskId, taskId));
+        tokenUsageAuditMapper.delete(
+                new LambdaQueryWrapper<TokenUsageAudit>().eq(TokenUsageAudit::getTaskId, taskId));
+        purgeDraftArtifacts(taskId);
+    }
+
+    private void purgeDraftArtifacts(Long taskId) {
+        DraftWorkspace workspace = draftWorkspaceMapper.selectOne(
+                new LambdaQueryWrapper<DraftWorkspace>().eq(DraftWorkspace::getTaskId, taskId));
+        if (workspace == null) {
+            return;
+        }
+        List<KnowledgeDraft> drafts = knowledgeDraftMapper.selectList(
+                new LambdaQueryWrapper<KnowledgeDraft>().eq(KnowledgeDraft::getWorkspaceId, workspace.getId()));
+        for (KnowledgeDraft draft : drafts) {
+            Long draftId = draft.getId();
+            draftRevisionMapper.delete(
+                    new LambdaQueryWrapper<DraftRevision>().eq(DraftRevision::getDraftId, draftId));
+            draftReviewCommentMapper.delete(
+                    new LambdaQueryWrapper<DraftReviewComment>().eq(DraftReviewComment::getDraftId, draftId));
+            draftSourceReferenceMapper.delete(
+                    new LambdaQueryWrapper<DraftSourceReference>().eq(DraftSourceReference::getDraftId, draftId));
+        }
+        knowledgeDraftMapper.delete(
+                new LambdaQueryWrapper<KnowledgeDraft>().eq(KnowledgeDraft::getWorkspaceId, workspace.getId()));
+        draftWorkspaceMapper.deleteById(workspace.getId());
     }
 }
 

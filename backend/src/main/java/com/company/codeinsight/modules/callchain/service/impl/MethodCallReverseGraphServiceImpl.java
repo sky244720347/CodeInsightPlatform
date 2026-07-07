@@ -1,18 +1,20 @@
 package com.company.codeinsight.modules.callchain.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.modules.callchain.entity.MethodCall;
 import com.company.codeinsight.modules.callchain.mapper.MethodCallMapper;
 import com.company.codeinsight.modules.callchain.model.EntryMethodHit;
 import com.company.codeinsight.modules.callchain.service.MethodCallReverseGraphService;
 import com.company.codeinsight.modules.callchain.support.IncrementalImpactSupport;
-import com.company.codeinsight.modules.chunk.entity.CodeChunk;
-import com.company.codeinsight.modules.chunk.mapper.CodeChunkMapper;
+import com.company.codeinsight.modules.parser.model.ParsedClassInfo;
+import com.company.codeinsight.modules.parser.service.JavaParserService;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.io.File;
 import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Deque;
@@ -24,13 +26,14 @@ import java.util.Set;
 @Service
 public class MethodCallReverseGraphServiceImpl implements MethodCallReverseGraphService {
 
-    private static final String METHOD_CHUNK = "METHOD";
-
     @Autowired
     private MethodCallMapper methodCallMapper;
 
     @Autowired
-    private CodeChunkMapper codeChunkMapper;
+    private JavaParserService javaParserService;
+
+    @Autowired
+    private TaskWorkspacePaths taskWorkspacePaths;
 
     @Override
     public List<EntryMethodHit> resolveCallingEntries(Long taskId,
@@ -63,9 +66,6 @@ public class MethodCallReverseGraphServiceImpl implements MethodCallReverseGraph
                     continue;
                 }
                 String calleeSimple = IncrementalImpactSupport.simpleClassName(node.fqcn());
-                // Phase 3：dep_name 直接命中 OR dependency_candidates 多态命中（用 LIKE '%simple%'）
-                //   注意 LIKE 会误撞更长的同名类（如 EmailNotifierHelper），MVP 用调用频次补过滤；
-                //   实际工程里少数冲突场景，BFS 后续的 entryClassNames 命中判定会兜底。
                 List<MethodCall> rows = methodCallMapper.selectList(
                         new LambdaQueryWrapper<MethodCall>()
                                 .eq(MethodCall::getTaskId, taskId)
@@ -96,7 +96,6 @@ public class MethodCallReverseGraphServiceImpl implements MethodCallReverseGraph
 
     private Set<String> collectSeeds(Long taskId, String changedFqcn, String simpleCallee) {
         Set<String> seeds = new LinkedHashSet<>();
-        // 1. 直接命中：dep_name = simpleCallee（声明类型就是被改类的实现同名）
         List<MethodCall> directRows = methodCallMapper.selectList(
                 new LambdaQueryWrapper<MethodCall>()
                         .eq(MethodCall::getTaskId, taskId)
@@ -108,8 +107,6 @@ public class MethodCallReverseGraphServiceImpl implements MethodCallReverseGraph
                 seeds.add(mc.getTargetSignature());
             }
         }
-        // 2. Phase 3 多态命中：dependency_candidates LIKE '%simpleCallee%'
-        //    当 changedFqcn = EmailNotifier, 调用 dep = Notifier 且 candidates 含 EmailNotifier 的行也算 seed
         List<MethodCall> polyRows = methodCallMapper.selectList(
                 new LambdaQueryWrapper<MethodCall>()
                         .eq(MethodCall::getTaskId, taskId)
@@ -124,19 +121,57 @@ public class MethodCallReverseGraphServiceImpl implements MethodCallReverseGraph
         if (!seeds.isEmpty()) {
             return seeds;
         }
-        // 3. fallback：按 CodeChunk className 找方法定义（无 dep / candidates 命中时）
-        List<CodeChunk> chunks = codeChunkMapper.selectList(
-                new LambdaQueryWrapper<CodeChunk>()
-                        .eq(CodeChunk::getTaskId, taskId)
-                        .eq(CodeChunk::getChunkType, METHOD_CHUNK)
-                        .eq(CodeChunk::getClassName, changedFqcn)
-        );
-        for (CodeChunk chunk : chunks) {
-            if (StringUtils.hasText(chunk.getMethodName())) {
-                seeds.add(chunk.getMethodName());
+        return collectMethodNamesFromSource(taskId, changedFqcn);
+    }
+
+    /**
+     * fallback：ci_method_call 无 dep/candidates 命中时，从源码 AST 提取被改类的方法名作为 BFS 种子。
+     */
+    private Set<String> collectMethodNamesFromSource(Long taskId, String changedFqcn) {
+        Set<String> seeds = new LinkedHashSet<>();
+        String filePath = lookupClassFilePath(taskId, changedFqcn);
+        if (!StringUtils.hasText(filePath)) {
+            return seeds;
+        }
+        File classFile = taskWorkspacePaths.taskProjectPath(taskId).resolve(filePath).toFile();
+        if (!classFile.isFile()) {
+            return seeds;
+        }
+        try {
+            ParsedClassInfo info = javaParserService.parseFile(classFile);
+            if (info != null && info.getMethods() != null) {
+                for (ParsedClassInfo.MethodInfo mi : info.getMethods()) {
+                    if (StringUtils.hasText(mi.getName())) {
+                        seeds.add(mi.getName());
+                    }
+                }
             }
+        } catch (Exception e) {
+            log.warn("collectMethodNamesFromSource failed taskId={} fqcn={}: {}", taskId, changedFqcn, e.getMessage());
         }
         return seeds;
+    }
+
+    private String lookupClassFilePath(Long taskId, String className) {
+        try {
+            List<MethodCall> calls = methodCallMapper.selectList(
+                    new LambdaQueryWrapper<MethodCall>()
+                            .eq(MethodCall::getTaskId, taskId)
+                            .eq(MethodCall::getClassName, className)
+                            .last("LIMIT 1")
+            );
+            if (!calls.isEmpty() && StringUtils.hasText(calls.get(0).getFilePath())) {
+                return calls.get(0).getFilePath();
+            }
+        } catch (Exception e) {
+            log.warn("lookupClassFilePath failed for {}: {}", className, e.getMessage());
+        }
+        if (className.contains(".")) {
+            String pkgPath = className.substring(0, className.lastIndexOf('.')).replace('.', '/');
+            String simple = className.substring(className.lastIndexOf('.') + 1);
+            return "src/main/java/" + pkgPath + "/" + simple + ".java";
+        }
+        return "src/main/java/" + className + ".java";
     }
 
     private record CalleeNode(String fqcn, String methodName) {

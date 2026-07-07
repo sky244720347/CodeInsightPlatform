@@ -11,6 +11,10 @@ spring:
       encoding: UTF-8
   data:
     redis:
+      host: ${REDIS_HOST:47.97.114.189}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:YourStrongPassword123}
+      timeout: 3000ms
       repositories:
         enabled: false
   mvc:

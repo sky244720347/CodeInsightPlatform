@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   Button,
   Card,
   Empty,
@@ -22,6 +21,8 @@ import { useNavigate, useSearchParams } from 'react-router-dom';
 import { listReviewableTasks } from '../../api/draft';
 import { listSystems } from '../../api/system';
 import type { System, Task } from '../../types';
+import PageHelpHint from '../../components/PageHelpHint';
+import { draftReviewHelp } from '../../constants/reviewPageHelp';
 
 const { Text } = Typography;
 
@@ -169,8 +170,9 @@ const DraftReviewListPage: React.FC = () => {
     <div className="ci-page ci-draft-review-list-page">
       <Card
         title={
-          <Space>
+          <Space size={8} align="center">
             <span>待复核任务</span>
+            <PageHelpHint title={draftReviewHelp.title} content={draftReviewHelp.content} />
             <Tag color="magenta">待处理 {pendingCount}</Tag>
           </Space>
         }
@@ -193,20 +195,6 @@ const DraftReviewListPage: React.FC = () => {
           </Space>
         }
       >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="知识复核说明"
-          description={
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              <li>任务进入「待复核」或「复核中」后，可在此列表点击「开始复核」进入工作区编辑 Markdown 草稿。</li>
-              <li>复核人可对单篇草稿保存修订；「确认通过」将把整组草稿置为已确认并推进任务状态。</li>
-              <li>已确认任务仍可继续编辑草稿；推送锁定后（PUSHING / PUSHED）将变为只读。</li>
-            </ul>
-          }
-        />
-
         {tasks.length === 0 && !loading ? (
           <Empty description="暂无需要复核的任务" />
         ) : (

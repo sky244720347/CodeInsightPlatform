@@ -1,6 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-  Alert,
   Button,
   Card,
   Empty,
@@ -10,7 +9,6 @@ import {
   Tag,
   Tooltip,
   Typography,
-  message,
 } from 'antd';
 import {
   EditOutlined,
@@ -22,7 +20,8 @@ import { useNavigate } from 'react-router-dom';
 import { listTasks } from '../../api/task';
 import { listSystems } from '../../api/system';
 import type { System, Task } from '../../types';
-import ModuleHierarchyEditorDrawer from '../../components/ModuleHierarchyEditorDrawer';
+import PageHelpHint from '../../components/PageHelpHint';
+import { hierarchyReviewHelp } from '../../constants/reviewPageHelp';
 
 const { Text } = Typography;
 
@@ -38,7 +37,7 @@ const statusMeta: Record<string, { color: string; label: string }> = {
 
 /**
  * 模块层级调试专用页：列出所有处于或曾经处于 MODULE_HIERARCHY_REVIEW 的任务，
- * 用户可点击行进入 ModuleHierarchyEditorDrawer 编辑模块层级。
+ * 用户可点击行跳转至全屏复核工作区编辑模块层级（路由 /tasks/hierarchy-review/:taskId）。
  *
  * 主要场景：跨多个任务的统一调试入口；列表默认仅展示「需要调试」的任务（INCLUDE_HISTORY=false 时仅展示 MODULE_HIERARCHY_REVIEW）。
  */
@@ -49,8 +48,6 @@ const HierarchyReview: React.FC = () => {
   const [loading, setLoading] = useState(false);
   const [showHistory, setShowHistory] = useState(false);
   const [systemId, setSystemId] = useState<number | undefined>(undefined);
-  const [drawerOpen, setDrawerOpen] = useState(false);
-  const [currentTaskId, setCurrentTaskId] = useState<number | null>(null);
 
   const fetchDebugTasks = useCallback(async () => {
     setLoading(true);
@@ -79,15 +76,6 @@ const HierarchyReview: React.FC = () => {
   useEffect(() => {
     listSystems({ current: 1, size: 200 }).then((data) => setSystems(data.records));
   }, []);
-
-  const openDrawer = (taskId: number) => {
-    setCurrentTaskId(taskId);
-    setDrawerOpen(true);
-  };
-  const closeDrawer = () => {
-    setDrawerOpen(false);
-    setCurrentTaskId(null);
-  };
 
   const debugCount = useMemo(
     () => tasks.filter((t) => t.status === 'MODULE_HIERARCHY_REVIEW').length,
@@ -161,8 +149,13 @@ const HierarchyReview: React.FC = () => {
             详情
           </Button>
           {record.status === 'MODULE_HIERARCHY_REVIEW' && (
-            <Tooltip title="进入模块层级调试抽屉">
-              <Button size="small" type="primary" icon={<EditOutlined />} onClick={() => openDrawer(record.id)}>
+            <Tooltip title="进入模块层级复核全屏页">
+              <Button
+                size="small"
+                type="primary"
+                icon={<EditOutlined />}
+                onClick={() => navigate(`/tasks/hierarchy-review/${record.id}`)}
+              >
                 开始调试
               </Button>
             </Tooltip>
@@ -176,8 +169,9 @@ const HierarchyReview: React.FC = () => {
     <div className="ci-page ci-hierarchy-review-page">
       <Card
         title={
-          <Space>
+          <Space size={8} align="center">
             <span>待调试任务</span>
+            <PageHelpHint title={hierarchyReviewHelp.title} content={hierarchyReviewHelp.content} />
             <Tag color="geekblue">等待调试 {debugCount}</Tag>
           </Space>
         }
@@ -207,21 +201,6 @@ const HierarchyReview: React.FC = () => {
           </Space>
         }
       >
-        <Alert
-          type="info"
-          showIcon
-          style={{ marginBottom: 12 }}
-          message="模块层级调试说明"
-          description={
-            <ul style={{ margin: 0, paddingLeft: 18 }}>
-              <li>仅启用「模块层级调试」的任务会停在此状态等待人工确认。</li>
-              <li>点击「开始调试」进入抽屉，可对模块/子模块/功能树进行增删改；功能节点的类路径随其它字段一起落表 ci_module_hierarchy，重启不丢失。</li>
-              <li>「类路径」仅在调用 AI 时被剥离，不会出现在 analyze / module_doc 提示词中。</li>
-              <li>提交后将进入 GENERATING_DOC → PENDING_REVIEW，无法再返回调试状态。</li>
-            </ul>
-          }
-        />
-
         {tasks.length === 0 && !loading ? (
           <Empty description="暂无需要调试的任务" />
         ) : (
@@ -234,16 +213,6 @@ const HierarchyReview: React.FC = () => {
           />
         )}
       </Card>
-
-      <ModuleHierarchyEditorDrawer
-        open={drawerOpen}
-        taskId={currentTaskId}
-        onClose={closeDrawer}
-        onSubmitted={() => {
-          message.success('已提交，任务继续生成文档');
-          fetchDebugTasks();
-        }}
-      />
     </div>
   );
 };

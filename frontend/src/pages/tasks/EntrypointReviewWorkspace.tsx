@@ -25,6 +25,8 @@ import {
   CloseOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
+import PageHelpHint from '../../components/PageHelpHint';
+import { entrypointReviewDetailHelp } from '../../constants/reviewPageHelp';
 import {
   getEntrypointReview,
   getTask,
@@ -279,6 +281,10 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
               返回任务列表
             </Button>
             <Text strong>入口复核 · 任务 #{taskId}</Text>
+            <PageHelpHint
+              title={entrypointReviewDetailHelp.title}
+              content={entrypointReviewDetailHelp.content}
+            />
             {task && (
               <>
                 <Tag color={task.type === 'INITIAL' ? 'geekblue' : 'green'}>
@@ -370,24 +376,6 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
                 }
               />
             )}
-
-            <Alert
-              type="info"
-              showIcon
-              style={{ marginBottom: 16 }}
-              message="入口复核说明"
-              description={
-                <ul style={{ margin: 0, paddingLeft: 18 }}>
-                  <li>
-                    可点击类/方法旁的 <CloseOutlined /> 临时排除；确认继续时写入任务级指定排除列表。
-                  </li>
-                  <li>确认后任务进入 AI 分析；驳回则任务终止（CANCELLED）。</li>
-                  <li>
-                    若规则本身有误，请调整 <Text code>entry_scan_config</Text> 后重新创建任务。
-                  </li>
-                </ul>
-              }
-            />
 
             <Space size="large" style={{ marginBottom: 16 }}>
               <Statistic title="入口类数" value={stats.totalClasses} suffix="个" />

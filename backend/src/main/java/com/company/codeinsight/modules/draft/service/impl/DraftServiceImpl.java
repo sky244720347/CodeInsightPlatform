@@ -693,53 +693,74 @@ public class DraftServiceImpl implements DraftService {
     }
 
     /**
-     * 全局新建任务前置条件查询：扫描所有 ci_knowledge_draft，识别仍处于非终态
-     * （DRAFT / EDITING）的草稿，组装就绪度 DTO。
+     * 全局新建任务前置条件查询：以「待知识复核任务」为唯一权威源。
+     * 识别仍处于 {@link TaskStatus#PENDING_REVIEW} / {@link TaskStatus#REVIEWING} 的任务，
+     * 然后把这些任务关联 workspace 下仍处于非终态（DRAFT / EDITING）的草稿作为阻塞明细。
+     *
+     * <p>判定基准从「草稿非终态」改为「任务待知识复核」：
+     * 任务已 CANCELLED / FAILED / PUSHED 后草稿仍残留 DRAFT / EDITING 不再视为阻塞，
+     * 与 {@link com.company.codeinsight.modules.task.service.impl.DecompileTaskServiceImpl#validateNoPendingReviewTasks}
+     * 的语义保持一致。</p>
+     *
+     * <p>流水线中间断点（{@link TaskStatus#ENTRYPOINT_REVIEW} /
+     * {@link TaskStatus#MODULE_HIERARCHY_REVIEW}）不属于「知识复核」，
+     * 不阻塞新建任务。</p>
      *
      * <p>设计要点：</p>
      * <ul>
-     *   <li>工作区反查通过 DraftWorkspaceMapper 一次性 selectBatchIds，避免 N+1</li>
-     *   <li>任务反查通过 DecompileTaskMapper 同理</li>
-     *   <li>blockingDrafts 按 updated_at desc 排序，让复核人优先处理最近变更的草稿</li>
-     *   <li>无阻塞时 ready=true，blockingDrafts 为空列表，前端可直接放行向导</li>
+     *   <li>三表关联通过 MyBatis-Plus 三次 selectList 内存中拼接，避免自定义 XML。</li>
+     *   <li>blockingDrafts 按 updated_at desc 排序，让复核人优先处理最近变更的草稿。</li>
+     *   <li>无阻塞时 ready=true，blockingDrafts 为空列表，前端可直接放行向导。</li>
      * </ul>
      */
     @Override
     public RepositoryReadinessDto findGlobalReadiness() {
-        // 非终态白名单（与 schema.sql 末尾的草稿状态迁移一致）。
-        // CONFIRMED 已视为"完成复核"，不阻塞新任务；复核人后续编辑会让状态回流到 EDITING。
-        List<String> nonTerminal = new ArrayList<>(List.of(
-                DraftStatus.DRAFT.name(),
-                DraftStatus.EDITING.name()
-        ));
+        // 1. 拉取所有待知识复核任务的 taskId
+        List<Long> pendingTaskIds = taskMapper.selectList(
+                new LambdaQueryWrapper<DecompileTask>()
+                        .in(DecompileTask::getStatus, KNOWLEDGE_REVIEW_STATUSES)
+        ).stream().map(DecompileTask::getId).collect(Collectors.toList());
 
-        // 1. 一次性拉取所有非终态草稿，按 updated_at desc 排序（最近变更排前）
-        // 非终态白名单与 DraftStatus 枚举对齐：DRAFT / EDITING。
-        // CONFIRMED 已"完成复核"不再阻塞（复核人仍可继续编辑，状态会回流到 EDITING）。
+        RepositoryReadinessDto dto = new RepositoryReadinessDto();
+        applyPromptReadiness(dto, null, null);
+
+        if (pendingTaskIds.isEmpty()) {
+            // 无待复核任务 → 直接放行（无需再查草稿）
+            dto.setUnconfirmedCount(0);
+            dto.setReady(dto.isPromptsConfigured());
+            return dto;
+        }
+
+        // 2. 拉取这些任务对应的工作区
+        List<DraftWorkspace> workspaces = workspaceMapper.selectList(
+                new LambdaQueryWrapper<DraftWorkspace>()
+                        .in(DraftWorkspace::getTaskId, pendingTaskIds)
+        );
+        if (workspaces.isEmpty()) {
+            // 有待复核任务但尚未生成 workspace（如 ENTRYPOINT_REVIEW 早期）
+            dto.setUnconfirmedCount(0);
+            dto.setReady(dto.isPromptsConfigured());
+            return dto;
+        }
+        Map<Long, DraftWorkspace> wsMap = workspaces.stream()
+                .collect(Collectors.toMap(DraftWorkspace::getId, w -> w));
+        List<Long> workspaceIds = new ArrayList<>(wsMap.keySet());
+
+        // 3. 在这些工作区中查找非终态草稿（DRAFT / EDITING）
         List<KnowledgeDraft> blocking = draftMapper.selectList(
                 new LambdaQueryWrapper<KnowledgeDraft>()
-                        .in(KnowledgeDraft::getStatus, nonTerminal)
+                        .in(KnowledgeDraft::getWorkspaceId, workspaceIds)
+                        .in(KnowledgeDraft::getStatus, NON_TERMINAL_DRAFT_STATUSES)
                         .orderByDesc(KnowledgeDraft::getUpdatedAt)
         );
 
-        RepositoryReadinessDto dto = new RepositoryReadinessDto();
         dto.setUnconfirmedCount(blocking.size());
-        dto.setReady(blocking.isEmpty());
+        dto.setReady(blocking.isEmpty() && dto.isPromptsConfigured());
         if (blocking.isEmpty()) {
             return dto;
         }
 
-        // 2. 批量反查工作区，构造 workspaceId → repositoryId 映射
-        java.util.Set<Long> workspaceIds = blocking.stream()
-                .map(KnowledgeDraft::getWorkspaceId)
-                .filter(java.util.Objects::nonNull)
-                .collect(java.util.stream.Collectors.toSet());
-        java.util.Map<Long, DraftWorkspace> workspaceMap = workspaceIds.isEmpty()
-                ? java.util.Collections.emptyMap()
-                : workspaceMapper.selectBatchIds(new java.util.ArrayList<>(workspaceIds)).stream()
-                        .collect(Collectors.toMap(DraftWorkspace::getId, w -> w));
-
-        // 3. 组装明细
+        // 4. 组装明细
         List<RepositoryReadinessDto.BlockingDraft> items = new ArrayList<>(blocking.size());
         for (KnowledgeDraft d : blocking) {
             RepositoryReadinessDto.BlockingDraft item = new RepositoryReadinessDto.BlockingDraft();
@@ -749,7 +770,7 @@ public class DraftServiceImpl implements DraftService {
             item.setWorkspaceId(d.getWorkspaceId());
             item.setUpdatedAt(d.getUpdatedAt());
 
-            DraftWorkspace ws = workspaceMap.get(d.getWorkspaceId());
+            DraftWorkspace ws = wsMap.get(d.getWorkspaceId());
             if (ws != null) {
                 item.setTaskId(ws.getTaskId());
                 item.setSystemId(ws.getSystemId());
@@ -762,63 +783,95 @@ public class DraftServiceImpl implements DraftService {
     }
 
     /**
+     * 草稿非终态白名单：DRAFT（AI 已生成）/ EDITING（复核人编辑中）。
+     * CONFIRMED / PUSHED / ARCHIVED 视为已消化。
+     */
+    private static final List<String> NON_TERMINAL_DRAFT_STATUSES = List.of(
+            DraftStatus.DRAFT.name(),
+            DraftStatus.EDITING.name()
+    );
+
+    /**
+     * 任务级「知识复核」白名单：仅文档级人工复核状态。
+     * 与 {@link com.company.codeinsight.modules.task.service.impl.DecompileTaskServiceImpl#validateNoPendingReviewTasks}
+     * 中的语义保持一致。
+     *
+     * <p>明确排除 {@link TaskStatus#ENTRYPOINT_REVIEW} /
+     * {@link TaskStatus#MODULE_HIERARCHY_REVIEW} —— 这两个是流水线中间断点
+     * （默认开启，可关闭），新建任务会进入独立 workspace，不应阻塞并行发起。
+     * 「知识复核」指文档已生成、等待/正在人工确认的最终环节。</p>
+     */
+    private static final List<String> KNOWLEDGE_REVIEW_STATUSES = List.of(
+            TaskStatus.PENDING_REVIEW.name(),
+            TaskStatus.REVIEWING.name()
+    );
+
+    /**
      * 基于系统+仓库的新建任务前置条件查询，作用域收窄到指定组合。
      *
-     * <p>通过 DraftWorkspace 桥接 KnowledgeDraft，只查询属于 {@code systemId + repositoryId}
-     * 组合的未确认草稿。任一参数为空时退化到 {@link #findGlobalReadiness()}。</p>
+     * <p>判定基准与 {@link #findGlobalReadiness()} 对齐：以「待知识复核任务」为唯一权威源，
+     * 只把仍处于 PENDING_REVIEW / REVIEWING 的任务所关联 workspace 下的非终态草稿视为阻塞。
+     * 任一参数为空时退化到 {@link #findGlobalReadiness()}。</p>
      */
     @Override
     public RepositoryReadinessDto findReadiness(Long systemId, Long repositoryId) {
         if (systemId == null && repositoryId == null) {
             return findGlobalReadiness();
         }
-        // 非终态白名单
-        List<String> nonTerminal = List.of(
-                DraftStatus.DRAFT.name(),
-                DraftStatus.EDITING.name()
-        );
 
-        // 1. 查询该系统+仓库下的工作区
-        LambdaQueryWrapper<DraftWorkspace> wsQw = new LambdaQueryWrapper<DraftWorkspace>();
+        // 1. 查询该系统+仓库下的待知识复核任务
+        LambdaQueryWrapper<DecompileTask> taskQw = new LambdaQueryWrapper<DecompileTask>()
+                .in(DecompileTask::getStatus, KNOWLEDGE_REVIEW_STATUSES);
         if (systemId != null) {
-            wsQw.eq(DraftWorkspace::getSystemId, systemId);
+            taskQw.eq(DecompileTask::getSystemId, systemId);
         }
         if (repositoryId != null) {
-            wsQw.eq(DraftWorkspace::getRepositoryId, repositoryId);
+            taskQw.eq(DecompileTask::getRepositoryId, repositoryId);
         }
-        List<DraftWorkspace> workspaces = workspaceMapper.selectList(wsQw);
-        if (workspaces.isEmpty()) {
-            RepositoryReadinessDto dto = new RepositoryReadinessDto();
+        List<Long> pendingTaskIds = taskMapper.selectList(taskQw).stream()
+                .map(DecompileTask::getId)
+                .collect(Collectors.toList());
+
+        RepositoryReadinessDto dto = new RepositoryReadinessDto();
+        applyPromptReadiness(dto, systemId, repositoryId);
+
+        if (pendingTaskIds.isEmpty()) {
             dto.setUnconfirmedCount(0);
-            applyPromptReadiness(dto, systemId, repositoryId);
-            if (dto.isPromptsConfigured()) {
-                dto.setReady(true);
-            }
+            dto.setReady(dto.isPromptsConfigured());
             return dto;
         }
-        List<Long> workspaceIds = workspaces.stream()
-                .map(DraftWorkspace::getId)
-                .collect(java.util.stream.Collectors.toList());
 
-        // 2. 在这些工作区中查找未确认草稿
+        // 2. 这些任务对应的工作区
+        List<DraftWorkspace> workspaces = workspaceMapper.selectList(
+                new LambdaQueryWrapper<DraftWorkspace>()
+                        .in(DraftWorkspace::getTaskId, pendingTaskIds)
+                        .eq(systemId != null, DraftWorkspace::getSystemId, systemId)
+                        .eq(repositoryId != null, DraftWorkspace::getRepositoryId, repositoryId)
+        );
+        if (workspaces.isEmpty()) {
+            dto.setUnconfirmedCount(0);
+            dto.setReady(dto.isPromptsConfigured());
+            return dto;
+        }
+        Map<Long, DraftWorkspace> wsMap = workspaces.stream()
+                .collect(Collectors.toMap(DraftWorkspace::getId, w -> w));
+        List<Long> workspaceIds = new ArrayList<>(wsMap.keySet());
+
+        // 3. 在这些工作区中查找非终态草稿
         List<KnowledgeDraft> blocking = draftMapper.selectList(
                 new LambdaQueryWrapper<KnowledgeDraft>()
                         .in(KnowledgeDraft::getWorkspaceId, workspaceIds)
-                        .in(KnowledgeDraft::getStatus, nonTerminal)
+                        .in(KnowledgeDraft::getStatus, NON_TERMINAL_DRAFT_STATUSES)
                         .orderByDesc(KnowledgeDraft::getUpdatedAt)
         );
 
-        RepositoryReadinessDto dto = new RepositoryReadinessDto();
         dto.setUnconfirmedCount(blocking.size());
-        dto.setReady(blocking.isEmpty());
-        applyPromptReadiness(dto, systemId, repositoryId);
+        dto.setReady(blocking.isEmpty() && dto.isPromptsConfigured());
         if (blocking.isEmpty()) {
             return dto;
         }
 
-        // 3. 组装明细（工作区信息已在内存中，直接构造索引）
-        java.util.Map<Long, DraftWorkspace> wsMap = workspaces.stream()
-                .collect(java.util.stream.Collectors.toMap(DraftWorkspace::getId, w -> w));
+        // 4. 组装明细
         List<RepositoryReadinessDto.BlockingDraft> items = new ArrayList<>(blocking.size());
         for (KnowledgeDraft d : blocking) {
             RepositoryReadinessDto.BlockingDraft item = new RepositoryReadinessDto.BlockingDraft();

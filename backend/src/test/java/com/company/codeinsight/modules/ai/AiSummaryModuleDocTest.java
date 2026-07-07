@@ -4,8 +4,6 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.company.codeinsight.modules.ai.service.AiSummaryService;
 import com.company.codeinsight.modules.callchain.entity.MethodCall;
 import com.company.codeinsight.modules.callchain.mapper.MethodCallMapper;
-import com.company.codeinsight.modules.chunk.entity.CodeChunk;
-import com.company.codeinsight.modules.chunk.mapper.CodeChunkMapper;
 import com.company.codeinsight.modules.draft.entity.DraftSourceReference;
 import com.company.codeinsight.modules.draft.entity.KnowledgeDraft;
 import com.company.codeinsight.modules.draft.mapper.DraftSourceReferenceMapper;
@@ -36,7 +34,6 @@ public class AiSummaryModuleDocTest {
 
     @Autowired private AiSummaryService aiSummaryService;
     @Autowired private DecompileTaskMapper taskMapper;
-    @Autowired private CodeChunkMapper chunkMapper;
     @Autowired private MethodCallMapper methodCallMapper;
     @Autowired private ModuleHierarchyNodeMapper nodeMapper;
     @Autowired private KnowledgeDraftMapper draftMapper;
@@ -71,7 +68,7 @@ public class AiSummaryModuleDocTest {
             w.write("package com.demo;\npublic class WhiteListController {}\n");
         }
 
-        // 3. 插入 MethodCall + CodeChunk（让 collectReachableSource 能 BFS 到物理文件）
+        // 3. 插入 MethodCall（让 collectReachableSource 能 BFS 到物理文件）
         MethodCall mc = new MethodCall();
         mc.setTaskId(taskId);
         mc.setFilePath("src/main/java/com/demo/WhiteListController.java");
@@ -81,18 +78,6 @@ public class AiSummaryModuleDocTest {
         mc.setTargetMethod("findById");
         mc.setCreatedAt(java.time.LocalDateTime.now());
         methodCallMapper.insert(mc);
-
-        CodeChunk chunk = new CodeChunk();
-        chunk.setTaskId(taskId);
-        chunk.setFilePath("src/main/java/com/demo/WhiteListController.java");
-        chunk.setClassName("WhiteListController");
-        chunk.setChunkType("CLASS");
-        chunk.setContentHash("hash");
-        chunk.setStartLine(1);
-        chunk.setEndLine(10);
-        chunk.setStatus("ANALYZED");
-        chunk.setCreatedAt(java.time.LocalDateTime.now());
-        chunkMapper.insert(chunk);
 
         // 4. 插入 ModuleHierarchyNode（手动跳过 AI 提炼，直接构造 DTO）
         ModuleHierarchyNode modRow = new ModuleHierarchyNode();
@@ -129,7 +114,7 @@ public class AiSummaryModuleDocTest {
         nodeMapper.insert(fnRow);
 
         // 5. 调 generateDraftDocument（Mock 模式：AI 返回 {} → PENDING_REVIEW 占位）
-        aiSummaryService.generateDraftDocument(taskId, List.of(chunk), "test");
+        aiSummaryService.generateDraftDocument(taskId, "test");
 
         // 6. 断言：KnowledgeDraft 落库
         List<KnowledgeDraft> drafts = draftMapper.selectList(
@@ -154,10 +139,10 @@ public class AiSummaryModuleDocTest {
     }
 
     /**
-     * 兜底路径：DTO 为空时回退到 legacyGenerateDraftDocument
+     * DTO 为空时应明确失败，不再走 legacy 兜底。
      */
     @Test
-    public void testGenerateModuleDocFallbackWhenNoHierarchy() {
+    public void testGenerateModuleDocFailsWhenNoHierarchy() {
         Long taskId = 8102L;
         Long systemId = 1L;
         Long repositoryId = 1L;
@@ -172,10 +157,8 @@ public class AiSummaryModuleDocTest {
         task.setModelName("");
         taskMapper.insert(task);
 
-        // 不插入 ModuleHierarchyNode → DTO 为空 → 走 legacy
-        // legacy 路径依赖 CodeChunk + 文件物理存在，这里 chunk 为空也能正常返回
-        Assertions.assertDoesNotThrow(() ->
-                aiSummaryService.generateDraftDocument(taskId, List.of(), "test"));
+        Assertions.assertThrows(com.company.codeinsight.common.exception.BusinessException.class, () ->
+                aiSummaryService.generateDraftDocument(taskId, "test"));
     }
 
     /**
@@ -230,7 +213,7 @@ public class AiSummaryModuleDocTest {
 
         // 不写任何 MethodCall + 不建物理文件 → BFS 返回空 → 模块被跳过
         Assertions.assertDoesNotThrow(() ->
-                aiSummaryService.generateDraftDocument(taskId, List.of(), "test"));
+                aiSummaryService.generateDraftDocument(taskId, "test"));
 
         // 验证无 KnowledgeDraft 落库（filterByTaskId 通过关联 workspace 间接验证）
         long count = draftMapper.selectCount(
@@ -305,11 +288,11 @@ public class AiSummaryModuleDocTest {
         nodeMapper.insert(fnRow);
 
         // 跑两次
-        aiSummaryService.generateDraftDocument(taskId, List.of(), "test");
+        aiSummaryService.generateDraftDocument(taskId, "test");
         long firstCount = draftMapper.selectCount(
                 new LambdaQueryWrapper<KnowledgeDraft>().eq(KnowledgeDraft::getModuleName, "幂等模块")
         );
-        aiSummaryService.generateDraftDocument(taskId, List.of(), "test");
+        aiSummaryService.generateDraftDocument(taskId, "test");
         long secondCount = draftMapper.selectCount(
                 new LambdaQueryWrapper<KnowledgeDraft>().eq(KnowledgeDraft::getModuleName, "幂等模块")
         );

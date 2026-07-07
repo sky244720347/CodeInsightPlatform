@@ -578,7 +578,11 @@ const SystemWizardModal: React.FC<Props> = ({
 
       {/* Step 4 */}
       {currentStep === 3 && (
-        <>
+        <Form
+          form={promptForm}
+          layout="vertical"
+          component="div"
+        >
           <Alert
             type="info"
             showIcon
@@ -704,7 +708,7 @@ const SystemWizardModal: React.FC<Props> = ({
           <Paragraph type="secondary" style={{ marginTop: 8 }}>
             提交后系统可立即在系统列表查看与使用。系统级启停状态已下线，无需额外启用。
           </Paragraph>
-        </>
+        </Form>
       )}
 
       <div

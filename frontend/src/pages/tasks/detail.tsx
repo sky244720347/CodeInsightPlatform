@@ -25,10 +25,10 @@ const buildDraftsHref = (task: Task) => `/drafts/${task.id}`;
 const { Text, Title } = Typography;
 
 // 包含 ENTRYPOINT_REVIEW / MODULE_HIERARCHY_REVIEW：处于人工复核断点时也要轮询状态
-const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'SPLITTING_TASK', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'MODULE_HIERARCHY_REVIEW', 'GENERATING_DOC', 'PUSHING'];
+const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'MODULE_HIERARCHY_REVIEW', 'GENERATING_DOC', 'PUSHING'];
 
-/** 执行流程 Steps 固定 9 步（含入口复核）；索引与 statusMeta.step 对齐 */
-const FLOW_STEP_ENTRY_REVIEW = 4;
+/** 执行流程 Steps 固定 8 步（含入口复核）；索引与 statusMeta.step 对齐 */
+const FLOW_STEP_ENTRY_REVIEW = 3;
 
 // 任务执行管道阶段步骤索引与展示元数据配置说明
 const statusMeta: Record<string, { color: string; label: string; step: number }> = {
@@ -36,17 +36,18 @@ const statusMeta: Record<string, { color: string; label: string; step: number }>
   PENDING: { color: 'blue', label: '排队中', step: 0 },
   PULLING_CODE: { color: 'blue', label: '拉取代码', step: 1 },
   PARSING_CODE: { color: 'cyan', label: '解析代码', step: 2 },
-  SPLITTING_TASK: { color: 'purple', label: '任务切片', step: 3 },
   ENTRYPOINT_REVIEW: { color: 'cyan', label: '入口复核', step: FLOW_STEP_ENTRY_REVIEW },
-  AI_ANALYZING: { color: 'orange', label: 'AI 分析中', step: 5 },
-  MODULE_HIERARCHY: { color: 'gold', label: '模块层级提炼', step: 5 },
-  MODULE_HIERARCHY_REVIEW: { color: 'geekblue', label: '模块层级复核', step: 6 },
-  GENERATING_DOC: { color: 'gold', label: '生成文档', step: 7 },
-  PENDING_REVIEW: { color: 'magenta', label: '待复核', step: 8 },
-  REVIEWING: { color: 'geekblue', label: '复核中', step: 8 },
-  CONFIRMED: { color: 'green', label: '已确认', step: 8 },
-  PUSHING: { color: 'purple', label: '推送中', step: 8 },
-  PUSHED: { color: 'green', label: '已推送', step: 8 },
+  AI_ANALYZING: { color: 'orange', label: 'AI 分析中', step: 4 },
+  MODULE_HIERARCHY: { color: 'gold', label: '模块层级提炼', step: 4 },
+  MODULE_HIERARCHY_REVIEW: { color: 'geekblue', label: '模块层级复核', step: 5 },
+  GENERATING_DOC: { color: 'gold', label: '生成文档', step: 6 },
+  PENDING_REVIEW: { color: 'magenta', label: '待复核', step: 7 },
+  REVIEWING: { color: 'geekblue', label: '复核中', step: 7 },
+  CONFIRMED: { color: 'green', label: '已确认', step: 7 },
+  PUSHING: { color: 'purple', label: '推送中', step: 7 },
+  PUSHED: { color: 'green', label: '已推送', step: 7 },
+  /** @deprecated 历史任务可能卡在此状态 */
+  SPLITTING_TASK: { color: 'purple', label: '任务切片（已废弃）', step: 2 },
   FAILED: { color: 'red', label: '失败', step: -1 },
   CANCELLED: { color: 'default', label: '已取消', step: -1 },
 };
@@ -226,7 +227,7 @@ const timelineItem = (s: PipelineStageStat) => {
     : s.status === 'skipped' ? ' · 已跳过'
     : '';
   const duration = s.durationMs && s.durationMs > 0
-    ? `耗时 ${(s.durationMs / 1000).toFixed(1)} 秒`
+    ? `执行耗时 ${(s.durationMs / 1000).toFixed(1)} 秒`
     : '—';
   return {
     color,
@@ -251,14 +252,14 @@ const timelineItem = (s: PipelineStageStat) => {
       return '任务失败，请查看完整日志';
     }
     if (['PUSHED', 'CANCELLED', 'ARCHIVED'].includes(task.status)) {
-      return `任务已结束 · 累计耗时 ${sec} 秒`;
+      return `任务已结束 · 执行耗时 ${sec} 秒`;
     }
     if (['PENDING_REVIEW', 'REVIEWING', 'CONFIRMED'].includes(task.status)) {
-      return `等待人工复核 · 累计耗时 ${sec} 秒`;
+      return `等待人工复核 · 执行耗时 ${sec} 秒`;
     }
     const done = summary?.pipeline?.filter((s) => s.status === 'done' || s.status === 'skipped').length ?? 0;
     const total = summary?.pipeline?.length ?? 9;
-    return `正在：${currentStageLabel || meta?.label || task.status} · 已完成 ${done}/${total} 阶段 · 累计 ${sec} 秒`;
+    return `正在：${currentStageLabel || meta?.label || task.status} · 已完成 ${done}/${total} 阶段 · 执行 ${sec} 秒`;
   })();
 
   // Mock 模式 / 真实模型文案
@@ -289,7 +290,6 @@ const timelineItem = (s: PipelineStageStat) => {
     { title: '排队' },
     { title: '拉取代码' },
     { title: '静态解析' },
-    { title: '切片' },
     {
       title: '入口复核',
       description: entryReviewEnabled ? undefined : (entryReviewSkipped ? '已跳过' : '未启用'),
@@ -378,7 +378,7 @@ const timelineItem = (s: PipelineStageStat) => {
           showIcon
           style={{ marginBottom: 16 }}
           message="知识入口需要人工复核"
-          description="代码切片与入口识别已完成，需要您确认入口类与方法清单。请点击下方按钮前往「入口复核」页面处理。"
+          description="静态解析与入口识别已完成，需要您确认入口类与方法清单。请点击下方按钮前往「入口复核」页面处理。"
           action={
             <Button type="primary" icon={<SwapOutlined />} onClick={() => navigate(`/tasks/entrypoint-review/${task.id}`)}>
               前往入口复核
@@ -453,7 +453,7 @@ const timelineItem = (s: PipelineStageStat) => {
               <Descriptions.Item label="进度">
                 <Progress percent={task.progress} size="small" status={task.status === 'FAILED' ? 'exception' : 'active'} />
               </Descriptions.Item>
-              <Descriptions.Item label="耗时">{task.durationMs ? `${(task.durationMs / 1000).toFixed(1)} 秒` : '-'}</Descriptions.Item>
+              <Descriptions.Item label="执行耗时">{task.durationMs ? `${(task.durationMs / 1000).toFixed(1)} 秒` : '-'}</Descriptions.Item>
               <Descriptions.Item label="开始时间">{task.startedAt ? new Date(task.startedAt).toLocaleString() : '-'}</Descriptions.Item>
               <Descriptions.Item label="结束时间">{task.endedAt ? new Date(task.endedAt).toLocaleString() : '-'}</Descriptions.Item>
               <Descriptions.Item label="日志 URI">
@@ -493,7 +493,7 @@ const timelineItem = (s: PipelineStageStat) => {
               status={task.status === 'FAILED' ? 'exception' : 'active'}
             />
 
-            {/* 2. KPI 行：扫描文件 / 代码切片 / AI_ANALYZING AI / GENERATING_DOC AI */}
+            {/* 2. KPI 行：扫描文件 / 模块数 / AI 调用统计 */}
             <div className="ci-kpi-grid" style={{ marginTop: 12 }}>
               <Card size="small" className="ci-stat-card">
                 <Statistic
@@ -508,10 +508,10 @@ const timelineItem = (s: PipelineStageStat) => {
               </Card>
               <Card size="small" className="ci-stat-card">
                 <Statistic
-                  title="代码切片"
+                  title="模块数"
                   value={
                     summary
-                      ? summary.counters.totalChunks || summary.current.totalChunks || 0
+                      ? summary.current?.moduleTotal ?? 0
                       : 0
                   }
                   valueStyle={{ fontSize: 20 }}
@@ -586,7 +586,7 @@ const timelineItem = (s: PipelineStageStat) => {
       {['PENDING_REVIEW', 'REVIEWING', 'CONFIRMED', 'PUSHED'].includes(task.status) && (
         <div className="ci-kpi-grid">
           <Card size="small">
-            <Statistic title="预估切片数" value={65} />
+            <Statistic title="模块数" value={summary?.current?.moduleTotal ?? 0} />
           </Card>
           <Card size="small">
             <Statistic title="AI 调用数" value={65} />
@@ -618,7 +618,7 @@ const timelineItem = (s: PipelineStageStat) => {
         )}
         destroyOnClose
       >
-        {/* 顶部粘性信息条：Mock / 模型 / 总耗时 / 状态 / 日志 URI */}
+        {/* 顶部粘性信息条：Mock / 模型 / 执行耗时 / 状态 / 日志 URI */}
         <div
           style={{
             position: 'sticky',
@@ -634,7 +634,7 @@ const timelineItem = (s: PipelineStageStat) => {
             <Tag color={aiModeColor}>{aiModeLabel}</Tag>
             <Tag color="purple">模型：{summary?.modelName || task.modelName || '未指定'}</Tag>
             <Tag color="blue">
-              总耗时 {(((summary?.durationMs ?? task.durationMs) || 0) / 1000).toFixed(1)} 秒
+              执行耗时 {(((summary?.durationMs ?? task.durationMs) || 0) / 1000).toFixed(1)} 秒
             </Tag>
             <Tag color={meta.color}>{meta.label}</Tag>
             <Text type="secondary" copyable={{ text: `local://storage/task_${task.id}/pipeline.log` }}>

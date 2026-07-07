@@ -22,17 +22,18 @@ public enum TaskStatus {
      */
     PARSING_CODE,
     /**
-     * 任务切片中（按照语法块/物理文件/变更进行分片及 Token 估算）
+     * @deprecated 历史任务可能仍停留在此状态；新流水线已不再进入该阶段。
      */
+    @Deprecated
     SPLITTING_TASK,
     /**
-     * 知识入口人工复核断点（介于 SPLITTING_TASK 与 AI_ANALYZING 之间）。
-     * 流水线在切片完成后、调用 AI 提取模块层级之前，把识别到的入口类与方法落表 ci_entrypoint，
+     * 知识入口人工复核断点（介于 PARSING_CODE 与 AI_ANALYZING 之间）。
+     * 流水线在静态解析完成后、调用 AI 提取模块层级之前，把识别到的入口类与方法落表 ci_entrypoint，
      * 等待用户在页面上确认（继续）或驳回（终止任务）。
      */
     ENTRYPOINT_REVIEW,
     /**
-     * AI 归纳分析中（多线程调度大模型 API 进行切片功能提取）
+     * AI 归纳分析中（增量影响分析 + 模块层级提炼）
      */
     AI_ANALYZING,
     /**
@@ -44,7 +45,7 @@ public enum TaskStatus {
      */
     MODULE_HIERARCHY_REVIEW,
     /**
-     * 知识生成中（整合切片 Markdown 并写入 ci_knowledge_draft 进行版本归档）
+     * 知识生成中（整合模块/功能级 Markdown 并写入 ci_knowledge_draft 进行版本归档）
      */
     GENERATING_DOC,
     /**

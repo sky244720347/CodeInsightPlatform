@@ -1,6 +1,6 @@
 # 代码洞察平台（CodeInsight Platform）
 
-代码洞察平台面向研发团队，将现有代码库持续转化为可维护、可追溯、可复核的代码知识资产。平台串联代码拉取、Java 静态解析、代码切片、AI 归纳、草稿复核、知识版本、Git/ZIP 输出、Token 审计和操作日志，确保 AI 内容先审后发，不直接进入正式知识库。
+代码洞察平台面向研发团队，将现有代码库持续转化为可维护、可追溯、可复核的代码知识资产。平台串联代码拉取、Java 静态解析、入口识别、AI 归纳、草稿复核、知识版本、Git/ZIP 输出、Token 审计和操作日志，确保 AI 内容先审后发，不直接进入正式知识库。
 
 - 前端：React 19 + TypeScript + Vite + Ant Design + Zustand + ECharts + Monaco Editor + Hash Router
 - 后端：Java 17 + Spring Boot 3.3 + MyBatis Plus + PostgreSQL + Redis + JGit
@@ -33,7 +33,7 @@ flowchart TD
     B2 --> C{"选择任务类型"}
     C -- "INITIAL 全量" --> E["拉取与全量扫描"]
     C -- "INCREMENTAL 增量" --> E2["git diff 与变更文件清单<br/>门禁 + 推送 merge"]
-    E --> F["静态解析与代码切片"]
+    E --> F["静态解析 + 调用链落表"]
     E2 --> F
     F --> F0["增量影响分析<br/>反向 BFS 追溯入口"]
     F0 --> G["模块识别与 AI 归纳"]
@@ -254,7 +254,7 @@ DRAFT
   └─> PENDING
         └─> PULLING_CODE
               └─> PARSING_CODE
-                    └─> SPLITTING_TASK
+                    └─> ENTRYPOINT_DISCOVERY / ENTRYPOINT_REVIEW?
                           └─> AI_ANALYZING
                                 ├─> MODULE_HIERARCHY
                                 │     └─> MODULE_HIERARCHY_REVIEW (requireHierarchyReview=true 时的断点)

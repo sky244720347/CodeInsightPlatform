@@ -50,6 +50,7 @@ const DraftModuleDirectory: React.FC<DraftModuleDirectoryProps> = ({
 }) => {
   const panelRef = useRef<HTMLDivElement>(null);
   const treeScrollRef = useRef<HTMLDivElement>(null);
+  const [treeViewportHeight, setTreeViewportHeight] = useState(320);
   const [size, setSize] = useState({ width: DEFAULT_WIDTH, height: fullscreen ? 520 : 480 });
   const [position, setPosition] = useState({ x: 0, y: DEFAULT_MIN_TOP });
   const [floating, setFloating] = useState(false);
@@ -74,6 +75,62 @@ const DraftModuleDirectory: React.FC<DraftModuleDirectoryProps> = ({
       setFloating(false);
     }
   }, [pinned]);
+
+  const measureTreeViewport = useCallback(() => {
+    const panel = panelRef.current;
+    if (!panel) return;
+    const head = panel.querySelector<HTMLElement>('.ant-card-head');
+    const body = panel.querySelector<HTMLElement>('.ant-card-body');
+    if (!head || !body) return;
+    const panelHeight = panel.getBoundingClientRect().height;
+    const headHeight = head.getBoundingClientRect().height;
+    const bodyStyle = window.getComputedStyle(body);
+    const paddingY =
+      parseFloat(bodyStyle.paddingTop || '0') + parseFloat(bodyStyle.paddingBottom || '0');
+    setTreeViewportHeight(Math.max(120, panelHeight - headHeight - paddingY));
+  }, []);
+
+  useEffect(() => {
+    if (!visible) return;
+    const id = window.requestAnimationFrame(() => measureTreeViewport());
+    return () => window.cancelAnimationFrame(id);
+  }, [visible, measureTreeViewport, treeData.length, expandedKeys.length, loading]);
+
+  useEffect(() => {
+    if (!visible) return;
+    measureTreeViewport();
+    const panel = panelRef.current;
+    if (!panel) return;
+    const observer = new ResizeObserver(() => measureTreeViewport());
+    observer.observe(panel);
+    return () => observer.disconnect();
+  }, [visible, measureTreeViewport, size.width, size.height, floating, pinned, fullscreen]);
+
+  useEffect(() => {
+    const el = treeScrollRef.current;
+    if (!el || !visible) return;
+
+    const onWheel = (event: WheelEvent) => {
+      const { scrollTop, scrollHeight, clientHeight } = el;
+      if (scrollHeight <= clientHeight + 1) return;
+
+      const delta = event.deltaY;
+      if (Math.abs(delta) < 0.5) return;
+
+      const atTop = scrollTop <= 0;
+      const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
+      if ((delta < 0 && atTop) || (delta > 0 && atBottom)) {
+        return;
+      }
+
+      event.preventDefault();
+      event.stopPropagation();
+      el.scrollTop = Math.max(0, Math.min(scrollHeight - clientHeight, scrollTop + delta));
+    };
+
+    el.addEventListener('wheel', onWheel, { passive: false, capture: true });
+    return () => el.removeEventListener('wheel', onWheel, { capture: true });
+  }, [visible, treeViewportHeight, treeData.length]);
 
   const resetDockLayout = useCallback(() => {
     setFloating(false);
@@ -166,19 +223,6 @@ const DraftModuleDirectory: React.FC<DraftModuleDirectoryProps> = ({
     [size.height, size.width],
   );
 
-  const onTreeWheel = useCallback((event: React.WheelEvent<HTMLDivElement>) => {
-    const el = treeScrollRef.current;
-    if (!el) return;
-    const { scrollTop, scrollHeight, clientHeight } = el;
-    if (scrollHeight <= clientHeight) return;
-    const delta = event.deltaY;
-    const atTop = scrollTop <= 0;
-    const atBottom = scrollTop + clientHeight >= scrollHeight - 1;
-    if ((delta < 0 && !atTop) || (delta > 0 && !atBottom)) {
-      event.stopPropagation();
-    }
-  }, []);
-
   const selectedKeys = useMemoSelectedKeys(treeData, selectedDraftId);
 
   const panelStyle: React.CSSProperties = floating
@@ -190,10 +234,14 @@ const DraftModuleDirectory: React.FC<DraftModuleDirectoryProps> = ({
         height: size.height,
         zIndex: fullscreen ? 1200 : 1000,
       }
-    : {
-        width: size.width,
-        height: size.height,
-      };
+    : pinned
+      ? {
+          width: size.width,
+          height: size.height,
+        }
+      : {
+          width: size.width,
+        };
 
   return (
     <div
@@ -266,7 +314,7 @@ const DraftModuleDirectory: React.FC<DraftModuleDirectoryProps> = ({
           <div
             ref={treeScrollRef}
             className="ci-module-drawer-tree-wrap"
-            onWheel={onTreeWheel}
+            style={{ height: treeViewportHeight, maxHeight: treeViewportHeight }}
           >
             {treeData.length > 0 ? (
               <Tree

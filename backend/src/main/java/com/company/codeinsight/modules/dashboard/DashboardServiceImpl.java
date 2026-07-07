@@ -44,7 +44,7 @@ public class DashboardServiceImpl implements DashboardService {
 
     private static final DateTimeFormatter DTF = DateTimeFormatter.ofPattern("yyyy-MM-dd");
     private static final String[] STATUS_ORDER = {
-            "PENDING", "PULLING_CODE", "PARSING_CODE", "SPLITTING_TASK",
+            "PENDING", "PULLING_CODE", "PARSING_CODE",
             "ENTRYPOINT_REVIEW", "AI_ANALYZING", "MODULE_HIERARCHY", "MODULE_HIERARCHY_REVIEW",
             "GENERATING_DOC", "PENDING_REVIEW", "REVIEWING", "CONFIRMED", "PUSHING", "PUSHED",
             "FAILED", "CANCELLED", "ARCHIVED", "DRAFT"
@@ -215,7 +215,7 @@ public class DashboardServiceImpl implements DashboardService {
 
         List<Map<String, Object>> result = new ArrayList<>();
         // 只关注核心流水线状态
-        Set<String> coreStatuses = Set.of("PULLING_CODE", "PARSING_CODE", "SPLITTING_TASK",
+        Set<String> coreStatuses = Set.of("PULLING_CODE", "PARSING_CODE",
                 "ENTRYPOINT_REVIEW", "AI_ANALYZING", "MODULE_HIERARCHY", "MODULE_HIERARCHY_REVIEW",
                 "GENERATING_DOC", "PENDING_REVIEW", "CONFIRMED", "PUSHED", "FAILED");
 

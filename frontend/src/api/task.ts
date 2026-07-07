@@ -23,7 +23,7 @@ export interface CreateTaskPayload {
   entryScanConfig?: EntryScanConfig;
   /** 是否启用模块层级调试（人工复核断点）；不传则按默认 TRUE 处理 */
   requireHierarchyReview?: boolean;
-  /** 是否启用知识入口复核（人工复核断点，介于 SPLITTING_TASK 与 AI_ANALYZING 之间）；不传则按默认 TRUE 处理 */
+  /** 是否启用知识入口复核（人工复核断点，介于 PARSING_CODE 与 AI_ANALYZING 之间）；不传则按默认 TRUE 处理 */
   requireEntrypointReview?: boolean;
 }
 
@@ -206,6 +206,11 @@ export const rejectEntrypointReview = (id: number, reason?: string): Promise<voi
 /** 取消队列中的 PENDING 任务（PENDING → CANCELLED） */
 export const cancelQueuedTask = (id: number): Promise<void> => {
   return request.post(`/tasks/${id}/cancel`);
+};
+
+/** 删除任务（仅 DRAFT / PENDING / FAILED / CANCELLED / ARCHIVED） */
+export const deleteTask = (id: number): Promise<void> => {
+  return request.delete(`/tasks/${id}`);
 };
 
 /** 调整任务优先级（0-100，仅 PENDING 可调） */

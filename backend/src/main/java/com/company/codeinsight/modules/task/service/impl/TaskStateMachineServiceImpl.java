@@ -1,21 +1,31 @@
 package com.company.codeinsight.modules.task.service.impl;
 
+import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.modules.draft.entity.DraftWorkspace;
+import com.company.codeinsight.modules.draft.enums.DraftStatus;
+import com.company.codeinsight.modules.draft.mapper.DraftWorkspaceMapper;
+import com.company.codeinsight.modules.draft.mapper.KnowledgeDraftMapper;
 import com.company.codeinsight.modules.log.service.OperationLogService;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.enums.TaskStatus;
+import com.company.codeinsight.modules.task.support.TaskExecutionDuration;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import com.company.codeinsight.modules.task.service.TaskStateMachineService;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalDateTime;
+import java.util.List;
 
 /**
  * 任务状态机服务实现类
  * 负责维护反编译及分析任务生命周期中的状态流转、合法性校验、进度更新及审计日志记录。
  */
+@Slf4j
 @Service
 public class TaskStateMachineServiceImpl implements TaskStateMachineService {
 
@@ -24,6 +34,17 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
 
     @Autowired
     private OperationLogService operationLogService;
+
+    /**
+     * 草稿/工作区级联归档器：任务流转到 CANCELLED / FAILED 时，
+     * 把 taskId 关联的 ci_draft_workspace.status 与 ci_knowledge_draft.status 一并置 ARCHIVED，
+     * 避免「任务已终止、草稿仍 DRAFT/EDITING」的孤儿状态污染 readiness 视图。
+     */
+    @Autowired
+    private DraftWorkspaceMapper workspaceMapper;
+
+    @Autowired
+    private KnowledgeDraftMapper draftMapper;
 
     /**
      * 根据任务 ID 触发状态流转
@@ -68,30 +89,25 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
         task.setStatus(targetStatus.name());
         task.setUpdatedAt(LocalDateTime.now());
 
-        // 任务开始执行时记录启动时间
-        if (targetStatus == TaskStatus.PENDING || targetStatus == TaskStatus.PULLING_CODE) {
+        LocalDateTime now = LocalDateTime.now();
+
+        // 任务首次进入自动执行或从排队重试时记录挂钟启动时间（仅作参考，不参与执行耗时）
+        if (targetStatus == TaskStatus.PULLING_CODE) {
             if (task.getStartedAt() == null
                     || currentStatus == TaskStatus.FAILED
                     || currentStatus == TaskStatus.CANCELLED) {
-                task.setStartedAt(LocalDateTime.now());
+                task.setStartedAt(now);
             }
         }
 
-        // 从失败/取消重入队列时清空结束时间与耗时
+        // 从失败/取消重入队列时清空计时
         if (targetStatus == TaskStatus.PENDING
                 && (currentStatus == TaskStatus.FAILED || currentStatus == TaskStatus.CANCELLED)) {
-            task.setEndedAt(null);
-            task.setDurationMs(null);
+            TaskExecutionDuration.resetTiming(task);
         }
 
-        // 任务进入终态时记录结束时间，并计算运行耗时（毫秒）
-        if (targetStatus == TaskStatus.FAILED || targetStatus == TaskStatus.PUSHED || targetStatus == TaskStatus.CANCELLED || targetStatus == TaskStatus.ARCHIVED) {
-            task.setEndedAt(LocalDateTime.now());
-            if (task.getStartedAt() != null) {
-                long duration = java.time.Duration.between(task.getStartedAt(), task.getEndedAt()).toMillis();
-                task.setDurationMs(duration);
-            }
-        }
+        // 执行耗时：离开自动阶段时累加，进入自动阶段时开启新段
+        TaskExecutionDuration.onStatusChange(task, currentStatus, targetStatus, now);
 
         // 失败/取消原因写入；其余流转一律清空，避免重试后仍展示旧错误
         if (targetStatus == TaskStatus.FAILED && errorReason != null) {
@@ -106,12 +122,12 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
         switch (targetStatus) {
             case PENDING -> task.setProgress(0);
             case PULLING_CODE -> task.setProgress(10);
-            case PARSING_CODE -> task.setProgress(30);
-            case SPLITTING_TASK -> task.setProgress(50);
-            case ENTRYPOINT_REVIEW -> task.setProgress(60);
-            case AI_ANALYZING -> task.setProgress(70);
-            case MODULE_HIERARCHY -> task.setProgress(85);
-            case MODULE_HIERARCHY_REVIEW -> task.setProgress(88);
+            case PARSING_CODE -> task.setProgress(35);
+            case SPLITTING_TASK -> task.setProgress(40);
+            case ENTRYPOINT_REVIEW -> task.setProgress(45);
+            case AI_ANALYZING -> task.setProgress(55);
+            case MODULE_HIERARCHY -> task.setProgress(75);
+            case MODULE_HIERARCHY_REVIEW -> task.setProgress(82);
             case GENERATING_DOC -> task.setProgress(90);
             case PENDING_REVIEW -> task.setProgress(100);
             case CONFIRMED -> task.setProgress(100);
@@ -120,6 +136,12 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
 
         // 持久化更新至数据库
         decompileTaskMapper.updateById(task);
+
+        // 任务级联归档：流转到 CANCELLED / FAILED 时，把关联的 workspace + draft 一并置 ARCHIVED。
+        // 否则会出现「任务已终止但草稿仍 DRAFT/EDITING」的孤儿状态，污染 readiness 视图。
+        if (targetStatus == TaskStatus.CANCELLED || targetStatus == TaskStatus.FAILED) {
+            cascadeArchiveDraftsAndWorkspaces(task.getId());
+        }
 
         // 记录状态流转至系统操作审计日志中
         operationLogService.logOperation(
@@ -130,6 +152,52 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
                 errorReason,
                 true
         );
+    }
+
+    /**
+     * 把 taskId 关联的 ci_draft_workspace 与 ci_knowledge_draft 一并置 ARCHIVED。
+     * 幂等：仅修改状态非 ARCHIVED 的行（避免重复触发时 update_count 假阳性）。
+     */
+    private void cascadeArchiveDraftsAndWorkspaces(Long taskId) {
+        // 1. 查 taskId 关联的所有 workspace
+        List<DraftWorkspace> workspaces = workspaceMapper.selectList(
+                new LambdaQueryWrapper<DraftWorkspace>()
+                        .eq(DraftWorkspace::getTaskId, taskId)
+        );
+        if (workspaces.isEmpty()) {
+            return;
+        }
+        List<Long> workspaceIds = workspaces.stream()
+                .map(DraftWorkspace::getId)
+                .collect(java.util.stream.Collectors.toList());
+
+        // 2. 批量归档 workspace
+        int wsArchived = workspaceMapper.update(null,
+                new LambdaUpdateWrapper<DraftWorkspace>()
+                        .in(DraftWorkspace::getId, workspaceIds)
+                        .ne(DraftWorkspace::getStatus, "ARCHIVED")
+                        .set(DraftWorkspace::getStatus, "ARCHIVED")
+                        .set(DraftWorkspace::getUpdatedAt, LocalDateTime.now())
+        );
+
+        // 3. 批量归档 workspace 下的非终态草稿
+        int draftArchived = draftMapper.update(null,
+                new LambdaUpdateWrapper<com.company.codeinsight.modules.draft.entity.KnowledgeDraft>()
+                        .in(com.company.codeinsight.modules.draft.entity.KnowledgeDraft::getWorkspaceId, workspaceIds)
+                        .notIn(com.company.codeinsight.modules.draft.entity.KnowledgeDraft::getStatus,
+                                java.util.List.of(
+                                        DraftStatus.CONFIRMED.name(),
+                                        DraftStatus.PUSHED.name(),
+                                        DraftStatus.ARCHIVED.name()
+                                ))
+                        .set(com.company.codeinsight.modules.draft.entity.KnowledgeDraft::getStatus,
+                                DraftStatus.ARCHIVED.name())
+                        .set(com.company.codeinsight.modules.draft.entity.KnowledgeDraft::getUpdatedAt,
+                                LocalDateTime.now())
+        );
+
+        log.info("cascadeArchiveDraftsAndWorkspaces: taskId={} workspaces={} drafts={}",
+                taskId, wsArchived, draftArchived);
     }
 
     /**
@@ -152,8 +220,10 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
             case PENDING -> target == TaskStatus.PULLING_CODE || target == TaskStatus.AI_ANALYZING
                     || target == TaskStatus.GENERATING_DOC || target == TaskStatus.CANCELLED || target == TaskStatus.FAILED;
             case PULLING_CODE -> target == TaskStatus.PARSING_CODE || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
-            case PARSING_CODE -> target == TaskStatus.SPLITTING_TASK || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
-            case SPLITTING_TASK -> target == TaskStatus.ENTRYPOINT_REVIEW || target == TaskStatus.AI_ANALYZING || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
+            case PARSING_CODE -> target == TaskStatus.ENTRYPOINT_REVIEW || target == TaskStatus.AI_ANALYZING
+                    || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
+            case SPLITTING_TASK -> target == TaskStatus.ENTRYPOINT_REVIEW || target == TaskStatus.AI_ANALYZING
+                    || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case ENTRYPOINT_REVIEW -> target == TaskStatus.AI_ANALYZING || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case AI_ANALYZING -> target == TaskStatus.MODULE_HIERARCHY || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case MODULE_HIERARCHY -> target == TaskStatus.MODULE_HIERARCHY_REVIEW || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
