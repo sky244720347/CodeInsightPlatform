@@ -40,11 +40,12 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
     private DecompileTaskMapper decompileTaskMapper;
 
     @Override
-    public Page<CodeRepository> listRepositoriesPage(int current, int size, Long systemId, String gitUrl) {
+    public Page<CodeRepository> listRepositoriesPage(int current, int size, Long systemId, String gitUrl, Boolean hasPublished) {
         Page<CodeRepository> page = new Page<>(current, size);
         LambdaQueryWrapper<CodeRepository> queryWrapper = new LambdaQueryWrapper<>();
         queryWrapper.eq(systemId != null, CodeRepository::getSystemId, systemId)
                 .like(StringUtils.hasText(gitUrl), CodeRepository::getGitUrl, gitUrl)
+                .isNotNull(Boolean.TRUE.equals(hasPublished), CodeRepository::getLastPublishedVersionId)
                 .orderByDesc(CodeRepository::getCreatedAt);
         return this.page(page, queryWrapper);
     }

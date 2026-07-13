@@ -75,8 +75,9 @@ public class CodeRepositoryController {
             @RequestParam(defaultValue = "1") int current,
             @RequestParam(defaultValue = "10") int size,
             @RequestParam(required = false) Long systemId,
-            @RequestParam(required = false) String gitUrl) {
-        Page<CodeRepository> page = codeRepositoryService.listRepositoriesPage(current, size, systemId, gitUrl);
+            @RequestParam(required = false) String gitUrl,
+            @RequestParam(required = false) Boolean hasPublished) {
+        Page<CodeRepository> page = codeRepositoryService.listRepositoriesPage(current, size, systemId, gitUrl, hasPublished);
         page.getRecords().forEach(this::maskPassword);
         PageResult<CodeRepository> result = new PageResult<>(page.getTotal(), page.getSize(), page.getCurrent(), page.getRecords());
         return ApiResponse.success(result);

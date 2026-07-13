@@ -6,6 +6,8 @@ export const listRepositories = (params: {
   size: number;
   systemId?: number;
   gitUrl?: string;
+  /** 仅返回已发布知识版本的仓库（last_published_version_id IS NOT NULL），默认 false */
+  hasPublished?: boolean;
 }): Promise<PageResult<Repository>> => {
   return request.get('/repositories', { params });
 };

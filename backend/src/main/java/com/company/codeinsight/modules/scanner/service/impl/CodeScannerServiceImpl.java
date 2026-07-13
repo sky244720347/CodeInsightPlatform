@@ -2,6 +2,7 @@ package com.company.codeinsight.modules.scanner.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.common.exception.ErrorCode;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
@@ -63,6 +64,9 @@ public class CodeScannerServiceImpl implements CodeScannerService {
 
     @Autowired
     private DecompileTaskMapper taskMapper;
+
+    @Autowired
+    private com.company.codeinsight.modules.log.service.OperationLogService operationLogService;
 
     /** 快照批量写入大小，减少 DB 往返次数 */
     private static final int SNAPSHOT_BATCH_SIZE = 500;
@@ -152,8 +156,23 @@ public class CodeScannerServiceImpl implements CodeScannerService {
         }
 
         if (gitPullSuccess) {
-            // === 1. 计算本次扫描的文件范围（增量或全量） ===
-            if (isIncremental && gitHandle != null && hasBaseline) {
+            // === 1. 计算本次扫描的文件范围（INITIAL / INCREMENTAL 严格分流，禁止任何降级） ===
+            if (isIncremental) {
+                // INCREMENTAL 路径：任何条件不满足立即抛错让任务 FAIL（runPipeline 的 catch 会转 FAILED）
+                if (gitHandle == null) {
+                    // 创建期已校验本地路径被禁；此处命中说明创建后仓库配置被改（如 gitUrl 被改成本地路径）
+                    operationLogService.logOperation(repositoryId, taskId, "INCREMENTAL_BASELINE_LOST",
+                            "INCREMENTAL 任务执行时检测到 gitHandle 为空（疑似 gitUrl 被改成本地路径）",
+                            null, false);
+                    throw new BusinessException(ErrorCode.INCREMENTAL_LOCAL_PATH_NOT_SUPPORTED);
+                }
+                if (!StringUtils.hasText(repo.getLastCommitId())) {
+                    // 创建期已校验 lastCommitId 非空；此处命中说明创建后基线被清空
+                    operationLogService.logOperation(repositoryId, taskId, "INCREMENTAL_BASELINE_LOST",
+                            "INCREMENTAL 任务执行时检测到 lastCommitId 为空",
+                            null, false);
+                    throw new BusinessException(ErrorCode.INCREMENTAL_NO_BASELINE);
+                }
                 try {
                     DiffOutcome diff = computeIncrementalDiff(gitHandle, repo.getLastCommitId(), "HEAD");
                     changedPaths = diff.changed;
@@ -161,19 +180,17 @@ public class CodeScannerServiceImpl implements CodeScannerService {
                     log.info("增量扫描 — 变更 {} 个文件，删除 {} 个文件（基线 {} → HEAD {}）",
                             changedPaths.size(), deletedPaths.size(), repo.getLastCommitId(), commitId);
                 } catch (Exception diffEx) {
-                    // 基线 commit 在新 history 中不可解析（force-push / rebase），
-                    // 降级为全量扫描，不让流水线因增量分支异常而中断
-                    log.warn("增量 diff 识别失败（{}），降级为全量扫描", diffEx.getMessage());
-                    changedPaths = null;
-                    deletedPaths = null;
+                    // 基线 commit 在新 history 中不可解析（force-push / rebase）。禁止降级，直接 FAIL。
+                    String msg = "增量基线 commit " + repo.getLastCommitId() + " 不可解析：" + diffEx.getMessage();
+                    operationLogService.logOperation(repositoryId, taskId, "INCREMENTAL_BASELINE_LOST", msg,
+                            diffEx.getMessage(), false);
+                    throw new BusinessException(ErrorCode.INCREMENTAL_DIFF_FAILED, msg);
                 }
-            } else if (isIncremental && !hasBaseline) {
-                log.warn("增量任务无基线 commitId (repositoryId={})，降级为全量扫描", repositoryId);
-            } else if (isIncremental && gitHandle == null) {
-                log.warn("增量任务未持有 Git 句柄（本地路径或 Mock 降级），降级为全量扫描");
+                performFullScan = false;
+            } else {
+                // INITIAL 路径：永远全量，不读 lastCommitId，不做 diff
+                performFullScan = true;
             }
-
-            performFullScan = !isIncremental || changedPaths == null;
 
             // === 2. 清理/重建 snapshot 索引 ===
             if (performFullScan) {
@@ -231,11 +248,9 @@ public class CodeScannerServiceImpl implements CodeScannerService {
         IncrementalContext ctx = performFullScan
                 ? IncrementalContext.fullScan()
                 : IncrementalContext.incremental(changedPaths, deletedPaths);
-        String scanMode = "INITIAL";
+        // scanMode 仅两个值：INITIAL 路径固定 INITIAL；INCREMENTAL 路径成功为 INCREMENTAL（任何失败已在前面 throw）
+        String scanMode = isIncremental ? "INCREMENTAL" : "INITIAL";
         String headCommitId = commitId;
-        if (isIncremental) {
-            scanMode = performFullScan ? "DEGRADED_FULL" : "INCREMENTAL";
-        }
         return new ScanResult(targetDir, ctx, baselineCommitId, headCommitId, scanMode);
     }
 

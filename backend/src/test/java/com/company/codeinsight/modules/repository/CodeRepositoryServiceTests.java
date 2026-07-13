@@ -46,7 +46,7 @@ public class CodeRepositoryServiceTests {
         Assertions.assertEquals("https://github.com/dummy/repo.git", fetched.getGitUrl());
 
         // Page list
-        Page<CodeRepository> page = codeRepositoryService.listRepositoriesPage(1, 10, 1L, "dummy");
+        Page<CodeRepository> page = codeRepositoryService.listRepositoriesPage(1, 10, 1L, "dummy", null);
         Assertions.assertTrue(page.getTotal() > 0);
 
         // Update
@@ -80,13 +80,13 @@ public class CodeRepositoryServiceTests {
         repo.setScanRoot("/");
         codeRepositoryService.save(repo);
 
-        Page<CodeRepository> before = codeRepositoryService.listRepositoriesPage(1, 10, system.getId(), "soft-delete-test");
+        Page<CodeRepository> before = codeRepositoryService.listRepositoriesPage(1, 10, system.getId(), "soft-delete-test", null);
         Assertions.assertEquals(1, before.getTotal());
 
         codeRepositoryService.softDeleteRepository(repo.getId());
 
         Assertions.assertNull(codeRepositoryService.getById(repo.getId()));
-        Page<CodeRepository> after = codeRepositoryService.listRepositoriesPage(1, 10, system.getId(), "soft-delete-test");
+        Page<CodeRepository> after = codeRepositoryService.listRepositoriesPage(1, 10, system.getId(), "soft-delete-test", null);
         Assertions.assertEquals(0, after.getTotal());
     }
 
@@ -108,7 +108,7 @@ public class CodeRepositoryServiceTests {
 
         Assertions.assertNull(systemApplicationService.getById(system.getId()));
         Assertions.assertNull(codeRepositoryService.getById(repo.getId()));
-        Page<CodeRepository> repos = codeRepositoryService.listRepositoriesPage(1, 10, system.getId(), null);
+        Page<CodeRepository> repos = codeRepositoryService.listRepositoriesPage(1, 10, system.getId(), null, null);
         Assertions.assertEquals(0, repos.getTotal());
     }
 }

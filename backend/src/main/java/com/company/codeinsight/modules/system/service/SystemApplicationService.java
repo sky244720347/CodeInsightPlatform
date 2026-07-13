@@ -14,8 +14,9 @@ public interface SystemApplicationService extends IService<SystemApplication> {
     /**
      * 分页多条件查询接入业务系统列表（带聚合指标：代码库数 / 知识版本数 / 最近扫描时间）
      * <p>仅按 name / owner 模糊过滤。</p>
+     * <p>当 {@code hasPublished} 为 true 时，仅返回至少存在一个已发布仓库的系统（last_published_version_id IS NOT NULL）。</p>
      */
-    Page<SystemSummaryVO> listSystemsPage(int current, int size, String name, String owner);
+    Page<SystemSummaryVO> listSystemsPage(int current, int size, String name, String owner, Boolean hasPublished);
 
     /**
      * 新建系统（向导 Step 1）。必填：name、owner。

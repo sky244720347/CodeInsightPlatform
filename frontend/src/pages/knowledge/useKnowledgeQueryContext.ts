@@ -14,7 +14,7 @@ export function useKnowledgeQueryContext() {
   const [contextLoading, setContextLoading] = useState(false);
 
   useEffect(() => {
-    listSystems({ current: 1, size: 200 })
+    listSystems({ current: 1, size: 200, hasPublished: true })
       .then((data) => setSystems(data.records ?? []))
       .catch(() => undefined);
   }, []);
@@ -24,7 +24,7 @@ export function useKnowledgeQueryContext() {
       setRepositories([]);
       return;
     }
-    listRepositories({ current: 1, size: 200, systemId })
+    listRepositories({ current: 1, size: 200, systemId, hasPublished: true })
       .then((data) => setRepositories(data.records ?? []))
       .catch(() => setRepositories([]));
   }, [systemId]);

@@ -149,7 +149,17 @@ DRAFT
 | `hierarchy.buildAndPersist` | `(taskId, projectDir, ctx)` | 以 `hierarchyRetargetEntries` 替代纯路径命中；按 Maven 路径推 FQ 类名从 `function.classPaths` 移除被删引用；落表仍走 `deleteByTaskId + 全量 insert` |
 | `ai.generateDraftDocument` | `(taskId, promptContent, ctx)` | `moduleTouchedByChange` ∪ `docRetargetModuleIds` 决定重跑集合；其余模块旧草稿保留 |
 
-降级路径（不会让流水线挂在增量分支）：无 `lastCommitId` 基线 / 本地路径 / Mock 降级 / `resolve(ref^{tree})` 失败（force-push / rebase）→ 警告日志 + 全量扫描。增量任务门禁：仓库必须有 PUSHED 版本 + `lastCommitId` 非空，否则拒绝创建（见 [docs/incremental-release-merge-plan.md](./docs/incremental-release-merge-plan.md)）。
+增量任务门禁（硬性，在创建时校验）：
+- 仓库必须有 PUSHED 版本：`ci_repository.last_published_version_id` 非空 且 `last_commit_id` 非空
+- 不得使用本地路径模式：`gitUrl` 指向本地目录的仓库不允许建增量任务
+
+运行期策略（INITIAL 与 INCREMENTAL 严格功能独立）：
+- 任何 INCREMENTAL 路径下条件不满足（基线 commit 不可解析 / gitHandle 为空 / lastCommitId 为空）→ 任务直接 FAIL，绝不降级为全量；`ci_operation_log` 留痕 `action_type=INCREMENTAL_BASELINE_LOST`
+- INITIAL 任务走全量扫描，不读 `lastCommitId`，不做 diff
+- `scanMode` 只剩 `INITIAL` / `INCREMENTAL` 两种值（不再有 `DEGRADED_FULL`）
+- 错误码常量见 `common/exception/ErrorCode.java`：INCREMENTAL_NO_BASELINE(2001) / INCREMENTAL_LOCAL_PATH_NOT_SUPPORTED(2002) / INCREMENTAL_DIFF_FAILED(2003)
+
+详细实施见 [docs/incremental-task-strict-gate.md](./docs/incremental-task-strict-gate.md)。
 
 ### 知识查看（入口 / 层级 / 文档 三页）
 

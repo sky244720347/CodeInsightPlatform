@@ -31,6 +31,15 @@
             <if test="owner != null and owner != ''">
                 AND s.owner = #{owner}
             </if>
+            <if test="hasPublished != null and hasPublished == true">
+                AND EXISTS (
+                    SELECT 1
+                    FROM ci_repository r
+                    WHERE r.system_id = s.id
+                      AND r.deleted_at IS NULL
+                      AND r.last_published_version_id IS NOT NULL
+                )
+            </if>
         </where>
         ORDER BY s.created_at DESC
     </select>

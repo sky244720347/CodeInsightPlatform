@@ -12,8 +12,9 @@ public interface CodeRepositoryService extends IService<CodeRepository> {
 
     /**
      * 分页多条件查询代码仓库配置记录列表
+     * <p>当 {@code hasPublished} 为 true 时，仅返回已发布知识版本的仓库（last_published_version_id IS NOT NULL）。</p>
      */
-    Page<CodeRepository> listRepositoriesPage(int current, int size, Long systemId, String gitUrl);
+    Page<CodeRepository> listRepositoriesPage(int current, int size, Long systemId, String gitUrl, Boolean hasPublished);
 
     /**
      * 对已保存的仓库记录进行连接有效性测试

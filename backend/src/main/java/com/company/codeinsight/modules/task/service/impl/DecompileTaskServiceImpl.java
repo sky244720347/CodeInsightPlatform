@@ -6,6 +6,7 @@ import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.company.codeinsight.common.cluster.ClusterInstanceId;
 import com.company.codeinsight.common.cluster.ClusterProperties;
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.common.exception.ErrorCode;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.modules.ai.entity.AiCallRecord;
 import com.company.codeinsight.modules.ai.mapper.AiCallRecordMapper;
@@ -386,6 +387,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                                                Boolean requireEntrypointReview) {
         validateTaskSource(systemId, repositoryId);
         validateNoPendingReviewTasks(systemId, repositoryId);
+        validateIncrementalBaselineGate(systemId, repositoryId);
         decompilePromptService.validateRepositoryPromptBinding(repositoryId);
         DecompileTask task = new DecompileTask();
         task.setSystemId(systemId);
@@ -578,6 +580,34 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         if (blocking > 0) {
             throw new BusinessException("当前系统下仍有 " + blocking +
                     " 个任务的知识文档待复核，无法新建任务。请前往「任务概览 / 复核」页完成处置。");
+        }
+    }
+
+    /**
+     * INCREMENTAL 任务硬性门禁：
+     * <ul>
+     *   <li>门禁 1：仓库必须有过 PUSHED（lastPublishedVersionId 非空 且 lastCommitId 非空）</li>
+     *   <li>门禁 2：禁止使用本地路径模式（gitUrl 指向本地目录）</li>
+     * </ul>
+     * 不满足任一条件直接抛 {@link BusinessException}，前端通过 message.error 展示具体原因。
+     */
+    private void validateIncrementalBaselineGate(Long systemId, Long repositoryId) {
+        CodeRepository repository = codeRepositoryService.getById(repositoryId);
+        if (repository == null) {
+            throw new BusinessException("所选代码库不存在");
+        }
+        if (!Objects.equals(repository.getSystemId(), systemId)) {
+            throw new BusinessException("所选代码库不属于当前系统");
+        }
+        // 门禁 1：必须 PUSHED 过（lastPublishedVersionId 是「最近一次发布」指针；lastCommitId 是发布时的源代码基线 commit）
+        if (repository.getLastPublishedVersionId() == null
+                || !org.springframework.util.StringUtils.hasText(repository.getLastCommitId())) {
+            throw new BusinessException(ErrorCode.INCREMENTAL_NO_BASELINE);
+        }
+        // 门禁 2：本地路径模式一律禁止增量
+        File probe = new File(repository.getGitUrl());
+        if (probe.exists() && probe.isDirectory()) {
+            throw new BusinessException(ErrorCode.INCREMENTAL_LOCAL_PATH_NOT_SUPPORTED);
         }
     }
 
