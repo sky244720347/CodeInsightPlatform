@@ -45,7 +45,7 @@ interface Props {
 const SystemBusinessKnowledgeModal: React.FC<Props> = ({ open, system, onClose, onSaved }) => {
   const [content, setContent] = useState('');
   const [version, setVersion] = useState<number | null>(null);
-  const [updatedAt, setUpdatedAt] = useState<string | null>(null);
+  const [updatedDate, setUpdatedDate] = useState<string | null>(null);
   const [updatedBy, setUpdatedBy] = useState<string | null>(null);
   const [initialContent, setInitialContent] = useState('');
   const [loading, setLoading] = useState(false);
@@ -57,7 +57,7 @@ const SystemBusinessKnowledgeModal: React.FC<Props> = ({ open, system, onClose, 
     setContent('');
     setInitialContent('');
     setVersion(null);
-    setUpdatedAt(null);
+    setUpdatedDate(null);
     setUpdatedBy(null);
 
     let cancelled = false;
@@ -70,7 +70,7 @@ const SystemBusinessKnowledgeModal: React.FC<Props> = ({ open, system, onClose, 
           setContent(c);
           setInitialContent(c);
           setVersion(record.version ?? null);
-          setUpdatedAt(record.updatedAt ?? null);
+          setUpdatedDate(record.updatedDate ?? null);
           setUpdatedBy(record.updatedBy ?? null);
         } else {
           // 无配置时，初始 baseline 留空串；保存后端视为首次插入
@@ -169,9 +169,9 @@ const SystemBusinessKnowledgeModal: React.FC<Props> = ({ open, system, onClose, 
         <Tag color={version ? 'geekblue' : 'default'}>
           {version ? `当前版本 v${version}` : '尚未配置'}
         </Tag>
-        {updatedAt && (
+        {updatedDate && (
           <Text type="secondary" style={{ fontSize: 12 }}>
-            最近保存：{new Date(updatedAt).toLocaleString()}
+            最近保存：{new Date(updatedDate).toLocaleString()}
             {updatedBy ? ` · ${updatedBy}` : ''}
           </Text>
         )}

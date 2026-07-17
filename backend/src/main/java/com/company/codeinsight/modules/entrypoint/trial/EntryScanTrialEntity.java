@@ -11,8 +11,7 @@ import lombok.EqualsAndHashCode;
 import java.time.LocalDateTime;
 
 /**
- * 入口扫描试跑记录：用户在仓库配置中点击"试跑"产生的结果。
- * <p>不入库真实任务，每次独立执行；唯一持久化用途是历史结果回看。</p>
+ * 入口扫描试跑记录：结果 JSON 外置 NAS（result_uri）。
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
@@ -43,7 +42,11 @@ public class EntryScanTrialEntity extends BaseEntity {
     @TableField("config_snapshot")
     private String configSnapshot;
 
-    @TableField("result_json")
+    @TableField("result_uri")
+    private String resultUri;
+
+    /** 试跑结果 JSON（非库字段，由 Service hydrate） */
+    @TableField(exist = false)
     private String resultJson;
 
     @TableField("error_message")

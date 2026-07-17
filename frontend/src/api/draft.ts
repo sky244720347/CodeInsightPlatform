@@ -38,8 +38,8 @@ export interface DraftWorkspace {
   systemId: number;
   repositoryId: number;
   status: string;
-  createdAt: string;
-  updatedAt: string;
+  createdDate: string;
+  updatedDate: string;
 }
 
 export interface KnowledgeDraft {
@@ -52,8 +52,8 @@ export interface KnowledgeDraft {
   status: string;
   sortOrder: number;
   hash: string;
-  createdAt: string;
-  updatedAt: string;
+  createdDate: string;
+  updatedDate: string;
 }
 
 /**
@@ -71,6 +71,34 @@ export interface DraftTreeNode {
   sortOrder: number;
   isFolder: boolean;
   children: DraftTreeNode[];
+  /** v1: INCREMENTAL 任务基线继承标识（NULL=本次新增；非空=从该基线任务继承） */
+  baselineTaskId?: number;
+}
+
+/** v2: 草稿 diff 视图 DTO（前端 Phase 4 UI 用） */
+export interface DraftTreeDiffDto {
+  /** 本次新增草稿（baselineTaskId == null 且 module_name 不在基线中） */
+  newRows: DraftTreeNode[];
+  /** 本次重生成覆盖基线的草稿（baselineTaskId == null 且 module_name 在基线中） */
+  modifiedRows: DraftTreeNode[];
+  /** 基线继承草稿（baselineTaskId != null，直接复制未重跑） */
+  inheritedRows: DraftTreeNode[];
+  /** 本次删除草稿（基线 workspace 有 + 本次 workspace 无） */
+  deletedRows: DraftTreeNode[];
+}
+
+/** v2: 单篇文档正文 DIFF DTO — 基线正文直接内联返回 */
+export interface DocumentDiffDto {
+  /** 基线正文内容（直接从 releases 目录读取，无基线匹配时为 null） */
+  baselineContent: string | null;
+  /** 本次草稿的 contentUri */
+  currentContentUri: string;
+  /** 基线 moduleName */
+  baselineModuleName: string | null;
+  /** 本次草稿的 moduleName */
+  currentModuleName: string;
+  /** 本次草稿 ID */
+  currentDraftId: number;
 }
 
 export interface DraftRevision {
@@ -79,7 +107,7 @@ export interface DraftRevision {
   contentUri: string;
   author: string;
   remark: string;
-  createdAt: string;
+  createdDate: string;
 }
 
 export interface DraftReviewComment {
@@ -89,7 +117,7 @@ export interface DraftReviewComment {
   comment: string;
   /** 意见类型：NORMAL=通用意见 / PASS=通过意见 / REJECT=驳回意见 */
   type?: 'NORMAL' | 'PASS' | 'REJECT' | string;
-  createdAt: string;
+  createdDate: string;
 }
 
 /**
@@ -107,7 +135,7 @@ export interface TaskCommentDto {
   comment: string;
   /** NORMAL=通用意见 / PASS=通过意见（含任务级确认的 [任务级通过]）/ REJECT=驳回意见 */
   type?: 'NORMAL' | 'PASS' | 'REJECT' | string;
-  createdAt: string;
+  createdDate: string;
 }
 
 export interface DraftSourceReference {
@@ -118,7 +146,7 @@ export interface DraftSourceReference {
   endLine: number;
   className?: string;
   methodSignature?: string;
-  createdAt: string;
+  createdDate: string;
 }
 
 /**
@@ -159,6 +187,16 @@ export function getWorkspaceByTask(taskId: number): Promise<{ workspace: DraftWo
 export function getWorkspaceTree(workspaceId: number): Promise<DraftTreeNode[]> {
   if (isMockEnabled()) return mockGetWorkspaceTree(workspaceId);
   return request.get(`/drafts/workspace/${workspaceId}/tree`);
+}
+
+/** v2: 草稿 diff 视图（INCREMENTAL 任务 4 类：新增 / 修改 / 基线继承 / 本次删除） */
+export function getWorkspaceTreeDiff(workspaceId: number): Promise<DraftTreeDiffDto> {
+  return request.get(`/drafts/workspace/${workspaceId}/tree/diff`);
+}
+
+/** v2: 单篇文档正文 DIFF — 返回基线 + 本次两份正文的 contentUri */
+export function getDocumentDiff(draftId: number): Promise<DocumentDiffDto> {
+  return request.get(`/drafts/${draftId}/content-diff`);
 }
 
 export function getDraftContent(draftId: number): Promise<string> {
@@ -218,7 +256,7 @@ export function getComments(draftId: number): Promise<DraftReviewComment[]> {
  */
 export function listTaskComments(taskId: number): Promise<TaskCommentDto[]> {
   if (isMockEnabled()) {
-    // 演示模式：聚合 mock 单文件评论，按 createdAt desc 合并
+    // 演示模式：聚合 mock 单文件评论，按 createdDate desc 合并
     return mockListTaskComments(taskId);
   }
   return request.get(`/drafts/task/${taskId}/comments`);

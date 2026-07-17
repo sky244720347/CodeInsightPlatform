@@ -24,6 +24,7 @@ import com.company.codeinsight.modules.hierarchy.mapper.MethodFunctionBindingMap
 import com.company.codeinsight.modules.hierarchy.mapper.ModuleHierarchyNodeMapper;
 import com.company.codeinsight.modules.scanner.entity.CodeFileSnapshot;
 import com.company.codeinsight.modules.scanner.mapper.CodeFileSnapshotMapper;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.enums.TaskStatus;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
@@ -36,7 +37,6 @@ import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.test.context.ActiveProfiles;
 import org.springframework.transaction.annotation.Transactional;
@@ -116,8 +116,8 @@ public class TaskRetryCleanupTest {
     @Autowired
     private TaskExecutionLogger execLog;
 
-    @Value("${code-insight.storage.local-path:./storage}")
-    private String storageBase;
+    @Autowired
+    private EnvStorageResolver storageResolver;
 
     private static final long TASK_ID = 8801L;
     private static final long SYS_ID = 8801L;
@@ -186,7 +186,7 @@ public class TaskRetryCleanupTest {
         file.setLineCount(100);
         file.setFileHash("hash-foo");
         file.setContentUri("file:///tmp/Foo.java");
-        file.setCreatedAt(LocalDateTime.now());
+        file.setCreatedDate(LocalDateTime.now());
         codeFileSnapshotMapper.insert(file);
 
         // 2. ci_method_call
@@ -199,7 +199,7 @@ public class TaskRetryCleanupTest {
         mc.setTargetMethod("doY");
         mc.setTargetSignature("doY");
         mc.setLineNumber(10);
-        mc.setCreatedAt(LocalDateTime.now());
+        mc.setCreatedDate(LocalDateTime.now());
         methodCallMapper.insert(mc);
 
         // 3. ci_entrypoint
@@ -209,8 +209,8 @@ public class TaskRetryCleanupTest {
         ep.setClassName("com.demo.Foo");
         ep.setEntryType("CONTROLLER");
         ep.setSortOrder(0);
-        ep.setCreatedAt(LocalDateTime.now());
-        ep.setUpdatedAt(LocalDateTime.now());
+        ep.setCreatedDate(LocalDateTime.now());
+        ep.setUpdatedDate(LocalDateTime.now());
         entrypointMapper.insert(ep);
 
         // 4. ci_module_hierarchy_node
@@ -223,8 +223,8 @@ public class TaskRetryCleanupTest {
         mhn.setName("测试模块");
         mhn.setKeywords("[\"k1\"]");
         mhn.setConfirmed(Boolean.FALSE);
-        mhn.setCreatedAt(LocalDateTime.now());
-        mhn.setUpdatedAt(LocalDateTime.now());
+        mhn.setCreatedDate(LocalDateTime.now());
+        mhn.setUpdatedDate(LocalDateTime.now());
         moduleHierarchyNodeMapper.insert(mhn);
 
         // 5. ci_method_function_binding
@@ -238,8 +238,8 @@ public class TaskRetryCleanupTest {
         mfb.setMethodSignature("doX()");
         mfb.setSource("AI");
         mfb.setConfidence(java.math.BigDecimal.ONE);
-        mfb.setCreatedAt(LocalDateTime.now());
-        mfb.setUpdatedAt(LocalDateTime.now());
+        mfb.setCreatedDate(LocalDateTime.now());
+        mfb.setUpdatedDate(LocalDateTime.now());
         methodFunctionBindingMapper.insert(mfb);
 
         // 6. ci_ai_call_record
@@ -250,7 +250,7 @@ public class TaskRetryCleanupTest {
         ai.setIsSuccess(1);
         ai.setInputToken(100);
         ai.setOutputToken(200);
-        ai.setCreatedAt(LocalDateTime.now());
+        ai.setCreatedDate(LocalDateTime.now());
         aiCallRecordMapper.insert(ai);
 
         // 7. ci_token_usage_audit
@@ -260,7 +260,7 @@ public class TaskRetryCleanupTest {
         tok.setModelName("minimax-M3");
         tok.setInputTokens(100);
         tok.setOutputTokens(200);
-        tok.setCreatedAt(LocalDateTime.now());
+        tok.setCreatedDate(LocalDateTime.now());
         tokenUsageAuditMapper.insert(tok);
 
         // 8. 草稿工作区 + 草稿 + 草稿子表
@@ -269,8 +269,8 @@ public class TaskRetryCleanupTest {
         ws.setSystemId(SYS_ID);
         ws.setRepositoryId(REPO_ID);
         ws.setStatus("ACTIVE");
-        ws.setCreatedAt(LocalDateTime.now());
-        ws.setUpdatedAt(LocalDateTime.now());
+        ws.setCreatedDate(LocalDateTime.now());
+        ws.setUpdatedDate(LocalDateTime.now());
         draftWorkspaceMapper.insert(ws);
 
         KnowledgeDraft draft = new KnowledgeDraft();
@@ -280,8 +280,8 @@ public class TaskRetryCleanupTest {
         draft.setContentUri("file:///tmp/foo.md");
         draft.setStatus(DraftStatus.DRAFT.name());
         draft.setHash("hash");
-        draft.setCreatedAt(LocalDateTime.now());
-        draft.setUpdatedAt(LocalDateTime.now());
+        draft.setCreatedDate(LocalDateTime.now());
+        draft.setUpdatedDate(LocalDateTime.now());
         knowledgeDraftMapper.insert(draft);
 
         DraftRevision rev = new DraftRevision();
@@ -289,13 +289,13 @@ public class TaskRetryCleanupTest {
         rev.setContentUri("file:///tmp/rev1.md");
         rev.setAuthor("tester");
         rev.setRemark("rev 1");
-        rev.setCreatedAt(LocalDateTime.now());
+        rev.setCreatedDate(LocalDateTime.now());
         draftRevisionMapper.insert(rev);
 
         DraftReviewComment cmt = new DraftReviewComment();
         cmt.setDraftId(draft.getId());
         cmt.setComment("comment");
-        cmt.setCreatedAt(LocalDateTime.now());
+        cmt.setCreatedDate(LocalDateTime.now());
         draftReviewCommentMapper.insert(cmt);
 
         DraftSourceReference ref = new DraftSourceReference();
@@ -304,7 +304,7 @@ public class TaskRetryCleanupTest {
         ref.setClassName("com.demo.Foo");
         ref.setStartLine(1);
         ref.setEndLine(10);
-        ref.setCreatedAt(LocalDateTime.now());
+        ref.setCreatedDate(LocalDateTime.now());
         draftSourceReferenceMapper.insert(ref);
 
         // 9. pipeline.log 写一条历史日志
@@ -405,7 +405,7 @@ public class TaskRetryCleanupTest {
     @Test
     public void testRetryClearsPipelineLog() {
         // 先确认日志存在
-        File logFile = new File(storageBase, "task_" + TASK_ID + "/pipeline.log");
+        File logFile = storageResolver.taskDataDir(TASK_ID).resolve("pipeline.log").toFile();
         Assertions.assertTrue(logFile.exists() && logFile.length() > 0,
                 "seed 后 pipeline.log 应存在且非空");
 

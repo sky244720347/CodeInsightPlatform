@@ -7,14 +7,17 @@ import com.baomidou.mybatisplus.extension.plugins.inner.PaginationInnerIntercept
 import org.apache.ibatis.reflection.MetaObject;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
 import java.time.LocalDateTime;
 
 /**
  * MyBatis-Plus 框架配置类
- * 包含分页拦截器配置，以及用于审计字段（如创建时间、更新时间）自动填充的 MetaObjectHandler。
+ * 包含分页拦截器配置，以及用于审计字段自动填充的 MetaObjectHandler。
  */
 @Configuration
 public class MyBatisPlusConfig implements MetaObjectHandler {
+
+    private static final String SYS_USER = "sys";
 
     /**
      * 配置 MyBatis-Plus 拦截器链
@@ -23,7 +26,6 @@ public class MyBatisPlusConfig implements MetaObjectHandler {
     @Bean
     public MybatisPlusInterceptor mybatisPlusInterceptor() {
         MybatisPlusInterceptor interceptor = new MybatisPlusInterceptor();
-        // 添加 PostgreSQL 分页插件
         interceptor.addInnerInterceptor(new PaginationInnerInterceptor(DbType.POSTGRE_SQL));
         return interceptor;
     }
@@ -36,9 +38,12 @@ public class MyBatisPlusConfig implements MetaObjectHandler {
      */
     @Override
     public void insertFill(MetaObject metaObject) {
-        // 新增时自动填充创建时间（createdAt）与最后更新时间（updatedAt）为当前时间
-        this.strictInsertFill(metaObject, "createdAt", LocalDateTime.class, LocalDateTime.now());
-        this.strictInsertFill(metaObject, "updatedAt", LocalDateTime.class, LocalDateTime.now());
+        String user = currentUserOrSys();
+        this.strictInsertFill(metaObject, "isDeleted", Integer.class, 0);
+        this.strictInsertFill(metaObject, "createdBy", String.class, user);
+        this.strictInsertFill(metaObject, "updatedBy", String.class, user);
+        this.strictInsertFill(metaObject, "createdDate", LocalDateTime.class, LocalDateTime.now());
+        this.strictInsertFill(metaObject, "updatedDate", LocalDateTime.class, LocalDateTime.now());
     }
 
     /**
@@ -49,8 +54,12 @@ public class MyBatisPlusConfig implements MetaObjectHandler {
      */
     @Override
     public void updateFill(MetaObject metaObject) {
-        // 更新时自动修改更新时间（updatedAt）为当前最新的操作时间
-        this.strictUpdateFill(metaObject, "updatedAt", LocalDateTime.class, LocalDateTime.now());
+        this.strictUpdateFill(metaObject, "updatedBy", String.class, currentUserOrSys());
+        this.strictUpdateFill(metaObject, "updatedDate", LocalDateTime.class, LocalDateTime.now());
+    }
+
+    /** MVP 无登录态时恒返回 sys；后续接 Auth 再取当前用户。 */
+    private String currentUserOrSys() {
+        return SYS_USER;
     }
 }
-

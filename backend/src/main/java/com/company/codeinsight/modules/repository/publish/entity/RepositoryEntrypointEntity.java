@@ -4,13 +4,14 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_repository_entrypoint")
-public class RepositoryEntrypointEntity {
+public class RepositoryEntrypointEntity extends BaseEntity {
 
     @TableId(type = IdType.AUTO)
     private Long id;
@@ -33,7 +34,4 @@ public class RepositoryEntrypointEntity {
 
     @TableField("sort_order")
     private Integer sortOrder;
-
-    private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
 }

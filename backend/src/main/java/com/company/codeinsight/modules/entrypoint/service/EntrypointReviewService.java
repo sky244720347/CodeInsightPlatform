@@ -6,6 +6,7 @@ import com.company.codeinsight.modules.entrypoint.model.EntrypointReviewView;
 import com.company.codeinsight.modules.entrypoint.model.EntryPoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
 import com.company.codeinsight.modules.entrypoint.model.ExcludeTarget;
+import com.company.codeinsight.modules.scanner.model.IncrementalContext;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 
 import java.io.File;
@@ -33,6 +34,26 @@ public interface EntrypointReviewService {
     List<DiscoveredEntrypoint> discoverAndPersist(Long taskId, File projectDir, EntryPointConfig config);
 
     /**
+     * v1: 增量识别入口（含方法列表）并落表 ci_entrypoint。
+     * <p>语义：
+     * <ul>
+     *   <li>INITIAL 任务（ctx == null 或 ctx.isIncremental() == false）：走原全量识别路径（delete-then-insert）</li>
+     *   <li>INCREMENTAL 任务（ctx.isIncremental() == true 且 ctx.getBaselineTaskId() 非空）：
+     *     <ol>
+     *       <li>从基线任务继承未变更文件的入口（excludePaths = changed ∪ deleted）</li>
+     *       <li>删除本任务 ci_entrypoint 中 deleted 对应的行</li>
+     *       <li>删除本任务 ci_entrypoint 中 changed 对应的行（基线继承的同 file_path 数据一并清理）</li>
+     *       <li>仅对 changedPaths 内的 .java 文件做入口识别（{@link EntryPointDiscoveryService#discoverEntriesInFiles}）</li>
+     *       <li>insert 识别结果（baseline_task_id = NULL 标记本次新增）</li>
+     *     </ol>
+     *   </li>
+     * </ul>
+     * </p>
+     */
+    List<DiscoveredEntrypoint> discoverAndPersist(Long taskId, File projectDir, EntryPointConfig config,
+                                                  IncrementalContext ctx);
+
+    /**
      * 复核页用：返回 task 下所有入口（含反序列化后的方法列表），按 sort_order / id 升序。
      * <p>只读视图，仅由 controller 层在序列化前反序列化 methods_json 字段。</p>
      */
@@ -57,4 +78,15 @@ public interface EntrypointReviewService {
 
     /** 按入口类全限定名索引已落表的方法列表（供模块层级 method_signatures 兜底） */
     Map<String, List<EntrypointMethodView>> loadMethodsByClassName(Long taskId);
+
+    /**
+     * v1: 入口 diff 视图（前端 Phase 4 UI 用）
+     * <p>INITIAL 任务或无基线时返回 3 个空 list；INCREMENTAL 任务返回 3 类：</p>
+     * <ul>
+     *   <li>newRows：本次新增（baselineTaskId == null）</li>
+     *   <li>inheritedRows：基线继承（baselineTaskId != null）</li>
+     *   <li>deletedRows：本次删除（基线有 + 本次无）</li>
+     * </ul>
+     */
+    com.company.codeinsight.modules.entrypoint.dto.EntrypointDiffDto getEntrypointDiff(Long taskId);
 }

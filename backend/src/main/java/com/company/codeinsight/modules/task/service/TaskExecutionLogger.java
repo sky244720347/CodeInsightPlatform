@@ -1,7 +1,8 @@
 package com.company.codeinsight.modules.task.service;
 
+import com.company.codeinsight.common.storage.EnvStorageResolver;
+import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Component;
 
 import java.io.File;
@@ -13,11 +14,12 @@ import java.time.format.DateTimeFormatter;
 
 /**
  * 任务执行日志写入器
- * 将 pipeline 各阶段的关键事件写入 {storageBase}/task_{taskId}/pipeline.log，
+ * 将 pipeline 各阶段的关键事件写入 {dataRoot}/task_{taskId}/pipeline.log，
  * 供前端实时查看执行过程。
  */
 @Slf4j
 @Component
+@RequiredArgsConstructor
 public class TaskExecutionLogger {
 
     private static final DateTimeFormatter TS_FMT = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss.SSS");
@@ -25,8 +27,7 @@ public class TaskExecutionLogger {
     /** 新一轮流水线启动标记，用于从 log 文件中截取「最近一次运行」片段 */
     public static final String PIPELINE_START_MARKER = "══════ 流水线启动";
 
-    @Value("${code-insight.storage.local-path:./storage}")
-    private String storageBase;
+    private final EnvStorageResolver storageResolver;
 
     /**
      * 清空 pipeline.log（重试 / 新一轮 runPipeline 开始前调用）。
@@ -36,7 +37,7 @@ public class TaskExecutionLogger {
             return;
         }
         try {
-            File dir = new File(storageBase, "task_" + taskId);
+            File dir = storageResolver.taskDataDir(taskId).toFile();
             if (!dir.exists()) {
                 dir.mkdirs();
             }
@@ -58,7 +59,7 @@ public class TaskExecutionLogger {
         if (taskId == null) {
             return "";
         }
-        File logFile = new File(storageBase, "task_" + taskId + "/pipeline.log");
+        File logFile = new File(storageResolver.taskDataDir(taskId).toFile(), "pipeline.log");
         if (!logFile.isFile()) {
             return "";
         }
@@ -85,14 +86,14 @@ public class TaskExecutionLogger {
     }
 
     /**
-     * 追加一条带时间戳的日志行
+     * 追加一条带时间戳的日志。
      */
     public void log(Long taskId, String message) {
         if (taskId == null) return;
         String timestamp = LocalDateTime.now().format(TS_FMT);
         String line = String.format("[%s] %s%n", timestamp, message);
         try {
-            File dir = new File(storageBase, "task_" + taskId);
+            File dir = storageResolver.taskDataDir(taskId).toFile();
             if (!dir.exists()) dir.mkdirs();
             try (PrintWriter pw = new PrintWriter(new FileWriter(new File(dir, "pipeline.log"), true))) {
                 pw.append(line);

@@ -5,21 +5,33 @@ alwaysApply: true
 
 # 本地开发服务启动 / 重启
 
-当用户要求「重启前后端」「启动后端」「启动前端」或类似**启动/重启本地长驻服务**时，统一按以下流程执行。**禁止**使用 `Start-Process` 弹外部 PowerShell 窗口，除非用户明确要求外部窗口。
+当用户要求「重启前后端」「启动后端」「启动前端」或类似**启动/重启本地长驻服务**时，统一按以下流程执行。
+
+## 用户可见性（硬性要求）
+
+用户要的「重启前后端」= **在 Cursor IDE 底部 Terminal 面板里能看到日志的启动方式**，不是不可见的后台静默进程。
+
+- Agent 用 Shell `block_until_ms: 0` 启动后，**必须**让对应终端出现在 Terminal 面板，并用 `open_resource`（`vscode-terminal:/...`）打开/聚焦该终端，让用户当场能看到
+- **禁止**只汇报「已启动」却不确保用户在 Terminal 里看得到
+- **禁止** `Start-Process` 弹外部系统 PowerShell 窗口（除非用户明确要求外部窗口）
+- 若当前环境 Shell 不可用 / sandbox 拦掉 / 无法落到可见 Terminal：向用户说明阻塞原因，并给出可直接粘贴到 **Cursor Terminal** 的两段命令（backend / frontend），不要假装已重启成功
 
 ## 标准流程
 
 1. **停旧进程**：按端口查找并结束监听进程
-2. **后台启动**：用 Shell 工具 `block_until_ms: 0` 分别启动各服务
-3. **等日志确认**：用 Await 轮询直到启动成功或失败
-4. **汇报结果**：给出访问地址；若失败则读终端日志排查
+2. **后台启动**：用 Shell 工具 `block_until_ms: 0` 分别启动前后端（并行）
+3. **打开可见终端**：启动成功后打开并聚焦对应 Cursor Terminal，确保用户面板里能看到
+4. **等日志确认**：Await 直到启动成功或失败
+5. **汇报结果**：给出访问地址与 Terminal 已打开的说明；失败则读终端日志排查
 
 ## CodeInsight Platform 默认端口
 
 | 服务 | 端口 | 启动命令 | 成功标志 |
 |------|------|----------|----------|
 | 后端 | 8080 | `cd backend; mvn spring-boot:run "-Dmaven.test.skip=true"` | `Started CodeInsightApplication` |
-| 前端 | 5173 | `cd frontend; npm run dev` | `ready in` |
+| 前端 | 5173 | `cd frontend; npm run destin` | `ready in` |
+
+说明：前端脚本名是 package.json 的 **`dev`**（`npm run` + `dev`）。
 
 访问地址：后端 `http://localhost:8080/api`，前端 `http://localhost:5173/`
 
@@ -41,18 +53,18 @@ Start-Sleep -Seconds 2
 - 前后端**并行**发起两个 `block_until_ms: 0` 的后台 Shell
 - 工作目录使用绝对路径：`C:\project\codeInsight\CodeInsightPlatform\backend` / `frontend`
 - Maven 参数需加引号：`"-Dmaven.test.skip=true"`
-- Shell 需 `required_permissions: ["all"]`（Windows 端口/进程操作）
+- Windows 端口/进程操作与 Node/Vite 启动若被 sandbox 拦截，需申请非沙箱执行或改用用户可粘贴到 Cursor Terminal 的命令
 
 ## 失败处理
 
 - 编译失败：先 `mvn compile "-Dmaven.test.skip=true"` 修错再启
-- Redis 相关：确认 Redis 6379 已启动；`application-local.properties` 勿禁用 Redis 自动配置
+- Redis 相关：确认 Redis 可达；`application-local.properties` 勿误禁用 Redis
 - 旧 task 的 `exit_code=1` 通知多为重启时被 kill 的正常退出，以当前端口监听为准
 
 ## 同类话术
 
-以下均走同一套逻辑（替换端口与命令即可）：
+以下均走同一套逻辑（含「必须 Terminal 可见」）：
 
 - 重启前后端 / 重启前端 / 重启后端
 - 启动前后端 / 启动服务 / 重新跑起来
-- 本地 dev 环境重启
+- 本地 destin 环境重启

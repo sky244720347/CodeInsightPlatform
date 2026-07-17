@@ -4,7 +4,9 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import java.time.LocalDateTime;
 
@@ -13,8 +15,9 @@ import java.time.LocalDateTime;
  * 对应数据库中的 ci_knowledge_version 表，管理对复核完成的代码知识进行确认发布、推送到 Git 版本分支及导出 ZIP 等生命周期状态。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_knowledge_version")
-public class KnowledgeVersion {
+public class KnowledgeVersion extends BaseEntity {
 
     /**
      * 自增主键 ID
@@ -97,13 +100,7 @@ public class KnowledgeVersion {
      */
     private LocalDateTime pushedAt;
 
-    /**
-     * 版本创建时间
-     */
-    private LocalDateTime createdAt;
-
     /** 是否为仓库当前生效的已发布版本（API 计算字段，非表列） */
     @TableField(exist = false)
     private Boolean activePublished;
 }
-

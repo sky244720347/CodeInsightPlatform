@@ -1,7 +1,6 @@
 package com.company.codeinsight.modules.scanwindow.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.modules.scanwindow.entity.ScanWindowEntity;
 import com.company.codeinsight.modules.scanwindow.mapper.ScanWindowMapper;
@@ -37,18 +36,22 @@ public class ScanWindowServiceImpl implements ScanWindowService {
         if (w.getWeekDays() < 0 || w.getWeekDays() > 127) throw new BusinessException("weekDays 位掩码必须在 0-127");
         if (w.getRepositoryId() == null) throw new BusinessException("repositoryId 不能为空");
 
-        ScanWindowEntity existing = getByRepository(w.getRepositoryId());
         java.time.LocalDateTime now = java.time.LocalDateTime.now();
+        ScanWindowEntity existing = getByRepository(w.getRepositoryId());
         if (existing == null) {
-            w.setCreatedAt(now);
-            w.setUpdatedAt(now);
+            w.setId(null);
+            w.setCreatedDate(now);
+            w.setUpdatedDate(now);
+            w.setIsDeleted(0);
             mapper.insert(w);
-        } else {
-            w.setId(existing.getId());
-            w.setCreatedAt(existing.getCreatedAt());
-            w.setUpdatedAt(now);
-            mapper.updateById(w);
+            return getByRepository(w.getRepositoryId());
         }
+        existing.setWeekDays(w.getWeekDays());
+        existing.setHour(w.getHour());
+        existing.setMinute(w.getMinute());
+        existing.setEnabled(w.getEnabled());
+        existing.setUpdatedDate(now);
+        mapper.updateById(existing);
         return getByRepository(w.getRepositoryId());
     }
 
@@ -61,7 +64,7 @@ public class ScanWindowServiceImpl implements ScanWindowService {
     @Override
     public List<ScanWindowEntity> listAll() {
         return mapper.selectList(new LambdaQueryWrapper<ScanWindowEntity>()
-                .orderByDesc(ScanWindowEntity::getUpdatedAt));
+                .orderByDesc(ScanWindowEntity::getUpdatedDate));
     }
 
     @Override

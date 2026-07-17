@@ -23,7 +23,9 @@ spring:
 
 # 自定义配置
 code-insight:
+  env: dev
   ai:
     mock: true
   storage:
-    local-path: ./storage_test
+    runtime-root:
+    releases-root:

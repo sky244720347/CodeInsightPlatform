@@ -107,7 +107,7 @@ public class MethodCallGraphServiceTest {
         mc.setTargetSignature(targetMethod);
         mc.setExpression("dep." + targetMethod + "()");
         mc.setLineNumber(lines);
-        mc.setCreatedAt(LocalDateTime.now());
+        mc.setCreatedDate(LocalDateTime.now());
         methodCallMapper.insert(mc);
     }
 }

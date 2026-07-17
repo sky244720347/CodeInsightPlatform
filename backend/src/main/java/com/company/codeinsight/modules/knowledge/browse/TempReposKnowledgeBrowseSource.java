@@ -4,8 +4,6 @@ import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
-import org.springframework.stereotype.Component;
 
 import java.io.IOException;
 import java.nio.file.Files;
@@ -18,25 +16,12 @@ import java.util.Collections;
 import java.util.List;
 
 /**
- * {@link KnowledgeBrowseSource} 的 temp_repos 实现：从 {@code temp_repos/task_{id}/docs/code-insight/} 读索引 / 清单文件。
- * <p>覆盖三类目录：</p>
- * <ul>
- *   <li>{@code docs/code-insight/index/} → type=INDEX（architecture-overview / module-index / api-index / database-index / dependency-index / pending-confirmation 等 .md）</li>
- *   <li>{@code docs/code-insight/modules/} → type=INDEX（推送时拷贝过来的草稿副本，视为索引副本）</li>
- *   <li>{@code docs/code-insight/meta/} → type=MANIFEST（module-map.yaml / knowledge-version.json / prompt-used.json）</li>
- * </ul>
- *
- * <p>安全约束：</p>
- * <ol>
- *   <li>拒绝含 {@code ..} 或以 {@code /} 开头的 filePath</li>
- *   <li>拼接后 {@code .normalize()} 必须落在 {@code docs/code-insight/} 子树下</li>
- *   <li>单文件上限 5 MB（{@code #sizeLimitBytes}）</li>
- * </ol>
+ * {@link KnowledgeBrowseSource} 的工作区回退实现（未发布时读 workspace docs）。
+ * <p>已由 {@link NasKnowledgeBrowseSource} 统一承担「优先 release、回退 workspace」；
+ * 本类保留实现供参考，不再注册为 Bean，避免与 Nas 源冲突。</p>
  */
 @Slf4j
-@Component
 @RequiredArgsConstructor
-@ConditionalOnProperty(name = "code-insight.storage.mode", havingValue = "local", matchIfMissing = true)
 public class TempReposKnowledgeBrowseSource implements KnowledgeBrowseSource {
 
     private final TaskWorkspacePaths taskWorkspacePaths;
@@ -70,8 +55,8 @@ public class TempReposKnowledgeBrowseSource implements KnowledgeBrowseSource {
         walkForEntries(docsRoot.resolve(INDEX_SUBDIR), "INDEX", out);
         walkForEntries(docsRoot.resolve(MODULES_SUBDIR), "INDEX", out);
         walkForEntries(docsRoot.resolve(META_SUBDIR), "MANIFEST", out);
-        // 排序：按 updatedAt DESC
-        out.sort((a, b) -> b.updatedAt().compareTo(a.updatedAt()));
+        // 排序：按 updatedDate DESC
+        out.sort((a, b) -> b.updatedDate().compareTo(a.updatedDate()));
         return out;
     }
 

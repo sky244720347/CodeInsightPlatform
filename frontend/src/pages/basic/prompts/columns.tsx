@@ -113,8 +113,8 @@ export const createPromptColumns = ({
   },
   {
     title: '创建时间',
-    dataIndex: 'createdAt',
-    key: 'createdAt',
+    dataIndex: 'createdDate',
+    key: 'createdDate',
     width: 166,
     render: (time: string) => formatDateTime(time),
   },

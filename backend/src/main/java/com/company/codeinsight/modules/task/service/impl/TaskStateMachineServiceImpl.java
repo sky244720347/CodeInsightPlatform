@@ -87,7 +87,7 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
 
         // 更新状态与最后修改时间
         task.setStatus(targetStatus.name());
-        task.setUpdatedAt(LocalDateTime.now());
+        task.setUpdatedDate(LocalDateTime.now());
 
         LocalDateTime now = LocalDateTime.now();
 
@@ -111,9 +111,11 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
 
         // 失败/取消原因写入；其余流转一律清空，避免重试后仍展示旧错误
         if (targetStatus == TaskStatus.FAILED && errorReason != null) {
-            task.setErrorReason(errorReason);
+            task.setErrorReason(com.company.codeinsight.common.util.DbStringLimits.truncate(
+                    errorReason, com.company.codeinsight.common.util.DbStringLimits.ERROR_REASON));
         } else if (targetStatus == TaskStatus.CANCELLED && errorReason != null) {
-            task.setErrorReason(errorReason);
+            task.setErrorReason(com.company.codeinsight.common.util.DbStringLimits.truncate(
+                    errorReason, com.company.codeinsight.common.util.DbStringLimits.ERROR_REASON));
         } else {
             task.setErrorReason(null);
         }
@@ -128,6 +130,7 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
             case AI_ANALYZING -> task.setProgress(55);
             case MODULE_HIERARCHY -> task.setProgress(75);
             case MODULE_HIERARCHY_REVIEW -> task.setProgress(82);
+            case BASELINE_DOC_INHERIT -> task.setProgress(85);
             case GENERATING_DOC -> task.setProgress(90);
             case PENDING_REVIEW -> task.setProgress(100);
             case CONFIRMED -> task.setProgress(100);
@@ -177,7 +180,7 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
                         .in(DraftWorkspace::getId, workspaceIds)
                         .ne(DraftWorkspace::getStatus, "ARCHIVED")
                         .set(DraftWorkspace::getStatus, "ARCHIVED")
-                        .set(DraftWorkspace::getUpdatedAt, LocalDateTime.now())
+                        .set(DraftWorkspace::getUpdatedDate, LocalDateTime.now())
         );
 
         // 3. 批量归档 workspace 下的非终态草稿
@@ -192,7 +195,7 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
                                 ))
                         .set(com.company.codeinsight.modules.draft.entity.KnowledgeDraft::getStatus,
                                 DraftStatus.ARCHIVED.name())
-                        .set(com.company.codeinsight.modules.draft.entity.KnowledgeDraft::getUpdatedAt,
+                        .set(com.company.codeinsight.modules.draft.entity.KnowledgeDraft::getUpdatedDate,
                                 LocalDateTime.now())
         );
 
@@ -226,14 +229,15 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
                     || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case ENTRYPOINT_REVIEW -> target == TaskStatus.AI_ANALYZING || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case AI_ANALYZING -> target == TaskStatus.MODULE_HIERARCHY || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
-            case MODULE_HIERARCHY -> target == TaskStatus.MODULE_HIERARCHY_REVIEW || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
-            case MODULE_HIERARCHY_REVIEW -> target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
+            case MODULE_HIERARCHY -> target == TaskStatus.MODULE_HIERARCHY_REVIEW || target == TaskStatus.BASELINE_DOC_INHERIT || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
+            case MODULE_HIERARCHY_REVIEW -> target == TaskStatus.BASELINE_DOC_INHERIT || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
+            case BASELINE_DOC_INHERIT -> target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case GENERATING_DOC -> target == TaskStatus.PENDING_REVIEW || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case PENDING_REVIEW -> target == TaskStatus.REVIEWING || target == TaskStatus.CONFIRMED || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case REVIEWING -> target == TaskStatus.CONFIRMED || target == TaskStatus.PENDING_REVIEW || target == TaskStatus.CANCELLED;
             case CONFIRMED -> target == TaskStatus.PUSHING || target == TaskStatus.ARCHIVED || target == TaskStatus.CANCELLED;
             case PUSHING -> target == TaskStatus.PUSHED || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
-            case FAILED -> target == TaskStatus.PENDING || target == TaskStatus.ARCHIVED;
+            case FAILED -> target == TaskStatus.PENDING || target == TaskStatus.BASELINE_DOC_INHERIT || target == TaskStatus.ARCHIVED;
             case CANCELLED -> target == TaskStatus.PENDING || target == TaskStatus.ARCHIVED;
             case PUSHED, ARCHIVED -> false; // 已推送或已归档是最终结算状态，不可流转回其他状态
         };

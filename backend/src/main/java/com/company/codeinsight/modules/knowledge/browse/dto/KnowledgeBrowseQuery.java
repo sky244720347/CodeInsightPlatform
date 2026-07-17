@@ -36,9 +36,9 @@ public class KnowledgeBrowseQuery {
     /** 可选：草稿状态过滤（DRAFT / EDITING / CONFIRMED / PUSHED / ARCHIVED），仅 type=DRAFT 时生效 */
     private String status;
 
-    /** 可选：updatedAt 下界（ISO 字符串） */
-    private String createdAtStart;
+    /** 可选：updatedDate 下界（ISO 字符串；按更新时间筛） */
+    private String createdDateStart;
 
-    /** 可选：updatedAt 上界（ISO 字符串） */
-    private String createdAtEnd;
+    /** 可选：updatedDate 上界（ISO 字符串；按更新时间筛） */
+    private String createdDateEnd;
 }

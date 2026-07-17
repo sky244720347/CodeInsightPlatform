@@ -174,8 +174,8 @@ public class BusinessKnowledgePromptAssemblyTest {
                 "- 仅面向重庆/佛山地区的房管局对接"
         );
         bk.setUpdatedBy("alice");
-        bk.setCreatedAt(LocalDateTime.now().minusDays(3));
-        bk.setUpdatedAt(LocalDateTime.now().minusHours(2));
+        bk.setCreatedDate(LocalDateTime.now().minusDays(3));
+        bk.setUpdatedDate(LocalDateTime.now().minusHours(2));
         Mockito.when(bkMapper.selectOne(Mockito.any()))
                 .thenReturn(bk);
 

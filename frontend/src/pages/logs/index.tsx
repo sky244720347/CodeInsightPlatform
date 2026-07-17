@@ -129,8 +129,8 @@ const Logs: React.FC = () => {
     },
     {
       title: '创建时间',
-      dataIndex: 'createdAt',
-      key: 'createdAt',
+      dataIndex: 'createdDate',
+      key: 'createdDate',
       width: 190,
       render: (date: string) => new Date(date).toLocaleString(),
     },
@@ -240,7 +240,7 @@ const Logs: React.FC = () => {
               <Tag color={detailLog.isSuccess === 1 ? 'success' : 'error'}>{detailLog.isSuccess === 1 ? '成功' : '失败'}</Tag>
             </Descriptions.Item>
             <Descriptions.Item label="创建时间" span={2}>
-              {new Date(detailLog.createdAt).toLocaleString()}
+              {new Date(detailLog.createdDate).toLocaleString()}
             </Descriptions.Item>
             <Descriptions.Item label="详情" span={2}>
               {detailLog.detail}

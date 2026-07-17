@@ -1,6 +1,8 @@
 package com.company.codeinsight.modules.knowledge.remediation;
 
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
+import com.company.codeinsight.common.util.DataUriUtil;
 import com.company.codeinsight.modules.knowledge.browse.ActiveKnowledgeContext;
 import com.company.codeinsight.modules.knowledge.browse.RepositoryActiveKnowledgeResolver;
 import com.company.codeinsight.modules.knowledge.remediation.dto.ReleaseDocumentEditRequest;
@@ -20,6 +22,7 @@ public class KnowledgeReleaseEditService {
 
     private final RepositoryActiveKnowledgeResolver activeKnowledgeResolver;
     private final KnowledgeReleaseEditMapper editMapper;
+    private final EnvStorageResolver storageResolver;
 
     @Transactional(rollbackFor = Exception.class)
     public Long submitEdit(ReleaseDocumentEditRequest request) {
@@ -36,11 +39,17 @@ public class KnowledgeReleaseEditService {
         row.setRepositoryId(request.getRepositoryId());
         row.setVersionId(ctx.getVersionId());
         row.setRelativePath(relativePath);
-        row.setContentText(request.getContent());
+        row.setContentUri("");
         row.setStatus("PENDING");
         row.setSubmittedBy(StringUtils.hasText(request.getOperator()) ? request.getOperator() : "system");
-        row.setCreatedAt(LocalDateTime.now());
+        row.setCreatedDate(LocalDateTime.now());
         editMapper.insert(row);
+
+        String uri = DataUriUtil.buildReleaseEditUri(row.getId());
+        String hash = DataUriUtil.writeUtf8(uri, request.getContent(), storageResolver);
+        row.setContentUri(uri);
+        row.setHash(hash);
+        editMapper.updateById(row);
         return row.getId();
     }
 
@@ -59,7 +68,8 @@ public class KnowledgeReleaseEditService {
         if (!target.startsWith(releaseDir)) {
             throw new BusinessException("非法文件路径");
         }
-        String body = ensureHumanEditedFrontMatter(row.getContentText());
+        String contentText = loadContent(row);
+        String body = ensureHumanEditedFrontMatter(contentText);
         try {
             Files.createDirectories(target.getParent());
             Files.writeString(target, body);
@@ -70,6 +80,21 @@ public class KnowledgeReleaseEditService {
         row.setApprovedBy(StringUtils.hasText(operator) ? operator : "system");
         row.setApprovedAt(LocalDateTime.now());
         editMapper.updateById(row);
+    }
+
+    private String loadContent(KnowledgeReleaseEditEntity row) {
+        if (row == null) {
+            return "";
+        }
+        if (StringUtils.hasText(row.getContentText())) {
+            return row.getContentText();
+        }
+        if (!StringUtils.hasText(row.getContentUri())) {
+            throw new BusinessException("修订正文 URI 为空");
+        }
+        String body = DataUriUtil.readUtf8(row.getContentUri(), storageResolver);
+        row.setContentText(body);
+        return body;
     }
 
     private String normalizeRelativePath(String path) {

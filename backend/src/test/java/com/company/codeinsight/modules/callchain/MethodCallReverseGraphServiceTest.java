@@ -129,7 +129,7 @@ public class MethodCallReverseGraphServiceTest {
         if (dependencyCandidates != null) {
             mc.setDependencyCandidates(dependencyCandidates);
         }
-        mc.setCreatedAt(LocalDateTime.now());
+        mc.setCreatedDate(LocalDateTime.now());
         methodCallMapper.insert(mc);
     }
 }

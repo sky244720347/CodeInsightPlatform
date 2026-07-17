@@ -121,6 +121,10 @@ public class ParsedClassInfo {
          * 方法体结束行（1-indexed，含闭合括号）
          */
         private Integer endLine;
+        /**
+         * 方法体内容哈希（归一化空白后 SHA-256 十六进制前 16 位；用于入口 DIFF「内容变更」）
+         */
+        private String bodyHash;
     }
 
     /**

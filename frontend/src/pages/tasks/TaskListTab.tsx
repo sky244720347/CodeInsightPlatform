@@ -58,6 +58,7 @@ const runningStatuses = [
   'MODULE_HIERARCHY_REVIEW',
   'PENDING_REVIEW',
   'REVIEWING',
+  'BASELINE_DOC_INHERIT',
   'GENERATING_DOC',
   'PUSHING',
 ];
@@ -73,6 +74,7 @@ const statusMeta: Record<string, { color: string; label: string; loading?: boole
   MODULE_HIERARCHY: { color: 'gold', label: '模块层级提炼' },
   ENTRYPOINT_REVIEW: { color: 'cyan', label: '入口复核' },
   MODULE_HIERARCHY_REVIEW: { color: 'geekblue', label: '模块层级调试' },
+  BASELINE_DOC_INHERIT: { color: 'cyan', label: '基线文档继承', loading: true },
   GENERATING_DOC: { color: 'gold', label: '生成文档', loading: true },
   PENDING_REVIEW: { color: 'magenta', label: '待复核' },
   REVIEWING: { color: 'geekblue', label: '复核中' },
@@ -157,8 +159,8 @@ const TaskListTab: React.FC = () => {
           type: filterType,
           triggerSource: filterTriggerSource,
           modelName: filterModelName,
-          createdAtStart: filterCreatedRange?.[0]?.startOf('day').toISOString(),
-          createdAtEnd: filterCreatedRange?.[1]?.endOf('day').toISOString(),
+          createdDateStart: filterCreatedRange?.[0]?.startOf('day').toISOString(),
+          createdDateEnd: filterCreatedRange?.[1]?.endOf('day').toISOString(),
         });
         setTasks(data.records);
         setTotal(data.total);
@@ -376,8 +378,8 @@ const TaskListTab: React.FC = () => {
     },
     {
       title: '创建时间',
-      dataIndex: 'createdAt',
-      key: 'createdAt',
+      dataIndex: 'createdDate',
+      key: 'createdDate',
       width: 190,
       render: (time: string) => (time ? new Date(time).toLocaleString() : '-'),
     },

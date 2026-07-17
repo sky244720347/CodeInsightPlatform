@@ -62,6 +62,13 @@ public class DraftTreeNode {
     private List<DraftTreeNode> children = new ArrayList<>();
 
     /**
+     * v1: INCREMENTAL 任务的基线继承标识
+     * <p>NULL = 本次生成的草稿；非空 = 从该基线任务继承（基线 workspace 合并）。</p>
+     * <p>前端 Phase 4 UI 用此字段做 diff 视图（"本次新增" vs "基线继承" 分类）。</p>
+     */
+    private Long baselineTaskId;
+
+    /**
      * 从 KnowledgeDraft 实体构造叶子节点
      */
     public static DraftTreeNode fromDraft(KnowledgeDraft d) {
@@ -74,6 +81,7 @@ public class DraftTreeNode {
         n.setFilePath(d.getFilePath());
         n.setSortOrder(d.getSortOrder() == null ? 0 : d.getSortOrder());
         n.setIsFolder(false);
+        n.setBaselineTaskId(d.getBaselineTaskId());
         return n;
     }
 }

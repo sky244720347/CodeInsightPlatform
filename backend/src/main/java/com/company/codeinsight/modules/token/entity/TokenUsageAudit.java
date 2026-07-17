@@ -3,18 +3,20 @@ package com.company.codeinsight.modules.token.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
 
 /**
  * Token 用量审计明细实体类
  * 对应数据库中的 ci_token_usage_audit 表，审计单次大模型调用的输入/输出 Token、评估扣费成本及状态。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_token_usage_audit")
-public class TokenUsageAudit {
+public class TokenUsageAudit extends BaseEntity {
 
     /**
      * 自增主键 ID
@@ -76,10 +78,4 @@ public class TokenUsageAudit {
      * 大模型调用执行状态：0-失败, 1-成功
      */
     private Integer status;
-
-    /**
-     * 审计记录创建时间
-     */
-    private LocalDateTime createdAt;
 }
-

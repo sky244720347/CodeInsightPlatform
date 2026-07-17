@@ -71,10 +71,6 @@ public class CodeScannerServiceImpl implements CodeScannerService {
     /** 快照批量写入大小，减少 DB 往返次数 */
     private static final int SNAPSHOT_BATCH_SIZE = 500;
 
-    // 对象存储的本地物理暂存根路径
-    @Value("${code-insight.storage.local-path:./storage}")
-    private String localStoragePath;
-
     /**
      * 拉取代码库代码并进行结构扫描
      * 1. 优先校验本地文件路径是否存在（如本地文件夹直接扫描）
@@ -494,7 +490,7 @@ public class CodeScannerServiceImpl implements CodeScannerService {
         snapshot.setLineCount(lineCount);
         snapshot.setFileHash(md5);
         snapshot.setContentUri(file.toURI().toString());
-        snapshot.setCreatedAt(LocalDateTime.now());
+        snapshot.setCreatedDate(LocalDateTime.now());
 
         batchBuffer.add(snapshot);
         if (batchBuffer.size() >= SNAPSHOT_BATCH_SIZE) {

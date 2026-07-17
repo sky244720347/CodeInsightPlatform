@@ -105,7 +105,7 @@ public class SystemApplicationServiceImpl extends ServiceImpl<SystemApplicationM
         List<CodeRepository> repos = codeRepositoryMapper.selectList(
                 new LambdaQueryWrapper<CodeRepository>()
                         .eq(CodeRepository::getSystemId, id)
-                        .isNull(CodeRepository::getDeletedAt)
+                        .eq(CodeRepository::getIsDeleted, 0)
         );
         for (CodeRepository repo : repos) {
             if (countActiveTasksByRepoId(repo.getId()) > 0) {
@@ -113,7 +113,7 @@ public class SystemApplicationServiceImpl extends ServiceImpl<SystemApplicationM
             }
         }
 
-        // 3. 级联软删除代码库（@TableLogic 须走 removeById，updateById 不会写入 deleted_at）
+        // 3. 级联软删除代码库（@TableLogic 须走 removeById，updateById 不会写入 is_deleted）
         for (CodeRepository repo : repos) {
             if (!codeRepositoryService.removeById(repo.getId())) {
                 throw new BusinessException("代码库删除失败: " + repo.getGitUrl());

@@ -23,7 +23,7 @@ import './index.css';
 const { Text } = Typography;
 
 // 运行中状态定义：这些状态下的任务被视为活跃中的分析任务
-const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'GENERATING_DOC'];
+const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'BASELINE_DOC_INHERIT', 'GENERATING_DOC'];
 
 // 分页查询空值兜底模板
 const emptyPage = <T,>(): PageResult<T> => ({
@@ -52,6 +52,7 @@ const statusMeta: Record<string, { color: string; label: string }> = {
   PARSING_CODE: { color: 'cyan', label: '解析代码' },
   ENTRYPOINT_REVIEW: { color: 'gold', label: '入口复核' },
   AI_ANALYZING: { color: 'gold', label: 'AI 分析中' },
+  BASELINE_DOC_INHERIT: { color: 'cyan', label: '基线文档继承' },
   GENERATING_DOC: { color: 'orange', label: '生成文档' },
   PENDING_REVIEW: { color: 'magenta', label: '待复核' },
   REVIEWING: { color: 'geekblue', label: '复核中' },
@@ -522,7 +523,7 @@ const Dashboard: React.FC = () => {
                           <Text type="secondary">负责人: {version.confirmedBy || '未分配'}</Text>
                         </Space>
                         <Text type="secondary" style={{ fontSize: 12 }}>
-                          {version.confirmedAt ? new Date(version.confirmedAt).toLocaleDateString() : version.createdAt ? new Date(version.createdAt).toLocaleDateString() : ''}
+                          {version.confirmedAt ? new Date(version.confirmedAt).toLocaleDateString() : version.createdDate ? new Date(version.createdDate).toLocaleDateString() : ''}
                         </Text>
                       </div>
                     </div>

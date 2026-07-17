@@ -1,0 +1,977 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星云棱镜产业信息订阅实现方案</title>
+<style>
+  :root {
+    --bg: #f8fafc;
+    --primary-50: #eff6ff;
+    --primary-100: #dbeafe;
+    --primary-200: #bfdbfe;
+    --primary-300: #93c5fd;
+    --primary-400: #60a5fa;
+    --primary-500: #1d4ed8;
+    --primary-600: #1e40af;
+    --primary-700: #1d3557;
+    --primary-800: #0f172a;
+    --cyan-50: #ecfeff;
+    --cyan-100: #cffafe;
+    --cyan-500: #06b6d4;
+    --cyan-600: #0891b2;
+    --cyan-700: #0e7490;
+    --amber-50: #fffbeb;
+    --amber-100: #fef3c7;
+    --amber-600: #d97706;
+    --green-50: #f0fdf4;
+    --green-100: #dcfce7;
+    --green-600: #16a34a;
+    --red-50: #fef2f2;
+    --red-100: #fee2e2;
+    --red-600: #dc2626;
+    --gray-50: #fafafa;
+    --gray-100: #f5f5f5;
+    --gray-200: #e5e5e5;
+    --gray-300: #d4d4d4;
+    --gray-400: #a3a3a3;
+    --gray-500: #737373;
+    --gray-600: #525252;
+    --gray-700: #404040;
+    --gray-800: #262626;
+    --gray-900: #0f172a;
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, .05);
+    --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, .08), 0 2px 4px -2px rgba(15, 23, 42, .08);
+    --shadow-lg: 0 10px 15px -3px rgba(15, 23, 42, .08), 0 4px 6px -4px rgba(15, 23, 42, .08);
+    --shadow-xl: 0 20px 25px -5px rgba(15, 23, 42, .08), 0 8px 10px -6px rgba(15, 23, 42, .08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--gray-900);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.65; padding: 40px 24px; font-size: 15px;
+  }
+  .container { max-width: 1420px; margin: 0 auto; }
+  .header {
+    text-align: center; margin-bottom: 44px; padding: 40px 28px 34px;
+    border-bottom: 3px solid var(--primary-200);
+    background: linear-gradient(135deg, var(--primary-700) 0%, var(--primary-800) 100%);
+    color: #fff; border-radius: 18px; box-shadow: var(--shadow-lg);
+    position: relative; overflow: hidden;
+  }
+  .header::before {
+    content: ""; position: absolute; top: -80px; left: -80px;
+    width: 220px; height: 220px; background: rgba(6, 182, 212, .15); border-radius: 50%;
+  }
+  .header::after {
+    content: ""; position: absolute; right: -100px; bottom: -100px;
+    width: 260px; height: 260px; background: rgba(29, 78, 216, .15); border-radius: 50%;
+  }
+  .header h1 { position: relative; z-index: 1; font-size: 34px; font-weight: 900; color: #fff; letter-spacing: .4px; }
+  .header .subtitle { position: relative; z-index: 1; font-size: 15px; color: var(--primary-200); margin-top: 10px; font-weight: 500; }
+  .badge-row { position: relative; z-index: 1; display: flex; justify-content: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 7px; padding: 7px 15px; border-radius: 999px;
+    font-size: 12px; font-weight: 700; background: rgba(255, 255, 255, .1); color: var(--cyan-100);
+    border: 1px solid rgba(255, 255, 255, .15); box-shadow: var(--shadow-sm); backdrop-filter: blur(4px);
+  }
+  .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--cyan-500); }
+  .section-title { display: flex; align-items: center; gap: 12px; margin: 48px 0 22px; }
+  .section-title .num {
+    width: 38px; height: 38px; display: flex; align-items: center; justify-content: center;
+    background: var(--primary-600); color: #fff; border-radius: 10px; font-weight: 900; font-size: 16px;
+    box-shadow: var(--shadow-md); flex-shrink: 0;
+  }
+  .section-title h2 { font-size: 23px; font-weight: 800; color: var(--gray-900); }
+  .section-title .line { flex: 1; height: 2px; background: var(--primary-100); border-radius: 1px; }
+  .sub-title { font-size: 17px; font-weight: 800; color: var(--primary-700); margin: 22px 0 12px; }
+  .text-muted { color: var(--gray-600); font-size: 14px; }
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: stretch; margin-bottom: 24px; }
+  .summary-card {
+    border-radius: 16px; background: #fff; border: 1px solid var(--gray-200);
+    box-shadow: var(--shadow-md); padding: 24px; height: 100%; display: flex; flex-direction: column;
+  }
+  .summary-card h3 { font-size: 20px; color: var(--primary-700); margin-bottom: 12px; font-weight: 800; display: flex; gap: 8px; align-items: center; }
+  .summary-card p, .summary-card li { color: var(--gray-700); font-size: 14px; }
+  .quote-box {
+    margin-top: 14px; padding: 14px 16px; background: var(--primary-50);
+    border-left: 4px solid var(--primary-500); border-radius: 10px;
+    color: var(--primary-800); font-size: 14px; font-weight: 700;
+  }
+  .check-list { list-style: none; display: grid; gap: 10px; }
+  .check-list li {
+    position: relative; padding: 11px 12px 11px 34px;
+    border: 1px solid var(--gray-200); border-radius: 10px; background: var(--gray-50);
+  }
+  .check-list li::before {
+    content: ""; position: absolute; left: 14px; top: 17px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--cyan-500);
+  }
+  .biz-highlight { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .biz-highlight.three-col { grid-template-columns: repeat(3, 1fr); }
+  .biz-highlight.two-col { grid-template-columns: repeat(2, 1fr); }
+  .biz-highlight .item {
+    background: #fff; border: 1px solid var(--gray-200);
+    border-radius: 15px; padding: 20px; box-shadow: var(--shadow-md);
+  }
+  .biz-highlight .icon { font-size: 28px; margin-bottom: 10px; }
+  .biz-highlight h4 { font-size: 16px; color: var(--primary-700); margin-bottom: 6px; font-weight: 800; }
+  .biz-highlight p { font-size: 13px; color: var(--gray-600); }
+  .role-scope { font-size: 11px; color: var(--gray-400); margin-bottom: 8px; }
+  .role-scope-k { font-weight: 700; color: var(--primary-500); }
+  .md-table {
+    width: 100%; border-collapse: collapse; margin: 16px 0;
+    box-shadow: var(--shadow-sm); border: 1px solid var(--gray-200);
+    border-radius: 8px; overflow: hidden; background: #fff;
+  }
+  .md-table th { background: var(--primary-700); color: #fff; padding: 12px 14px; font-size: 13px; text-align: left; font-weight: 700; }
+  .md-table td { padding: 12px 14px; font-size: 13px; border-bottom: 1px solid var(--gray-100); color: var(--gray-700); vertical-align: top; }
+  .md-table tr:last-child td { border-bottom: none; }
+  .md-table tr:hover td { background: var(--primary-50); }
+  .pill {
+    display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 800; margin: 2px 4px 2px 0; white-space: nowrap;
+  }
+  .pill-blue { background: var(--primary-50); color: var(--primary-600); border: 1px solid var(--primary-100); }
+  .pill-cyan { background: var(--cyan-50); color: var(--cyan-600); border: 1px solid var(--cyan-100); }
+  .pill-amber { background: var(--amber-50); color: var(--amber-600); border: 1px solid var(--amber-100); }
+  .pill-green { background: var(--green-50); color: var(--green-600); border: 1px solid var(--green-100); }
+  .pill-red { background: var(--red-50); color: var(--red-600); border: 1px solid var(--red-100); }
+  .mermaid-wrap {
+    border-radius: 15px; background: #fff; border: 2px solid var(--gray-200);
+    box-shadow: var(--shadow-lg); padding: 28px 20px; margin: 18px 0; overflow-x: auto;
+  }
+  .mermaid-wrap .mermaid { display: flex; justify-content: center; min-width: 900px; }
+  .arch-dual-layout {
+    display: grid; grid-template-columns: 3fr 72px 2fr; gap: 10px; align-items: center;
+    max-width: 1360px; margin: 12px auto 0;
+  }
+  .arch-svg-panel {
+    border-radius: 8px; background: #fff; border: 1px solid var(--gray-200);
+    box-shadow: var(--shadow-sm); padding: 8px; margin: 0; overflow: hidden;
+    height: fit-content; align-self: center;
+  }
+  .arch-svg-panel img,
+  .arch-svg-panel > svg {
+    display: block; width: 100%; height: auto; max-width: 100%;
+  }
+  .arch-bridge {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    align-self: center;
+    gap: 36px; padding: 8px 2px; font-size: 10px; color: var(--gray-500); text-align: center;
+  }
+  .arch-bridge .bridge-item {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    max-width: 68px; line-height: 1.35; font-weight: 700;
+  }
+  .arch-bridge .bridge-arrow {
+    display: block; width: 44px; height: 2px; border-radius: 1px; position: relative;
+  }
+  .arch-bridge .bridge-item.cfg .bridge-arrow {
+    background: var(--primary-500);
+  }
+  .arch-bridge .bridge-item.cfg .bridge-arrow::before {
+    content: ""; position: absolute; left: -1px; top: 50%;
+    transform: translateY(-50%);
+    border: 5px solid transparent; border-right-color: var(--primary-500);
+  }
+  .arch-bridge .bridge-item.data .bridge-arrow {
+    background: var(--cyan-600);
+  }
+  .arch-bridge .bridge-item.data .bridge-arrow::after {
+    content: ""; position: absolute; right: -1px; top: 50%;
+    transform: translateY(-50%);
+    border: 5px solid transparent; border-left-color: var(--cyan-600);
+  }
+  .arch-bridge .bridge-item.cfg { color: var(--primary-500); }
+  .arch-bridge .bridge-item.data { color: var(--cyan-600); }
+  @media (max-width: 1200px) {
+    .arch-dual-layout { grid-template-columns: 1fr; }
+    .arch-bridge { flex-direction: row; justify-content: center; gap: 24px; padding: 12px 0; }
+    .arch-bridge .bridge-item { max-width: none; }
+  }
+  .plan-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 16px 0; }
+  .plan-unit {
+    border-radius: 14px; padding: 18px 12px; text-align: center;
+    border: 2px solid var(--primary-200); background: #fff;
+    box-shadow: var(--shadow-md); position: relative;
+  }
+  .plan-unit::after {
+    content: "→"; position: absolute; right: -13px; top: 50%;
+    transform: translateY(-50%); color: var(--primary-400); font-size: 22px; font-weight: 900;
+  }
+  .plan-unit:last-child::after { display: none; }
+  .plan-unit.hl { background: var(--cyan-50); border-color: var(--cyan-500); }
+  .plan-unit .icon { font-size: 26px; margin-bottom: 8px; display: block; }
+  .plan-unit h4 { color: var(--primary-700); font-size: 13.5px; margin-bottom: 6px; font-weight: 800; }
+  .plan-unit p { color: var(--gray-600); font-size: 12px; line-height: 1.5; }
+  .crawler-status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 16px; }
+  .crawler-card {
+    background: #fff; border: 1px solid var(--gray-200); border-radius: 14px;
+    padding: 18px; box-shadow: var(--shadow-sm);
+  }
+  .crawler-card h4 { font-size: 15px; color: var(--primary-700); margin-bottom: 8px; font-weight: 800; }
+  .crawler-card .meta { font-size: 11px; color: var(--gray-400); margin-bottom: 10px; }
+  .crawler-card p { font-size: 12.5px; color: var(--gray-600); margin-bottom: 6px; }
+  .crawler-card .tag-row { margin-top: 10px; }
+  .knowledge-layout { display: grid; grid-template-columns: 460px 1fr; gap: 20px; align-items: stretch; margin-top: 24px; }
+  .ui-side-card {
+    background: #fff; border: 1px solid var(--gray-200); border-radius: 16px;
+    box-shadow: var(--shadow-xl); padding: 24px; display: flex; flex-direction: column;
+  }
+  .ui-mock-page {
+    border: 1px solid var(--gray-200); border-radius: 12px;
+    background: var(--gray-50); overflow: hidden; flex: 1; display: flex; flex-direction: column;
+  }
+  .ui-mock-card { background: #fff; padding: 12px 14px; border-bottom: 1px solid var(--gray-200); }
+  .ui-mock-alert {
+    padding: 10px; border-radius: 8px; background: var(--primary-50);
+    border: 1px solid var(--primary-100); font-size: 11px;
+    margin-bottom: 12px; color: var(--primary-700);
+  }
+  .ui-mock-tree-panel { background: #fff; border: 1px solid var(--gray-200); border-radius: 8px; padding: 12px; }
+  .ui-tree-root { display: flex; flex-direction: column; gap: 6px; }
+  .ui-tree-row {
+    display: flex; align-items: center; gap: 6px; font-size: 12.5px;
+    padding: 5px 6px; border-radius: 6px; color: var(--gray-700);
+  }
+  .ui-tree-row.active { background: var(--primary-50); color: var(--primary-700); font-weight: 700; border: 1px dashed var(--primary-200); }
+  .ui-tag { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; }
+  .ui-tag.mod { background: var(--primary-100); color: var(--primary-700); }
+  .ui-tag.sub { background: var(--cyan-100); color: var(--cyan-700); }
+  .ui-tag.fn { background: var(--gray-200); color: var(--gray-700); }
+  .ui-preview-panel {
+    background: #fff; border: 1px solid var(--gray-200); border-radius: 16px;
+    box-shadow: var(--shadow-xl); display: flex; flex-direction: column; overflow: hidden;
+  }
+  .ui-preview-header {
+    background: var(--gray-900); padding: 14px 20px;
+    display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--gray-800);
+  }
+  .ui-preview-title { color: #fff; font-size: 14px; font-weight: 700; flex: 1; }
+  .email-preview { background: #f4f4f4; padding: 20px; flex: 1; overflow-y: auto; }
+  .email-envelope {
+    background: #fff; border: 1px solid var(--gray-200); border-radius: 8px;
+    box-shadow: var(--shadow-md); max-width: 100%; overflow: hidden;
+  }
+  .email-header-bar { background: var(--gray-50); padding: 14px 18px; border-bottom: 1px solid var(--gray-200); font-size: 12px; }
+  .email-header-bar .row { display: flex; gap: 8px; margin-bottom: 4px; color: var(--gray-600); }
+  .email-header-bar .label { color: var(--gray-400); min-width: 52px; }
+  .email-header-bar .subject { font-weight: 800; color: var(--gray-900); font-size: 14px; margin-top: 6px; }
+  .email-body { padding: 20px 18px; font-size: 13px; color: var(--gray-700); line-height: 1.7; }
+  .email-greeting { margin-bottom: 16px; }
+  .email-section-title {
+    font-size: 15px; font-weight: 800; color: var(--primary-800);
+    margin: 20px 0 10px; padding-bottom: 6px; border-bottom: 2px solid var(--primary-200);
+  }
+  .email-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  .email-table th {
+    background: #e8e8e8; padding: 8px 10px; text-align: left;
+    font-weight: 700; color: var(--gray-700); border: 1px solid #d0d0d0; white-space: nowrap;
+  }
+  .email-table td { padding: 10px; border: 1px solid #e0e0e0; vertical-align: top; color: var(--gray-700); }
+  .email-table tr:nth-child(even) td { background: #fafafa; }
+  .email-table .title-link { color: #1677ff; font-weight: 700; text-decoration: none; display: block; margin-bottom: 4px; }
+  .email-table .summary { color: var(--gray-600); font-size: 11.5px; line-height: 1.55; }
+  .email-table .score { color: var(--gray-400); font-size: 10.5px; margin-top: 4px; }
+  .email-footer-note {
+    margin-top: 18px; padding-top: 12px; border-top: 1px dashed var(--gray-200);
+    font-size: 11px; color: var(--gray-400);
+  }
+  .footer {
+    margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--gray-200);
+    color: var(--gray-400); font-size: 12px; text-align: center;
+  }
+  @media (max-width: 1200px) {
+    .knowledge-layout { grid-template-columns: 1fr; }
+    .biz-highlight, .biz-highlight.three-col { grid-template-columns: repeat(2, 1fr); }
+    .plan-strip { grid-template-columns: 1fr; }
+    .plan-unit::after { display: none; }
+    .crawler-status-grid { grid-template-columns: 1fr; }
+    .mermaid-wrap .mermaid { min-width: 0; }
+  }
+  @media print {
+    body { background: #fff; padding: 18px; }
+    .header, .summary-card, .md-table, .ui-side-card, .ui-preview-panel { box-shadow: none; }
+    .section-title { break-after: avoid; }
+    .knowledge-layout { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header class="header">
+    <span style="font-weight: 700; font-size: 12px; letter-spacing: 1px;">📡 NEBULA PRISM · 星云棱镜</span>
+    <h1 style="margin-top: 10px;">星云棱镜产业信息订阅实现方案</h1>
+    <p class="subtitle">
+      产业信息订阅引擎 · 外网部署 · 从数据源发现、AI 脚本生成到产业早报推送的风控情报底座
+    </p>
+    <div class="badge-row">
+      <span class="badge">外网部署</span>
+      <span class="badge">智能找源</span>
+      <span class="badge">脚本复用</span>
+      <span class="badge">自动修复</span>
+      <span class="badge">产业早报</span>
+      <span class="badge">星云生态</span>
+    </div>
+  </header>
+
+  <!-- 0 方案建设背景 -->
+  <section>
+    <div class="section-title">
+      <span class="num">0</span>
+      <h2>方案建设背景</h2>
+      <span class="line"></span>
+    </div>
+    <div class="summary-grid" style="grid-template-columns: 1fr;">
+      <div class="summary-card">
+        <h3>📋 业务背景与智能体感知诉求</h3>
+        <p>
+          随着产业金融、产业研究、区域经济研判及重点客户管理需求不断提升，产业动态信息对业务决策和风险管理的影响越来越明显。当前，产业相关信息广泛分布在政府网站、行业协会、主流媒体以及第三方舆情平台中，信息来源多、更新快、结构不统一，人工跟踪存在较高成本。例如，一是政策变化可能直接影响某一产业的发展方向；二是安全事故、环保处罚、停工停产等事件可能提前反映企业或区域产业风险；三是行业景气度变化、项目扩产、产业链波动等信息可能对客户经营状态产生间接影响；四是短视频、公众号等新媒体信息往往具有传播速度快、发酵不确定性强的特点，容易形成突发舆情。目前，公司已具备一定数据采集和智能分析基础，但各类信息尚未形成统一的产业情报视角，也尚未与星云平台现有风控策略能力形成有效协同。因此，有必要在星云平台基础上建设产业情报智能体，作为产业动态感知和产业风险识别的前置能力。
+        </p>
+      </div>
+    </div>
+
+    <h3 class="sub-title">📦 公司现有数据采集现状（项目起点）</h3>
+    <p class="text-muted" style="margin-bottom: 4px;">
+      针对不同的数据主体，公司已有三类爬虫方案。
+    </p>
+    <div class="crawler-status-grid">
+      <div class="crawler-card">
+        <h4>1 · 法院网：涉诉失信信息爬虫</h4>
+        <div class="meta">Python · 阿里云外网 · 未使用 AI</div>
+        <p><strong>实现方式：</strong>Python 直写爬虫，阿里云独立部署，经 IP 池代理访问法院网。</p>
+        <p><strong>使用人员：</strong>审批坐席人员</p>
+        <p><strong>存在问题：</strong>并发稍高即易崩溃，IP 易被拉黑</p>
+        <div class="tag-row">
+          <span class="pill pill-amber">独立部署</span>
+          <span class="pill pill-red">需采购代理IP</span>
+        </div>
+      </div>
+      <div class="crawler-card">
+        <h4>2 · 抖音 / 微信视频号：黑产信息爬虫</h4>
+        <div class="meta">Java + 类RPA · 办公网 · 未使用 AI</div>
+        <p><strong>实现方式：</strong>Java + RPA 驱动多部手机分账号在抖音/微信视频号搜索「融易免征信」等黑产关键词，访问视频截图后 OCR 提取视频标题和描述，获取视频链接后推送打击黑产专项平台。</p>
+        <p><strong>使用人员：</strong>客服(专项打击黑产团队)</p>
+        <p><strong>存在问题：</strong>准确率逐步下降（80%->40%）；多部手机 24h 运行，电池损耗大，每年需更换</p>
+        <div class="tag-row">
+          <span class="pill pill-green">正常运营</span>
+          <span class="pill pill-amber">OCR + 截图</span>
+          <span class="pill pill-red">准确率低</span>
+          <span class="pill pill-red">需备手机</span>
+          <span class="pill pill-red">需备账号</span>
+        </div>
+      </div>
+      <div class="crawler-card">
+        <h4>3 · 微信公众号：产业舆情新闻爬虫</h4>
+        <div class="meta">Java + 类RPA · 外网 · 已使用 AI 总结</div>
+        <p><strong>实现方式：</strong>Java + RPA 驱动手机搜索固定公众号产业舆情新闻，访问文章信息截图后 OCR 提取文字，AI 总结后定时邮件推送。</p>
+        <p><strong>使用人员：</strong>消金商务部人员</p>
+        <p><strong>存在问题：</strong>扩展性弱，需自行探索产业信息公众号；多部手机 24h 运行，电池损耗大，每年需更换</p>
+        <div class="tag-row">
+          <span class="pill pill-green">每日大量使用</span>
+          <span class="pill pill-cyan">AI 摘要</span>
+          <span class="pill pill-blue">邮件推送</span>
+          <span class="pill pill-red">需备手机</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1 一句话定位 -->
+  <section>
+    <div class="section-title">
+      <span class="num">1</span>
+      <h2>平台定位：解决什么问题</h2>
+      <span class="line"></span>
+    </div>
+    <div class="summary-grid">
+      <div class="summary-card">
+        <h3>🎯 项目定位与目标</h3>
+        <p>
+          星云棱镜产业信息订阅引擎是整个"产业情报智能体"的<b>数据底座与订阅入口</b>。
+          它将传统零散的、一次性的人工网络检索，升级为<b>可配置、可追踪、可沉淀</b>的智能订阅引擎。
+          平台通过大模型自主发现优质数据源，沙箱自动生成并验证采集脚本，持续抓取数据流并匹配产业风险语义，最终围绕监控主体形成结构化事件和分析报告。
+        </p>
+        <div class="quote-box">
+          核心价值：通过"自动化找源-沙箱脚本生成-定时去重监控-大模型分析报告"的闭环，为后续星云平台风险因子的沉淀与风控策略的发布提供长效 of 工程底座。
+        </div>
+      </div>
+      <div class="summary-card">
+        <h3>⚠️ 核心解决的痛点</h3>
+        <ul class="check-list">
+          <li><strong>信息渠道分散</strong>：产业数据广泛分布于政府官网、行业协会、主流媒体与社交舆情，难以集中感知。</li>
+          <li><strong>手工跟踪成本高</strong>：业务部门缺乏自动化抓取逻辑与工具，每日人工筛选效率低、搜集负担重。</li>
+          <li><strong>决策获取不及时</strong>：管理层难以及时掌握产业的宏观与微观异常动态，容易导致风控策略调整滞后。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 解决方案：AI找源写码自愈 -->
+  <section>
+    <div class="section-title">
+      <span class="num">2</span>
+      <h2>解决方案：AI找源写码自愈</h2>
+      <span class="line"></span>
+    </div>
+    <p class="text-muted" style="max-width:1480px; margin:0 auto 12px; font-size:13px;">
+      本方案以 <strong>AI 贯穿找源—写脚本—验证—自愈</strong>，降低人工运维成本，并与星云平台形成可订阅的产业情报闭环。
+    </p>
+    <div class="biz-highlight three-col" style="max-width:1480px; margin:0 auto 8px;">
+      <div class="item">
+        <div class="icon">🤖</div>
+        <h4>AI 找源与写脚本</h4>
+        <p>订阅平台可由 AI 联网检索发现数据源，并自动生成 Python 爬虫脚本，经沙箱验证后入库复用，扩展新源成本显著下降。</p>
+      </div>
+      <div class="item">
+        <div class="icon">🔁</div>
+        <h4>失败自愈，少靠人盯</h4>
+        <p>访问被拒时自动切换代理 IP；脚本失败则回流 AI 重写并再验证，把「改版/封禁」从人工运维转为自动修复。</p>
+      </div>
+      <div class="item">
+        <div class="icon">🔗</div>
+        <h4>与星云闭环协同</h4>
+        <p>星云下发配置、订阅平台推送数据，AI 采集结果直接进入结构化与邮件早报，形成可订阅的产业情报闭环。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 整体架构 -->
+  <section>
+    <div class="section-title">
+      <span class="num">3</span>
+      <h2>整体架构</h2>
+      <span class="line"></span>
+    </div>
+    <p class="text-muted" style="margin-bottom:12px; font-size:13px; max-width:1480px; margin-left:auto; margin-right:auto;">
+      订阅平台以外网 <strong>AI 采集</strong>为核心：自动找源、生成并验证爬虫脚本、代理调度与失败自愈；星云平台负责配置下发与结构化推送。两侧通过「配置下发 / 数据推送」闭环协同，将产业情报持续沉淀为可订阅的邮件早报。
+    </p>
+    <div class="arch-dual-layout">
+      <!-- 左：订阅平台（导出 SVG） -->
+      <div class="arch-svg-panel" style="border-color: var(--primary-300);">
+        <svg id="arch-subscribe" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 640" width="720" height="640" role="img" aria-label="订阅平台外网采集">
+          <defs>
+            <marker id="arr" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M2,2 L10,6 L2,10 Z" fill="#64748B"/>
+            </marker>
+            <marker id="arr-c" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M2,2 L10,6 L2,10 Z" fill="#0891b2"/>
+            </marker>
+            <marker id="arr-d" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M2,2 L10,6 L2,10 Z" fill="#94a3b8"/>
+            </marker>
+          </defs>
+          <style>
+        #arch-subscribe .title { font: 700 14px/1.2 "trebuchet ms",verdana,arial,sans-serif; fill: #1e40af; }
+        #arch-subscribe .layer-t { font: 700 12px/1.2 "trebuchet ms",verdana,arial,sans-serif; fill: #1e40af; }
+        #arch-subscribe .layer-t.eng { fill: #0e7490; }
+        #arch-subscribe .layer-t.store { fill: #15803d; }
+        #arch-subscribe .nt { font: 700 12px/1.15 "trebuchet ms",verdana,arial,sans-serif; fill: #1e40af; }
+        #arch-subscribe .nd { font: 500 10.5px/1.15 "trebuchet ms",verdana,arial,sans-serif; fill: #334155; }
+        #arch-subscribe .edge { font: 600 10.5px/1 "trebuchet ms",verdana,arial,sans-serif; fill: #64748B; }
+        #arch-subscribe .n { fill: #EEF5FF; stroke: #1d4ed8; stroke-width: 1.3; }
+        #arch-subscribe .n-eng { fill: #ECFEFF; stroke: #0891b2; stroke-width: 1.3; }
+        #arch-subscribe .n-mm { fill: #F3E8FF; stroke: #a855f7; stroke-width: 1.7; }
+        #arch-subscribe .n-end { fill: #DCFCE7; stroke: #16a34a; stroke-width: 1.5; }
+        #arch-subscribe .sg-cfg { fill: #EEF5FF; stroke: #1d4ed8; stroke-width: 1.3; }
+        #arch-subscribe .sg-eng { fill: #F0F9FF; stroke: #0891b2; stroke-width: 1.3; }
+        #arch-subscribe .sg-store { fill: #F0FDF4; stroke: #16a34a; stroke-width: 1.3; }
+        #arch-subscribe .ln { stroke: #64748B; stroke-width: 1.3; fill: none; marker-end: url(#arr); }
+        #arch-subscribe .ln-c { stroke: #0891b2; stroke-width: 1.45; fill: none; marker-end: url(#arr-c); }
+        #arch-subscribe .ln-d { stroke: #94a3b8; stroke-width: 1.2; fill: none; stroke-dasharray: 4 3; marker-end: url(#arr-d); }
+          </style>
+
+          <text x="360" y="16" text-anchor="middle" class="title">订阅平台 · 外网采集</text>
+
+          <!-- 配置层：贴边、节点间距收紧 -->
+          <rect class="sg-cfg" x="8" y="24" width="704" height="70" rx="4"/>
+          <text x="18" y="40" class="layer-t">① 配置层</text>
+          <g transform="translate(18,46)"><rect class="n" width="210" height="40" rx="3"/><text class="nt" x="105" y="16" text-anchor="middle">采集任务配置</text><text class="nd" x="105" y="31" text-anchor="middle">频率·目标站点</text></g>
+          <g transform="translate(248,46)"><rect class="n" width="210" height="40" rx="3"/><text class="nt" x="105" y="16" text-anchor="middle">配置同步</text><text class="nd" x="105" y="31" text-anchor="middle">接收星云下发</text></g>
+          <g transform="translate(478,46)"><rect class="n" width="210" height="40" rx="3"/><text class="nt" x="105" y="16" text-anchor="middle">执行日志</text><text class="nd" x="105" y="31" text-anchor="middle">采集·验证状态</text></g>
+
+          <!-- 配置→引擎：加长连线 -->
+          <path class="ln-c" d="M360,94 L360,126"/>
+
+          <rect class="sg-eng" x="8" y="132" width="704" height="348" rx="4"/>
+          <text x="18" y="148" class="layer-t eng">② 引擎层 · 采集</text>
+
+          <!-- 主链均匀：开始(c76) — 手动指定(c348) — AI脚本生成(c620)；子链均匀：AI检索(c257) — 渠道增强(c439) -->
+          <g transform="translate(20,166)"><rect class="n-end" width="112" height="42" rx="21"/><text class="nt" x="56" y="16" text-anchor="middle" fill="#15803d">开始</text><text class="nd" x="56" y="31" text-anchor="middle" fill="#166534">数据源发现</text></g>
+          <g transform="translate(207,164)"><rect class="n-mm" width="100" height="36" rx="3"/><text class="nt" x="50" y="14" text-anchor="middle" fill="#6b21a8">AI 检索</text><text class="nd" x="50" y="28" text-anchor="middle" fill="#6b21a8">联网找源</text></g>
+          <g transform="translate(389,164)"><rect class="n-eng" width="100" height="36" rx="3"/><text class="nt" x="50" y="14" text-anchor="middle" fill="#0e7490">渠道增强</text><text class="nd" x="50" y="28" text-anchor="middle">源库扩充</text></g>
+
+          <g transform="translate(294,218)"><rect class="n-eng" width="108" height="42" rx="3"/><text class="nt" x="54" y="16" text-anchor="middle" fill="#0e7490">手动指定</text><text class="nd" x="54" y="31" text-anchor="middle">管理员确认源</text></g>
+          <!-- 右列等距：AI脚本生成 y=218 → 沙箱验证 y=298 → 代理IP y=378（节点高42，间距38） -->
+          <g transform="translate(560,218)"><rect class="n-mm" width="120" height="42" rx="3"/><text class="nt" x="60" y="16" text-anchor="middle" fill="#6b21a8">AI 脚本生成</text><text class="nd" x="60" y="31" text-anchor="middle" fill="#6b21a8">Python 爬虫</text></g>
+
+          <path class="ln" d="M132,182 L205,182"/>
+          <path class="ln" d="M307,182 L387,182"/>
+          <path class="ln" d="M489,182 L620,182 L620,218"/>
+
+          <path class="ln" d="M76,208 L76,239 L292,239"/>
+          <path class="ln" d="M402,239 L558,239"/>
+
+          <g transform="translate(560,298)"><rect class="n-eng" width="120" height="42" rx="3"/><text class="nt" x="60" y="16" text-anchor="middle" fill="#0e7490">沙箱验证</text><text class="nd" x="60" y="31" text-anchor="middle">结构化落库</text></g>
+          <path class="ln" d="M620,260 L620,296"/>
+
+          <!-- 底行与代理IP同高；间隔保持 60px（节点宽120，步进180） -->
+          <g transform="translate(560,378)"><rect class="n-eng" width="120" height="42" rx="3"/><text class="nt" x="60" y="16" text-anchor="middle" fill="#0e7490">代理IP</text><text class="nd" x="60" y="31" text-anchor="middle">取IP/失败换IP</text></g>
+          <g transform="translate(380,378)"><rect class="n-eng" width="120" height="42" rx="3"/><text class="nt" x="60" y="16" text-anchor="middle" fill="#0e7490">定时调度</text><text class="nd" x="60" y="31" text-anchor="middle">并行执行脚本</text></g>
+          <g transform="translate(200,378)"><rect class="n-eng" width="120" height="42" rx="3"/><text class="nt" x="60" y="16" text-anchor="middle" fill="#0e7490">数据获取</text><text class="nd" x="60" y="31" text-anchor="middle">执行采集脚本</text></g>
+          <g transform="translate(20,378)"><rect class="n-end" width="120" height="42" rx="21"/><text class="nt" x="60" y="16" text-anchor="middle" fill="#15803d">结束</text><text class="nd" x="60" y="31" text-anchor="middle" fill="#166534">数据落表</text></g>
+
+          <path class="ln" d="M620,340 L620,376"/>
+          <path class="ln" d="M560,399 L502,399"/>
+          <path class="ln" d="M380,399 L322,399"/><text class="edge" x="328" y="391">访问成功</text>
+          <path class="ln" d="M200,399 L142,399"/><text class="edge" x="148" y="391">成功</text>
+
+          <path class="ln-d" d="M440,420 L440,438 L620,438 L620,420"/><text class="edge" x="470" y="434">访问被拒·换IP</text>
+
+          <!-- 失败重试：底边绕行 → 右缘上行 -->
+          <path class="ln-d" d="M260,420 L260,458 L700,458 L700,239 L682,239"/>
+          <text class="edge" x="400" y="452">失败重试</text>
+
+          <!-- 引擎→存储：加长连线 -->
+          <path class="ln-c" d="M360,480 L360,512"/><text class="edge" x="368" y="498" fill="#0891b2">写</text>
+
+          <rect class="sg-store" x="8" y="518" width="704" height="110" rx="4"/>
+          <text x="18" y="536" class="layer-t store">③ 存储层 · PostgreSQL</text>
+          <ellipse cx="360" cy="566" rx="100" ry="10" fill="#ECFDF5" stroke="#16a34a" stroke-width="1.4"/>
+          <ellipse cx="360" cy="560" rx="100" ry="10" fill="#ECFDF5" stroke="#16a34a" stroke-width="1.4"/>
+          <rect x="260" y="560" width="200" height="46" fill="#ECFDF5" stroke="none"/>
+          <path d="M260,560 L260,606" stroke="#16a34a" stroke-width="1.4" fill="none"/>
+          <path d="M460,560 L460,606" stroke="#16a34a" stroke-width="1.4" fill="none"/>
+          <path d="M260,606 L460,606" stroke="#16a34a" stroke-width="1.4" fill="none"/>
+          <text class="nt" x="360" y="582" text-anchor="middle" fill="#15803d" style="font-size:13px">PostgreSQL</text>
+          <text class="nd" x="360" y="598" text-anchor="middle">原始数据 · 脚本 · 执行日志</text>
+        </svg>
+      </div>
+
+      <!-- 中间：跨平台箭头 -->
+      <div class="arch-bridge">
+        <div class="bridge-item cfg">
+          <span>配置下发</span>
+          <span class="bridge-arrow" aria-hidden="true"></span>
+        </div>
+        <div class="bridge-item data">
+          <span>数据推送</span>
+          <span class="bridge-arrow" aria-hidden="true"></span>
+        </div>
+      </div>
+
+      <!-- 右：星云平台（导出 SVG） -->
+      <div class="arch-svg-panel" style="border-color: var(--cyan-500);">
+        <svg id="arch-nebula" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 430" width="480" height="430" role="img" aria-label="星云平台">
+          <defs>
+            <marker id="arrR" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M2,2 L10,6 L2,10 Z" fill="#64748B"/>
+            </marker>
+            <marker id="arrRc" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M2,2 L10,6 L2,10 Z" fill="#0891b2"/>
+            </marker>
+            <marker id="arrRa" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto">
+              <path d="M2,2 L10,6 L2,10 Z" fill="#d97706"/>
+            </marker>
+          </defs>
+          <style>
+        #arch-nebula .title { font: 700 13px/1.2 "trebuchet ms",verdana,arial,sans-serif; fill: #0e7490; }
+        #arch-nebula .layer-t { font: 700 11.5px/1.2 "trebuchet ms",verdana,arial,sans-serif; fill: #1e40af; }
+        #arch-nebula .layer-t.eng { fill: #b45309; }
+        #arch-nebula .layer-t.store { fill: #15803d; }
+        #arch-nebula .nt { font: 700 11.5px/1.15 "trebuchet ms",verdana,arial,sans-serif; fill: #1e40af; }
+        #arch-nebula .nd { font: 500 10px/1.15 "trebuchet ms",verdana,arial,sans-serif; fill: #334155; }
+        #arch-nebula .edge { font: 600 10px/1 "trebuchet ms",verdana,arial,sans-serif; fill: #64748B; }
+        #arch-nebula .n { fill: #EEF5FF; stroke: #1d4ed8; stroke-width: 1.3; }
+        #arch-nebula .n-push { fill: #FFF7ED; stroke: #d97706; stroke-width: 1.3; }
+        #arch-nebula .sg-cfg { fill: #EEF5FF; stroke: #1d4ed8; stroke-width: 1.3; }
+        #arch-nebula .sg-eng { fill: #FFFBEB; stroke: #d97706; stroke-width: 1.3; }
+        #arch-nebula .sg-store { fill: #F0FDF4; stroke: #16a34a; stroke-width: 1.3; }
+        #arch-nebula .ln { stroke: #64748B; stroke-width: 1.3; fill: none; marker-end: url(#arrR); }
+        #arch-nebula .ln-c { stroke: #0891b2; stroke-width: 1.45; fill: none; marker-end: url(#arrRc); }
+        #arch-nebula .ln-a { stroke: #d97706; stroke-width: 1.3; fill: none; marker-end: url(#arrRa); }
+          </style>
+
+          <text x="240" y="16" text-anchor="middle" class="title">星云平台 · 结构化与推送</text>
+
+          <!-- 配置层：按文字收紧 -->
+          <rect class="sg-cfg" x="8" y="24" width="464" height="78" rx="4"/>
+          <text x="16" y="40" class="layer-t">① 配置层</text>
+          <g transform="translate(14,46)"><rect class="n" width="92" height="48" rx="3"/><text class="nt" x="46" y="18" text-anchor="middle">产业配置</text><text class="nd" x="46" y="34" text-anchor="middle">煤炭·纺织·水产</text></g>
+          <g transform="translate(116,46)"><rect class="n" width="92" height="48" rx="3"/><text class="nt" x="46" y="18" text-anchor="middle">订阅管理</text><text class="nd" x="46" y="34" text-anchor="middle">机构·关键字</text></g>
+          <g transform="translate(218,46)"><rect class="n" width="124" height="48" rx="3"/><text class="nt" x="62" y="18" text-anchor="middle">邮件规则配置</text><text class="nd" x="62" y="34" text-anchor="middle">推送时间·收件人</text></g>
+          <g transform="translate(352,46)"><rect class="n" width="108" height="48" rx="3"/><text class="nt" x="54" y="18" text-anchor="middle">执行日志</text><text class="nd" x="54" y="34" text-anchor="middle">采集·验证状态</text></g>
+
+          <!-- 配置→引擎：加长连线 -->
+          <path class="ln-c" d="M240,102 L240,134"/>
+
+          <!-- 引擎层：三节点水平居中（左右边距各 40） -->
+          <rect class="sg-eng" x="8" y="140" width="464" height="112" rx="4"/>
+          <text x="16" y="158" class="layer-t eng">② 引擎层 · 推送</text>
+          <g transform="translate(48,170)"><rect class="n-push" width="108" height="64" rx="3"/><text class="nt" x="54" y="24" text-anchor="middle" fill="#b45309">定时触发</text><text class="nd" x="54" y="42" text-anchor="middle">每日批次调度</text></g>
+          <path class="ln" d="M158,202 L174,202"/>
+          <g transform="translate(176,170)"><rect class="n-push" width="128" height="64" rx="3"/><text class="nt" x="64" y="24" text-anchor="middle" fill="#b45309">订阅匹配检索</text><text class="nd" x="64" y="42" text-anchor="middle">机构·产业·关键字</text></g>
+          <path class="ln" d="M306,202 L322,202"/>
+          <g transform="translate(324,170)"><rect class="n-push" width="108" height="64" rx="3"/><text class="nt" x="54" y="24" text-anchor="middle" fill="#b45309">邮件发送</text><text class="nd" x="54" y="42" text-anchor="middle">产业早报</text></g>
+
+          <!-- 引擎→存储：读写箭头加长并相对中线对称 -->
+          <path class="ln-a" d="M260,252 L260,284"/><text class="edge" x="268" y="270" fill="#d97706">写</text>
+          <path class="ln-a" d="M220,284 L220,252"/><text class="edge" x="188" y="270" fill="#d97706">读</text>
+
+          <rect class="sg-store" x="8" y="290" width="464" height="128" rx="4"/>
+          <text x="16" y="308" class="layer-t store">③ 存储层 · PostgreSQL</text>
+          <ellipse cx="240" cy="344" rx="118" ry="11" fill="#ECFDF5" stroke="#16a34a" stroke-width="1.4"/>
+          <ellipse cx="240" cy="338" rx="118" ry="11" fill="#ECFDF5" stroke="#16a34a" stroke-width="1.4"/>
+          <rect x="122" y="338" width="236" height="52" fill="#ECFDF5" stroke="none"/>
+          <path d="M122,338 L122,390" stroke="#16a34a" stroke-width="1.4" fill="none"/>
+          <path d="M358,338 L358,390" stroke="#16a34a" stroke-width="1.4" fill="none"/>
+          <path d="M122,390 L358,390" stroke="#16a34a" stroke-width="1.4" fill="none"/>
+          <text class="nt" x="240" y="362" text-anchor="middle" fill="#15803d" style="font-size:13px">PostgreSQL</text>
+          <text class="nd" x="240" y="380" text-anchor="middle">原始数据 · 结构化情报 · 执行日志</text>
+        </svg>
+      </div>
+    </div>
+    <div class="summary-grid" style="margin-top:14px; max-width:1480px; margin-left:auto; margin-right:auto;">
+      <div class="summary-card" style="padding:18px;">
+        <h3 style="font-size:16px;">核心数据流</h3>
+        <p style="font-size:13px;">
+          <strong>左 · 订阅平台</strong>：配置（配置同步接收星云下发；无邮件规则、无产业配置）→ 采集引擎（开始 → 脚本生成 → 沙箱 → 代理IP → 调度 → 获取 → 结束）→ 存储；采集结果推送至星云引擎。<br/>
+          <strong>右 · 星云平台</strong>：配置（含邮件规则、无爬取任务，并下发至订阅平台）→ 推送引擎（定时触发 → 订阅匹配 → 邮件发送）→ 存储读写。
+        </p>
+      </div>
+      <div class="summary-card" style="padding:18px;">
+        <h3 style="font-size:16px;">协同与部署要点</h3>
+        <ul class="check-list">
+          <li style="font-size:12.5px; padding:8px 10px 8px 30px;"><strong>配置下发</strong>：星云侧页面配置同步到订阅平台配置层。</li>
+          <li style="font-size:12.5px; padding:8px 10px 8px 30px;"><strong>数据推送</strong>：订阅平台采集结束后，将产业爬虫数据推入星云引擎做结构化与邮件。</li>
+          <li style="font-size:12.5px; padding:8px 10px 8px 30px;"><strong>IP / 脚本自愈</strong>：访问被拒换 IP 重试；数据获取失败回流 AI 脚本生成。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 业务闭环：AI 自动写爬虫 -->
+  <section>
+    <div class="section-title">
+      <span class="num">4</span>
+      <h2>业务闭环：AI 自动写爬虫与脚本复用</h2>
+      <span class="line"></span>
+    </div>
+    <div class="quote-box" style="margin-bottom:16px;">
+      一句话概括：<strong>确定数据源 → AI 一次性写脚本 → 验证落库 → 每日复用执行 → 失败自动修复 → 匹配推送早报</strong>。
+    </div>
+    <div class="plan-strip">
+      <div class="plan-unit"><span class="icon">🔍</span><h4>数据源发现</h4><p>管理员手动指定<br>或 AI 自动检索</p></div>
+      <div class="plan-unit hl"><span class="icon">🤖</span><h4>AI 写脚本</h4><p>大模型生成<br>Python 爬虫</p></div>
+      <div class="plan-unit hl"><span class="icon">✅</span><h4>沙箱验证</h4><p>立即执行验证<br>结构化落库</p></div>
+      <div class="plan-unit"><span class="icon">⏰</span><h4>定时复用</h4><p>每日并行执行<br>零 Token 消耗</p></div>
+      <div class="plan-unit"><span class="icon">📧</span><h4>匹配推送</h4><p>关键字匹配<br>邮件产业早报</p></div>
+    </div>
+    <div class="summary-grid" style="margin-top:18px;">
+      <div class="summary-card">
+        <h3>核心技术：一次生成，持续复用</h3>
+        <p>当确定一个新的数据源（如「国家统计局 — 最新发布 RSS」）后，AI 模型自动编写 Python 爬虫脚本，并在隔离沙箱中立即执行验证，确保能成功抓取结构化数据并落库。验证通过后脚本进入脚本库，<strong>后续每日定时任务直接复用该脚本</strong>，不再调用大模型，Token 消耗从「每次交互」降低为「一次生成」。</p>
+        <p style="margin-top:10px;">若某脚本连续执行失败 2–3 次（如目标网站改版），系统自动触发 AI 重写脚本并重新验证，实现<strong>自我修复</strong>，保证数据抓取持续可用。</p>
+      </div>
+      <div class="summary-card">
+        <h3>完整业务闭环</h3>
+        <ul class="check-list">
+          <li><strong>数据采集</strong>：引擎每日定时并行执行所有爬虫脚本，抓取指定产业的昨日新闻。</li>
+          <li><strong>数据落库</strong>：抓取到的结构化信息（标题、摘要、来源、发布时间等）存入 PostgreSQL。</li>
+          <li><strong>匹配与聚合</strong>：按各机构/用户订阅的产业和关键字，从库中匹配相关信息并去重聚合。</li>
+          <li><strong>信息推送</strong>：将匹配结果聚合后，通过邮件发送给订阅用户，呈现产业、事件摘要、来源链接及利好/利差分析。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 数据源分层方案 -->
+  <section>
+    <div class="section-title">
+      <span class="num">5</span>
+      <h2>数据源分层方案：确保信息准确与时效</h2>
+      <span class="line"></span>
+    </div>
+    <div class="biz-highlight two-col">
+      <div class="item">
+        <div class="icon">🏛️</div>
+        <h4>第一层：权威事实层</h4>
+        <div class="role-scope"><span class="role-scope-k">源库 ·</span>官方白名单</div>
+        <p>
+          覆盖国家统计局、工信部、能源局、应急管理部及重点行业协会等官方站点与 RSS/通报渠道，由管理员维护白名单并配置定时采集。
+          该层产出用于确认事件是否属实、补齐发生时间与责任主体，作为风险评估与邮件早报中的「硬事实」依据；可信度最高，优先写入结构化情报，不依赖社媒传闻。
+        </p>
+      </div>
+      <div class="item">
+        <div class="icon">🔍</div>
+        <h4>第二层：增量发现层</h4>
+        <div class="role-scope"><span class="role-scope-k">源库 ·</span>AI 联网检索</div>
+        <p>
+          按「产业 + 地区 + 风险词」自动组装检索意图，由 AI 联网 API 定时扫描尚未纳入监控的政策变动、安全事故、停工停产等突发线索。
+          发现候选源后推送管理员确认，再触发 AI 生成/验证爬虫脚本并入库复用；该层负责「扩覆盖、提时效」，与权威层交叉印证后，才进入订阅匹配与邮件推送。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 订阅向导与情报预览 -->
+  <section>
+    <div class="section-title">
+      <span class="num">6</span>
+      <h2>订阅向导与情报预览：长什么样、交付什么</h2>
+      <span class="line"></span>
+    </div>
+    <p class="text-muted" style="margin-bottom:12px;">
+      左侧展示配置与日志面板（产业配置、数据源发现、脚本生成与执行状态）；右侧展示用户每天收到的<b>产业情报邮件</b>——即平台最终交付产物。
+    </p>
+
+    <div class="knowledge-layout">
+      <!-- Left: Config & Logs Panel -->
+      <div class="ui-side-card">
+        <h4 style="margin-bottom: 12px; font-weight: 800; font-size: 15px; color: var(--primary-800);">📋 配置与日志 · 实时构建面板</h4>
+        <div class="ui-mock-page">
+          <div class="ui-mock-card" style="padding: 14px 10px;">
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; color: var(--gray-400);">
+              <span style="color: var(--primary-500);">产业配置</span>
+              <span style="color: var(--primary-500);">数据源</span>
+              <span style="color: var(--primary-500);">脚本状态</span>
+              <span style="color: var(--gray-600);">执行日志</span>
+            </div>
+            <div style="height: 4px; background: var(--gray-200); border-radius: 2px; margin-top: 6px; position: relative;">
+              <div style="position: absolute; left: 0; top: 0; bottom: 0; width: 85%; background: var(--primary-500); border-radius: 2px;"></div>
+            </div>
+          </div>
+
+          <div class="ui-mock-card" style="flex: 1; overflow-y: auto; background: var(--gray-50);">
+            <div class="ui-mock-alert">
+              <strong>今日调度 · 2026-07-08 06:00 批次</strong>
+              <div style="font-size: 10px; margin-top: 4px;">监测产业：纺织/鞋帽 · 煤炭 · 水产 · 共 12 个数据源</div>
+            </div>
+
+            <div style="background: #1e293b; border-radius: 8px; padding: 10px; font-family: monospace; font-size: 11px; color: #38bdf8; margin-bottom: 10px; max-height: 140px; overflow-y: auto;">
+              <div style="color: #64748b;">[06:00:01] ⚡ 定时任务启动，并行执行 12 个脚本</div>
+              <div style="color: #34d399;">[06:00:18] [SUCCESS] 国家统计局 — 最新发布 RSS · 采集 8 条</div>
+              <div style="color: #34d399;">[06:00:22] [SUCCESS] 中国纺织工业联合会 · 采集 5 条</div>
+              <div style="color: #34d399;">[06:00:31] [SUCCESS] 山西省能源局 · 采集 3 条</div>
+              <div style="color: #34d399;">[06:00:45] [SUCCESS] 中国煤炭工业协会 · 采集 6 条</div>
+              <div style="color: #fb7185;">[06:01:02] [FAIL] 某沿海渔业信息网 · 页面结构变更，已标记待修复 (1/3)</div>
+            </div>
+
+            <div class="ui-mock-tree-panel">
+              <div class="ui-tree-root">
+                <div class="ui-tree-row active">
+                  <span class="ui-tag mod">RSS</span> 国家统计局 — 最新发布
+                  <span class="pill pill-green" style="margin-left: auto;">采集成功</span>
+                </div>
+                <div class="ui-tree-row">
+                  <span class="ui-tag mod">官网</span> 中国纺织工业联合会
+                  <span class="pill pill-green" style="margin-left: auto;">采集成功</span>
+                </div>
+                <div class="ui-tree-row">
+                  <span class="ui-tag mod">官网</span> 山西省能源局
+                  <span class="pill pill-green" style="margin-left: auto;">采集成功</span>
+                </div>
+                <div class="ui-tree-row">
+                  <span class="ui-tag sub">协会</span> 中国煤炭工业协会
+                  <span class="pill pill-green" style="margin-left: auto;">采集成功</span>
+                </div>
+                <div class="ui-tree-row">
+                  <span class="ui-tag fn">AI发现</span> 农业农村部 — 渔业渔政管理
+                  <span class="pill pill-green" style="margin-left: auto;">验证通过</span>
+                </div>
+                <div class="ui-tree-row">
+                  <span class="ui-tag fn">公号</span> 消金产业观察（迁移）
+                  <span class="pill pill-cyan" style="margin-left: auto;">脚本复用中</span>
+                </div>
+                <div class="ui-tree-row">
+                  <span class="ui-tag sub">官网</span> 某沿海渔业信息网
+                  <span class="pill pill-amber" style="margin-left: auto;">待 AI 修复</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right: Email Preview -->
+      <div class="ui-preview-panel">
+        <div class="ui-preview-header">
+          <span class="ui-preview-title">📧 产业情报邮件 · 最终交付产物预览</span>
+          <span class="pill pill-green">已发送</span>
+        </div>
+        <div class="email-preview">
+          <div class="email-envelope">
+            <div class="email-header-bar">
+              <div class="row"><span class="label">发件人</span><span>星云棱镜产业信息引擎 &lt;nebula-prism@lu.com&gt;</span></div>
+              <div class="row"><span class="label">收件人</span><span>风控部 · 山西机构 · 总部风控（共 12 人）</span></div>
+              <div class="row"><span class="label">时间</span><span>2026-07-08 08:00:00</span></div>
+              <div class="subject">【星云棱镜·产业早报】2026-07-08 · 订阅 4 个产业 · 累计 58 条情报</div>
+            </div>
+            <div class="email-body">
+              <div class="email-greeting">
+                各位领导同事好，今日星云棱镜产业信息引擎订阅到 <strong>4</strong> 个产业（各分类取 Top3），累计 <strong>58</strong> 条产业信息见下请审阅，明细见附件！
+              </div>
+
+              <div class="email-section-title">一、纺织/鞋帽针织产业信息</div>
+              <table class="email-table">
+                <thead>
+                  <tr><th>序号</th><th>标题</th><th>来源</th><th>权威性</th><th>相关性</th><th>发布时间</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>1</td>
+                    <td>
+                      <a class="title-link" href="#">2025年全国1%人口抽样调查主要数据公报</a>
+                      <div class="summary">国务院决定于2025年开展全国1%人口抽样调查，标准时点为2025年11月1日零时。调查数据反映人口总量、结构变化，对纺织服装消费预期有间接参考价值。</div>
+                      <div class="score">相关性 100 · 综合评分 85</div>
+                    </td>
+                    <td>国家统计局<br/>— 最新发布 RSS</td>
+                    <td>高</td>
+                    <td>高</td>
+                    <td>2026-05-22<br/>03:00</td>
+                  </tr>
+                  <tr>
+                    <td>2</td>
+                    <td>
+                      <a class="title-link" href="#">中国纺织工业联合会发布2026年上半年行业运行简报</a>
+                      <div class="summary">上半年纺织行业整体承压，出口订单有所回暖，但内需恢复不及预期。棉纱价格小幅波动，部分中小纺企面临现金流压力。</div>
+                      <div class="score">相关性 92 · 综合评分 78 · 影响：利差</div>
+                    </td>
+                    <td>中国纺织工业<br/>联合会</td>
+                    <td>高</td>
+                    <td>高</td>
+                    <td>2026-07-07<br/>09:30</td>
+                  </tr>
+                  <tr>
+                    <td>3</td>
+                    <td>
+                      <a class="title-link" href="#">新疆棉区遭遇极端高温，部分棉农申请政策性保险理赔</a>
+                      <div class="summary">南疆部分棉区连续10日超40°C，预计影响新棉产量约5%。已有棉农通过「棱镜」项目渠道反映还款压力上升，建议关注相关授信客户。</div>
+                      <div class="score">相关性 95 · 综合评分 88 · 影响：利差</div>
+                    </td>
+                    <td>新疆日报 ·<br/>地方官媒</td>
+                    <td>中</td>
+                    <td>高</td>
+                    <td>2026-07-07<br/>16:45</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div class="email-section-title">二、煤炭产业信息</div>
+              <table class="email-table">
+                <thead>
+                  <tr><th>序号</th><th>标题</th><th>来源</th><th>权威性</th><th>相关性</th><th>发布时间</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>1</td>
+                    <td>
+                      <a class="title-link" href="#">山西省能源局：加强煤矿安全生产专项整治，3处矿井停产整顿</a>
+                      <div class="summary">山西省开展煤矿安全生产大检查，3处矿井因隐患被责令停产整顿。涉及产能约120万吨/年，相关煤矿企业短期现金流或受影响。</div>
+                      <div class="score">相关性 98 · 综合评分 90 · 影响：利差 · 命中关键字「山西煤矿」</div>
+                    </td>
+                    <td>山西省能源局</td>
+                    <td>高</td>
+                    <td>高</td>
+                    <td>2026-07-07<br/>11:20</td>
+                  </tr>
+                  <tr>
+                    <td>2</td>
+                    <td>
+                      <a class="title-link" href="#">国家发改委：2026年夏季煤炭中长期合同签约率超95%</a>
+                      <div class="summary">全国煤炭中长期合同签约率稳中有升，煤价预期平稳。对山西、内蒙古等主产区煤矿企业整体经营形成利好支撑。</div>
+                      <div class="score">相关性 85 · 综合评分 72 · 影响：利好</div>
+                    </td>
+                    <td>国家发改委<br/>— 政策发布</td>
+                    <td>高</td>
+                    <td>中</td>
+                    <td>2026-07-06<br/>14:00</td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div class="email-footer-note">
+                本邮件由星云棱镜产业信息订阅引擎自动生成 · 匹配规则：机构订阅产业 + 自定义关键字 · 完整 58 条明细见附件 Excel
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 谁在用 -->
+  <section>
+    <div class="section-title">
+      <span class="num">7</span>
+      <h2>谁在用：系统角色与使用边界</h2>
+      <span class="line"></span>
+    </div>
+    <div class="biz-highlight three-col">
+      <div class="item">
+        <div class="icon">⚙️</div>
+        <h4>系统管理员</h4>
+        <div class="role-scope"><span class="role-scope-k">范围 ·</span>平台全局运维</div>
+        <p>负责设定要监测的产业（煤炭、纺织、水产等），配置爬取任务（频率、目标网站列表），管理 AI 发现的数据源确认流程，设定邮件发送规则，监控脚本执行健康度与引擎运行状态。</p>
+      </div>
+      <div class="item">
+        <div class="icon">🏢</div>
+        <h4>机构风控</h4>
+        <div class="role-scope"><span class="role-scope-k">范围 ·</span>本机构产业订阅</div>
+        <p>订阅本机构关注的产业（如山西机构关注「煤炭」「山西煤矿爆炸」），配置自定义关键字，接收并解读定向推送的产业早报邮件，据此调整本机构授信与审批策略。</p>
+      </div>
+      <div class="item">
+        <div class="icon">🏛️</div>
+        <h4>总部风控</h4>
+        <div class="role-scope"><span class="role-scope-k">范围 ·</span>全局跨产业情报</div>
+        <p>从集团视角订阅全局性、跨产业的关键信息（政策变化、行业暴雷、重大安全事故等），为宏观风控决策提供支持，统筹各机构产业风险态势。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 建议演进路径 -->
+  <section>
+    <div class="section-title">
+      <span class="num">8</span>
+      <h2>系统三阶段建议演进路径</h2>
+      <span class="line"></span>
+    </div>
+    <div class="summary-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 0;">
+      <div class="summary-card" style="border-top: 4px solid var(--primary-400);">
+        <small style="color: var(--gray-400); font-weight: 700;">PHASE 1 · MVP 验证期</small>
+        <h3 style="margin-top: 4px;">情报底座与采集闭环</h3>
+        <ul class="check-list" style="margin-top: 10px; gap: 6px;">
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">内置 5 个试点产业（煤炭、纺织、水产等）基础配置。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">跑通「AI 找源 → 脚本生成 → 验证 → 定时复用」全托管模式。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">实现邮件早报推送基本流程。</li>
+        </ul>
+      </div>
+      <div class="summary-card" style="border-top: 4px solid var(--primary-600);">
+        <small style="color: var(--gray-400); font-weight: 700;">PHASE 2 · 深度运营期</small>
+        <h3 style="margin-top: 4px;">情报沉淀与优化</h3>
+        <ul class="check-list" style="margin-top: 10px; gap: 6px;">
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">沉淀官方权威白名单源库（统计局、能源局、行业协会 RSS）。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">支持机构/总部风控自定义关键字与定向推送规则。</li>
+        </ul>
+      </div>
+      <div class="summary-card" style="border-top: 4px solid var(--primary-800);">
+        <small style="color: var(--gray-400); font-weight: 700;">PHASE 3 · 智能策略联动</small>
+        <h3 style="margin-top: 4px;">从情报流走向风控因子</h3>
+        <ul class="check-list" style="margin-top: 10px; gap: 6px;">
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">将定性的产业情报、利好/利差标签转化为定量行业健康度指数。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">构建候选风险因子，接入星云平台量化策略验证框架。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">实现「发现情报 → 校验因子 → 调整授信策略」的最终闭环。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    星云棱镜产业信息订阅引擎 · 核心开发与设计实现方案书 · 2026.07 · 内部保密技术文档
+  </footer>
+
+</div>
+</body>
+</html>

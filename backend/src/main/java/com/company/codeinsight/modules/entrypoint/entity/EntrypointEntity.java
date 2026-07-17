@@ -4,9 +4,9 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 /**
  * 知识入口复核实体（对应 ci_entrypoint 表）
@@ -16,8 +16,9 @@ import java.time.LocalDateTime;
  * @see com.company.codeinsight.modules.entrypoint.service.EntrypointReviewService
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_entrypoint")
-public class EntrypointEntity {
+public class EntrypointEntity extends BaseEntity {
 
     /** 自增主键 ID */
     @TableId(type = IdType.AUTO)
@@ -54,6 +55,9 @@ public class EntrypointEntity {
     @TableField("sort_order")
     private Integer sortOrder;
 
-    private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
+    /**
+     * v1: INCREMENTAL 任务基线继承（NULL=本次识别；非空=从该基线任务继承）
+     */
+    @TableField("baseline_task_id")
+    private Long baselineTaskId;
 }

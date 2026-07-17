@@ -5,7 +5,7 @@ import com.company.codeinsight.modules.quotacontrol.service.SystemConfigService;
 import com.company.codeinsight.modules.task.service.TaskConcurrencyLimiter;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.data.redis.connection.Message;
 import org.springframework.data.redis.connection.MessageListener;
 import org.springframework.data.redis.listener.ChannelTopic;
@@ -16,11 +16,12 @@ import jakarta.annotation.PostConstruct;
 
 /**
  * 订阅 {@link ConfigRefreshPublisher#CHANNEL}，在任意节点修改 ci_system_config 后同步刷新本机缓存与信号量。
+ * <p>仅非 {@code code-insight.env=dev} 时装载（与集群推导一致）。</p>
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
-@ConditionalOnProperty(name = "code-insight.cluster.enabled", havingValue = "true")
+@ConditionalOnExpression("!'${code-insight.env:dev}'.equalsIgnoreCase('dev')")
 public class ConfigRefreshListener implements MessageListener {
 
     private final RedisMessageListenerContainer listenerContainer;

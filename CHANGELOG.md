@@ -4,6 +4,35 @@
 
 ---
 
+## [Unreleased]
+
+### ⚠️ BREAKING：全表审计字段统一
+
+详见 [docs/schema-audit-fields-rename-plan.md](./docs/schema-audit-fields-rename-plan.md)。
+
+- **新增列**（全表）：`is_deleted`（int2，默认 0）、`created_by` / `updated_by`（varchar(100)，默认 `sys`）、`created_date` / `updated_date`
+- **时间列语义迁移**：应用与 API 使用 `createdDate` / `updatedDate`；`schema.sql` 保留旧列 `created_at`/`updated_at` 不删；`schema-fresh.sql` 仅最终列
+- **废弃软删**：`ci_system` / `ci_repository` / `ci_user` 去掉 `deleted_at`，统一 `@TableLogic` → `is_deleted`
+- **代码**：`BaseEntity` + `MetaObjectHandler`；手写 Mapper / 前端类型与筛参同步改名（`createdDateStart/End`）
+- **覆盖写约定**（禁止物理 DELETE）：活行唯一用 partial index（`WHERE is_deleted=0`），逻辑删后再 insert，见 [docs/tablelogic-partial-unique-plan.md](./docs/tablelogic-partial-unique-plan.md)
+
+### ⚠️ BREAKING：存储路径三根 → 两根（runtime-root）
+
+合并 [cluster-shared-storage-design.md](./cluster-shared-storage-design.md) §4 的 `dataRoot` + `workspaceRoot` 为单一 `runtimeRoot`，详见 [cluster-storage-runtime-root-plan.md](./docs/cluster-storage-runtime-root-plan.md)。
+
+- **删除环境变量**（无 fallback，配置后启动报 `runtime-root` 缺失）：
+  - `STORAGE_DATA_ROOT`
+  - `STORAGE_WORKSPACE_ROOT`
+- **新增环境变量**：
+  - `STORAGE_RUNTIME_ROOT`（非 dev 必填绝对路径；dev 写死 `./storage`）
+- **保留环境变量**：
+  - `STORAGE_RELEASES_ROOT`（不变）
+- **dev 行为变更**：旧的 `./temp_repos` 工作区被 `./storage/workspaces` 取代；首次切换可 `rm -rf ./temp_repos`（无功能损失，仅占盘）。
+- **公开 API 不变**：`EnvStorageResolver.getActiveDataRoot()` / `getActiveWorkspaceRoot()` / `draftsRoot()` / `taskWorkspaceDir()` 等签名保持，业务侧 28 个调用文件零改动。
+- **受影响文件**：`StorageProperties` / `EnvStorageResolver` / `StorageBootstrapValidator` / `application.yml` / `application-local.yml` / `application-test.yml` / `.env.example` / 4 个文档。
+
+---
+
 ## [v0.1.9] - 2026-07-03
 
 ### 🧭 增量影响分析：反向 BFS 追溯入口类

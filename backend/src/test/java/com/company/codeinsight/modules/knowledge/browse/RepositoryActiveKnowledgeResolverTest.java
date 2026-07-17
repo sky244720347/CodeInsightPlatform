@@ -1,5 +1,7 @@
 package com.company.codeinsight.modules.knowledge.browse;
 
+import com.company.codeinsight.common.config.CodeInsightEnvProperties;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.common.storage.StorageProperties;
 import com.company.codeinsight.modules.knowledge.entity.KnowledgeVersion;
 import com.company.codeinsight.modules.knowledge.mapper.KnowledgeVersionMapper;
@@ -28,7 +30,7 @@ class RepositoryActiveKnowledgeResolverTest {
     @Mock
     private KnowledgeVersionMapper versionMapper;
 
-    private StorageProperties storageProperties;
+    private EnvStorageResolver storageResolver;
     private RepositoryActiveKnowledgeResolver resolver;
 
     @TempDir
@@ -36,10 +38,12 @@ class RepositoryActiveKnowledgeResolverTest {
 
     @BeforeEach
     void setUp() {
-        storageProperties = new StorageProperties();
-        storageProperties.setMode(com.company.codeinsight.common.storage.StorageMode.LOCAL);
-        storageProperties.setLocalPath(tempRoot.toString());
-        resolver = new RepositoryActiveKnowledgeResolver(repositoryMapper, versionMapper, storageProperties);
+        storageResolver = new EnvStorageResolver(new CodeInsightEnvProperties(), new StorageProperties());
+        Path data = tempRoot.resolve("data");
+        Path ws = tempRoot.resolve("ws");
+        Path releases = tempRoot.resolve("releases");
+        storageResolver.overrideRootsForTest(data, ws, releases);
+        resolver = new RepositoryActiveKnowledgeResolver(repositoryMapper, versionMapper, storageResolver);
     }
 
     @Test
@@ -83,7 +87,7 @@ class RepositoryActiveKnowledgeResolverTest {
         version.setStatus("PUSHED");
         when(versionMapper.selectById(99L)).thenReturn(version);
 
-        Path releaseDir = storageProperties.releaseDir(1L, 10L, "v1.0.0");
+        Path releaseDir = storageResolver.releaseDir(1L, 10L, "v1.0.0");
         Files.createDirectories(releaseDir.resolve("modules"));
 
         Optional<ActiveKnowledgeContext> ctx = resolver.resolve(10L);

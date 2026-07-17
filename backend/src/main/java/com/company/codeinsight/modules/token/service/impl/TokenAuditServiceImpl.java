@@ -60,7 +60,7 @@ public class TokenAuditServiceImpl implements TokenAuditService {
         audit.setCost(cost);
         audit.setType(type);
         audit.setStatus(isSuccess ? 1 : 0);
-        audit.setCreatedAt(LocalDateTime.now());
+        audit.setCreatedDate(LocalDateTime.now());
 
         auditMapper.insert(audit);
     }
@@ -75,7 +75,7 @@ public class TokenAuditServiceImpl implements TokenAuditService {
         qw.eq(systemId != null, TokenUsageAudit::getSystemId, systemId)
           .eq(StringUtils.hasText(modelName), TokenUsageAudit::getModelName, modelName)
           .eq(StringUtils.hasText(type), TokenUsageAudit::getType, type)
-          .orderByDesc(TokenUsageAudit::getCreatedAt);
+          .orderByDesc(TokenUsageAudit::getCreatedDate);
         return auditMapper.selectPage(page, qw);
     }
 
@@ -138,7 +138,7 @@ public class TokenAuditServiceImpl implements TokenAuditService {
         }
 
         all.forEach(a -> {
-            String dateStr = a.getCreatedAt().format(dtf);
+            String dateStr = a.getCreatedDate().format(dtf);
             if (trendMap.containsKey(dateStr)) {
                 trendMap.put(dateStr, trendMap.get(dateStr) + a.getTotalTokens());
             }
@@ -190,7 +190,7 @@ public class TokenAuditServiceImpl implements TokenAuditService {
         List<TokenUsageAudit> list = auditMapper.selectList(
                 new LambdaQueryWrapper<TokenUsageAudit>()
                         .eq(TokenUsageAudit::getSystemId, systemId)
-                        .ge(TokenUsageAudit::getCreatedAt, startOfMonth)
+                        .ge(TokenUsageAudit::getCreatedDate, startOfMonth)
         );
         return list.stream().mapToInt(TokenUsageAudit::getTotalTokens).sum();
     }
@@ -202,7 +202,7 @@ public class TokenAuditServiceImpl implements TokenAuditService {
         List<TokenUsageAudit> list = auditMapper.selectList(
                 new LambdaQueryWrapper<TokenUsageAudit>()
                         .eq(TokenUsageAudit::getUserId, userId)
-                        .ge(TokenUsageAudit::getCreatedAt, startOfDay)
+                        .ge(TokenUsageAudit::getCreatedDate, startOfDay)
         );
         return list.stream().mapToInt(TokenUsageAudit::getTotalTokens).sum();
     }
@@ -214,7 +214,7 @@ public class TokenAuditServiceImpl implements TokenAuditService {
         List<TokenUsageAudit> list = auditMapper.selectList(
                 new LambdaQueryWrapper<TokenUsageAudit>()
                         .eq(TokenUsageAudit::getUserId, userId)
-                        .ge(TokenUsageAudit::getCreatedAt, startOfMonth)
+                        .ge(TokenUsageAudit::getCreatedDate, startOfMonth)
         );
         return list.stream().mapToInt(TokenUsageAudit::getTotalTokens).sum();
     }

@@ -1,7 +1,7 @@
 package com.company.codeinsight.modules.push.strategy;
 
 import com.company.codeinsight.common.exception.BusinessException;
-import com.company.codeinsight.common.storage.StorageProperties;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.common.util.DraftFileUtil;
 import com.company.codeinsight.modules.draft.entity.DraftWorkspace;
@@ -29,7 +29,7 @@ import java.util.List;
 
 /**
  * NAS 文件系统推送策略：将知识文件从任务工作区复制到 NAS releases 目录。
- * <p>目标路径：{basePath}/releases/{sysId}/{repoId}/{versionNum}/</p>
+ * <p>目标路径：{releasesRoot}/{sysId}/{repoId}/{versionNum}/</p>
  * <p>推送成功后，根据配置决定是否清理 drafts 下的源文件。</p>
  */
 @Slf4j
@@ -41,7 +41,7 @@ public class NasPushStrategy implements PushStrategy {
     private final DraftWorkspaceMapper workspaceMapper;
     private final KnowledgeDraftMapper draftMapper;
     private final KnowledgeIndexService knowledgeIndexService;
-    private final StorageProperties storageProperties;
+    private final EnvStorageResolver storageResolver;
     private final TaskWorkspacePaths taskWorkspacePaths;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
@@ -52,7 +52,7 @@ public class NasPushStrategy implements PushStrategy {
 
         Long sysId = task.getSystemId();
         Long repoId = task.getRepositoryId();
-        Path releaseDir = storageProperties.releaseDir(sysId, repoId, version.getVersionNum());
+        Path releaseDir = storageResolver.releaseDir(sysId, repoId, version.getVersionNum());
         Path modulesDir = releaseDir.resolve("modules");
         Path indexDir = releaseDir.resolve("index");
         Path metaDir = releaseDir.resolve("meta");
@@ -73,7 +73,7 @@ public class NasPushStrategy implements PushStrategy {
                                 .eq(KnowledgeDraft::getWorkspaceId, w.getId())));
             }
             for (KnowledgeDraft d : drafts) {
-                Path src = DraftFileUtil.resolve(d.getContentUri(), storageProperties);
+                Path src = DraftFileUtil.resolve(d.getContentUri(), storageResolver);
                 if (Files.exists(src)) {
                     String safe = d.getModuleName().replaceAll("[\\s/\\(\\)]", "_") + ".md";
                     Files.copy(src, modulesDir.resolve(safe), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
@@ -107,7 +107,7 @@ public class NasPushStrategy implements PushStrategy {
 
             // 4. 推送后清理 drafts 源文件（可选：通过 storage.releases-root 已写入即安全）
             for (KnowledgeDraft d : drafts) {
-                Path src = DraftFileUtil.resolve(d.getContentUri(), storageProperties);
+                Path src = DraftFileUtil.resolve(d.getContentUri(), storageResolver);
                 try { Files.deleteIfExists(src); } catch (Exception e) { log.debug("cleanup draft file {}: {}", src, e.getMessage()); }
             }
 

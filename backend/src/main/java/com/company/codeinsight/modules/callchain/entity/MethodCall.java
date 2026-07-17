@@ -4,9 +4,9 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 /**
  * 方法调用链路实体类
@@ -14,8 +14,9 @@ import java.time.LocalDateTime;
  * 由知识构建任务在 PARSING_CODE 阶段批量写入，作为后续入口识别和模块整体归纳的数据基础。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_method_call")
-public class MethodCall {
+public class MethodCall extends BaseEntity {
 
     /**
      * 自增主键 ID
@@ -89,7 +90,8 @@ public class MethodCall {
     private String dependencyCandidates;
 
     /**
-     * 记录创建时间
+     * v1: INCREMENTAL 任务基线继承（NULL=本次解析；非空=从该基线任务继承）
      */
-    private LocalDateTime createdAt;
+    @TableField("baseline_task_id")
+    private Long baselineTaskId;
 }

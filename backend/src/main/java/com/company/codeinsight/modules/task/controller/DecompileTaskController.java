@@ -122,11 +122,11 @@ public class DecompileTaskController {
             @RequestParam(required = false) String triggerSource,
             @RequestParam(required = false) String keyword,
             @RequestParam(required = false) String modelName,
-            @RequestParam(required = false) String createdAtStart,
-            @RequestParam(required = false) String createdAtEnd) {
+            @RequestParam(required = false) String createdDateStart,
+            @RequestParam(required = false) String createdDateEnd) {
         Page<DecompileTask> page = decompileTaskService.listTasksPage(
                 current, size, systemId, status, type, statuses, triggerSource,
-                keyword, modelName, createdAtStart, createdAtEnd);
+                keyword, modelName, createdDateStart, createdDateEnd);
         PageResult<DecompileTask> result = new PageResult<>(page.getTotal(), page.getSize(), page.getCurrent(), page.getRecords());
         return ApiResponse.success(result);
     }
@@ -253,6 +253,16 @@ public class DecompileTaskController {
     }
 
     /**
+     * v1: 模块层级 diff 视图（前端 Phase 4 UI 用）
+     * <p>返回 newHierarchy / inheritedHierarchy / deletedHierarchy 3 类。INITIAL 任务返回 3 个 null。</p>
+     */
+    @GetMapping("/{id}/module-hierarchy/diff")
+    public ApiResponse<com.company.codeinsight.modules.hierarchy.dto.ModuleHierarchyDiffDto> getModuleHierarchyDiff(
+            @PathVariable Long id) {
+        return ApiResponse.success(moduleHierarchyService.getHierarchyDiff(id));
+    }
+
+    /**
      * 替换任务的模块层级（人工复核断点用）
      * <p>
      * 前端在复核抽屉内编辑完成后整体提交：后端校验 ID/层级结构后 deleteByTaskId + 全量 insert 落表。
@@ -300,6 +310,17 @@ public class DecompileTaskController {
     }
 
     /**
+     * 重新继承基线文档（仅 INCREMENTAL 任务在 BASELINE_DOC_INHERIT 阶段失败时可用）。
+     * 与普通「重试」区分：普通重试从 PENDING 从头跑；此入口仅重跑基线文档复制及后续 GENERATING_DOC。
+     */
+    @Operation(summary = "重新继承基线文档")
+    @PostMapping("/{id}/retry-baseline-inherit")
+    public ApiResponse<Void> retryBaselineInherit(@PathVariable Long id) {
+        decompileTaskService.retryBaselineInherit(id);
+        return ApiResponse.success();
+    }
+
+    /**
      * 查询任务的知识入口复核清单（人工复核断点用）
      * <p>从 ci_entrypoint 表读取入口列表（methods_json 已在 service 层反序列化为强类型），
      * 主要用于前端在 ENTRYPOINT_REVIEW 状态下拉取并展示只读入口清单。</p>
@@ -312,6 +333,16 @@ public class DecompileTaskController {
             return ApiResponse.error("任务不存在");
         }
         return ApiResponse.success(entrypointReviewService.listByTaskId(id));
+    }
+
+    /**
+     * v1: 入口 diff 视图（前端 Phase 4 UI 用）
+     * <p>返回本次新增 / 基线继承 / 本次删除 3 类。INITIAL 任务返回 3 个空 list。</p>
+     */
+    @GetMapping("/{id}/entrypoints/diff")
+    public ApiResponse<com.company.codeinsight.modules.entrypoint.dto.EntrypointDiffDto> getEntrypointDiff(
+            @PathVariable Long id) {
+        return ApiResponse.success(entrypointReviewService.getEntrypointDiff(id));
     }
 
     /**
@@ -404,7 +435,7 @@ public class DecompileTaskController {
         return ApiResponse.success();
     }
 
-    @Operation(summary = "队列列表（PENDING 任务，priority DESC + created_at ASC）")
+    @Operation(summary = "队列列表（PENDING 任务，priority DESC + created_date ASC）")
     @GetMapping("/queue")
     public ApiResponse<PageResult<DecompileTask>> listQueuedTasks(
             @RequestParam(defaultValue = "1") int current,

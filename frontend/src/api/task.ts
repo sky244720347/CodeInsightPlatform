@@ -9,6 +9,30 @@ import type {
   TaskLogSummary,
 } from '../types';
 
+/** v1: 入口 diff DTO（前端 Phase 4 UI 用） */
+export interface EntrypointDiffDto {
+  /** 本次新增 */
+  newRows: EntrypointReviewItem[];
+  /** 类不变 + 方法有变化 */
+  modifiedRows: EntrypointReviewItem[];
+  /** 类+方法全不变的基线继承 */
+  inheritedRows: EntrypointReviewItem[];
+  /** 本次删除 */
+  deletedRows: EntrypointReviewItem[];
+}
+
+/** v1: 模块层级 diff DTO */
+export interface ModuleHierarchyDiffDto {
+  /** 本次新增的模块层级（基线无 + 本次有） */
+  newHierarchy: ModuleHierarchy;
+  /** 本次变更（基线有 + 本次有 + FUNCTION classPaths 集合不同） */
+  modifiedHierarchy: ModuleHierarchy;
+  /** 基线继承（基线有 + 本次有 + classPaths 完全相同） */
+  inheritedHierarchy: ModuleHierarchy;
+  /** 本次删除（基线有 + 本次无） */
+  deletedHierarchy: ModuleHierarchy;
+}
+
 export interface TaskProgress {
   status: string;
   progress: number;
@@ -44,9 +68,9 @@ export const listTasks = (params: {
   /** 精准搜索：模型名精确匹配 */
   modelName?: string;
   /** 精准搜索：创建时间下界（ISO timestamp，可空） */
-  createdAtStart?: string;
+  createdDateStart?: string;
   /** 精准搜索：创建时间上界（ISO timestamp，可空） */
-  createdAtEnd?: string;
+  createdDateEnd?: string;
 }): Promise<PageResult<Task>> => {
   return request.get('/tasks', { params });
 };
@@ -84,7 +108,7 @@ export interface BlockingDraft {
   taskId?: number;
   systemId?: number;
   repositoryId?: number;
-  updatedAt: string;
+  updatedDate: string;
 }
 
 export interface RepositoryReadiness {
@@ -183,9 +207,24 @@ export const resumeModuleHierarchyReview = (id: number): Promise<void> => {
   return request.post(`/tasks/${id}/module-hierarchy/resume`);
 };
 
+/** 重新继承基线文档（仅 INCREMENTAL 任务 BASELINE_DOC_INHERIT 失败时可用） */
+export const retryBaselineInherit = (id: number): Promise<void> => {
+  return request.post(`/tasks/${id}/retry-baseline-inherit`);
+};
+
 /** 拉取任务的知识入口复核清单（人工复核断点用，只读） */
 export const getEntrypointReview = (id: number): Promise<EntrypointReviewItem[]> => {
   return request.get(`/tasks/${id}/entrypoints`);
+};
+
+/** v1: 入口 diff 视图（INCREMENTAL 任务 4 种分类；INITIAL 任务返回 3 个空 list） */
+export const getEntrypointDiff = (id: number): Promise<EntrypointDiffDto> => {
+  return request.get(`/tasks/${id}/entrypoints/diff`);
+};
+
+/** v1: 模块层级 diff 视图（INCREMENTAL 任务 3 类 hierarchy） */
+export const getModuleHierarchyDiff = (id: number): Promise<ModuleHierarchyDiffDto> => {
+  return request.get(`/tasks/${id}/module-hierarchy/diff`);
 };
 
 /** 知识入口复核完成后恢复流水线（确认并继续） */

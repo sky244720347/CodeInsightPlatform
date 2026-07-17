@@ -73,22 +73,24 @@ public class SystemConfigServiceImpl extends ServiceImpl<SystemConfigMapper, Sys
             throw new IllegalArgumentException("key/value 不能为空");
         }
         SystemConfig existing = this.getById(key);
+        String truncated = com.company.codeinsight.common.util.DbStringLimits.truncate(
+                value, com.company.codeinsight.common.util.DbStringLimits.CONFIG_VALUE);
         if (existing == null) {
             SystemConfig c = new SystemConfig();
             c.setKey(key);
-            c.setValue(value);
+            c.setValue(truncated);
             c.setDescription(description);
             c.setUpdatedBy(updatedBy);
-            c.setUpdatedAt(LocalDateTime.now());
+            c.setUpdatedDate(LocalDateTime.now());
             this.save(c);
         } else {
-            existing.setValue(value);
+            existing.setValue(truncated);
             if (description != null) existing.setDescription(description);
             existing.setUpdatedBy(updatedBy);
-            existing.setUpdatedAt(LocalDateTime.now());
+            existing.setUpdatedDate(LocalDateTime.now());
             this.updateById(existing);
         }
-        cache.put(key, value);
+        cache.put(key, truncated);
     }
 
     @Override

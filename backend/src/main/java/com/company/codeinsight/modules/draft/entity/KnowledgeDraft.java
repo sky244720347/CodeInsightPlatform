@@ -1,19 +1,21 @@
 package com.company.codeinsight.modules.draft.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 /**
  * 模块知识草稿实体类
  * 对应数据库中的 ci_knowledge_draft 表，记录从代码分片（Chunk）总结聚合而成的模块级 Markdown 文档草稿的修订状态与存储路径。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_knowledge_draft")
-public class KnowledgeDraft {
+public class KnowledgeDraft extends BaseEntity {
 
     /**
      * 自增主键 ID
@@ -67,13 +69,8 @@ public class KnowledgeDraft {
     private String hash;
 
     /**
-     * 创建时间
+     * v1: INCREMENTAL 任务基线继承（NULL=本次生成；非空=从该基线任务继承）
      */
-    private LocalDateTime createdAt;
-
-    /**
-     * 更新时间
-     */
-    private LocalDateTime updatedAt;
+    @TableField("baseline_task_id")
+    private Long baselineTaskId;
 }
-

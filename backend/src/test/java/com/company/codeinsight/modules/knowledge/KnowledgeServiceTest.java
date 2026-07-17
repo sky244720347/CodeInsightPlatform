@@ -79,8 +79,8 @@ public class KnowledgeServiceTest {
         ws.setSystemId(1L);
         ws.setRepositoryId(repo.getId());
         ws.setStatus("ACTIVE");
-        ws.setCreatedAt(LocalDateTime.now());
-        ws.setUpdatedAt(LocalDateTime.now());
+        ws.setCreatedDate(LocalDateTime.now());
+        ws.setUpdatedDate(LocalDateTime.now());
         workspaceMapper.insert(ws);
 
         File tempFile = File.createTempFile("MockDraft", ".md");
@@ -94,8 +94,8 @@ public class KnowledgeServiceTest {
         draft.setContentUri(tempFile.toURI().toString());
         draft.setStatus(DraftStatus.CONFIRMED.name());
         draft.setHash("hashabc");
-        draft.setCreatedAt(LocalDateTime.now());
-        draft.setUpdatedAt(LocalDateTime.now());
+        draft.setCreatedDate(LocalDateTime.now());
+        draft.setUpdatedDate(LocalDateTime.now());
         draftMapper.insert(draft);
 
         // 3. 创建版本
@@ -152,8 +152,8 @@ public class KnowledgeServiceTest {
         ws.setSystemId(1L);
         ws.setRepositoryId(repo.getId());
         ws.setStatus("ACTIVE");
-        ws.setCreatedAt(LocalDateTime.now());
-        ws.setUpdatedAt(LocalDateTime.now());
+        ws.setCreatedDate(LocalDateTime.now());
+        ws.setUpdatedDate(LocalDateTime.now());
         workspaceMapper.insert(ws);
 
         // 创建包含 `- [ ]` 待确认项的草稿
@@ -168,8 +168,8 @@ public class KnowledgeServiceTest {
         draft.setContentUri(tempFile.toURI().toString());
         draft.setStatus(DraftStatus.CONFIRMED.name());
         draft.setHash("hashabc");
-        draft.setCreatedAt(LocalDateTime.now());
-        draft.setUpdatedAt(LocalDateTime.now());
+        draft.setCreatedDate(LocalDateTime.now());
+        draft.setUpdatedDate(LocalDateTime.now());
         draftMapper.insert(draft);
 
         KnowledgeVersion version = knowledgeService.createVersion(taskId, "v2.0.0", "Tester");

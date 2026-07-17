@@ -12,8 +12,9 @@ spring:
   sql:
     init:
       # 生产环境默认不在启动时执行 schema；本地首次建库可设 SQL_INIT_MODE=always
+      # 新库推荐 schema-fresh.sql；旧库升级继续用 schema.sql
       mode: ${SQL_INIT_MODE:never}
-      schema-locations: classpath:db/schema.sql
+      schema-locations: ${SQL_SCHEMA_LOCATION:classpath:db/schema.sql}
   data:
     redis:
       host: ${REDIS_HOST:47.97.114.189}
@@ -32,6 +33,7 @@ springdoc:
     operations-sorter: alpha
 
 code-insight:
+  env: ${CODE_INSIGHT_ENV:dev}
   ai:
     mock: ${LLM_MOCK:true}
     api-key: ${LLM_API_KEY:}
@@ -46,16 +48,10 @@ code-insight:
     task-limit: ${TOKEN_TASK_LIMIT:100000}
     system-monthly-limit: ${TOKEN_SYSTEM_MONTHLY_LIMIT:1000000}
   storage:
-    mode: ${STORAGE_MODE:local}
-    local-path: ${STORAGE_LOCAL_PATH:./storage}
-    base-path: ${STORAGE_BASE_PATH:./storage}
-    drafts-root: ${STORAGE_DRAFTS_ROOT:drafts}
-    releases-root: ${STORAGE_RELEASES_ROOT:releases}
-    workspace-root: ${STORAGE_WORKSPACE_ROOT:./temp_repos}
+    runtime-root: ${STORAGE_RUNTIME_ROOT:}
+    releases-root: ${STORAGE_RELEASES_ROOT:}
   doc-generation:
     granularity: ${DOC_GENERATION_GRANULARITY:function}
-  cluster:
-    enabled: ${CLUSTER_ENABLED:false}
   push:
     queue:
       enabled: ${PUSH_QUEUE_ENABLED:true}

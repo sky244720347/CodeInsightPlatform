@@ -83,7 +83,7 @@ public class AiModelMetricsControllerTest {
         audit.setCost(new BigDecimal(cost));
         audit.setType("TEST");
         audit.setStatus(1);
-        audit.setCreatedAt(createdAt);
+        audit.setCreatedDate(createdAt);
         tokenUsageAuditMapper.insert(audit);
     }
 }

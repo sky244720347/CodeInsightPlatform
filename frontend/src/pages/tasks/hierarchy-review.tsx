@@ -29,6 +29,7 @@ const statusMeta: Record<string, { color: string; label: string }> = {
   MODULE_HIERARCHY_REVIEW: { color: 'geekblue', label: '模块层级调试' },
   MODULE_HIERARCHY: { color: 'gold', label: '模块层级提炼' },
   AI_ANALYZING: { color: 'orange', label: 'AI 分析中' },
+  BASELINE_DOC_INHERIT: { color: 'cyan', label: '基线文档继承' },
   GENERATING_DOC: { color: 'gold', label: '生成文档' },
   PENDING_REVIEW: { color: 'magenta', label: '已生成文档' },
   FAILED: { color: 'red', label: '调试中失败' },
@@ -134,8 +135,8 @@ const HierarchyReview: React.FC = () => {
     },
     {
       title: '创建时间',
-      dataIndex: 'createdAt',
-      key: 'createdAt',
+      dataIndex: 'createdDate',
+      key: 'createdDate',
       width: 170,
       render: (t: string) => (t ? new Date(t).toLocaleString() : '-'),
     },

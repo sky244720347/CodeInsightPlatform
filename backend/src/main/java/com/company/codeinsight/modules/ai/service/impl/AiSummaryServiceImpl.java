@@ -7,6 +7,7 @@ import com.company.codeinsight.common.config.AiRetryProperties;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.util.AiResponseJsonExtractor;
 import com.company.codeinsight.modules.ai.entity.AiCallRecord;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.modules.ai.mapper.AiCallRecordMapper;
 import com.company.codeinsight.modules.callchain.entity.MethodCall;
@@ -127,6 +128,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     private com.company.codeinsight.modules.entrypoint.service.EntryPointDiscoveryService entryPointDiscoveryService;
 
     @Autowired
+    private com.company.codeinsight.modules.entrypoint.service.EntrypointReviewService entrypointReviewService;
+
+    @Autowired
     private com.company.codeinsight.common.util.PromptTemplateLoader promptTemplateLoader;
 
     @Autowired
@@ -140,6 +144,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
     @Autowired
     private TaskWorkspacePaths taskWorkspacePaths;
+
+    @Autowired
+    private EnvStorageResolver storageResolver;
 
     // 是否启用 AI 本地 Mock 仿真
     @Value("${code-insight.ai.mock:false}")
@@ -156,10 +163,6 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     // 默认选用的大模型版本名称
     @Value("${code-insight.ai.model-name:MiniMax-M3}")
     private String modelName;
-
-    // 本地磁盘存储路径 (草稿物理正文暂存区)
-    @Value("${code-insight.storage.local-path:./storage}")
-    private String localStoragePath;
 
     // 是否启用 Token 额度上限校验
     @Value("${code-insight.token.limit-enabled:true}")
@@ -250,10 +253,16 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             ws.setSystemId(task.getSystemId());
             ws.setRepositoryId(task.getRepositoryId());
             ws.setStatus("ACTIVE");
-            ws.setCreatedAt(LocalDateTime.now());
-            ws.setUpdatedAt(LocalDateTime.now());
+            ws.setCreatedDate(LocalDateTime.now());
+            ws.setUpdatedDate(LocalDateTime.now());
             draftWorkspaceMapper.insert(ws);
+            if (ws.getId() == null) {
+                ws = draftWorkspaceMapper.selectOne(
+                        new LambdaQueryWrapper<DraftWorkspace>().eq(DraftWorkspace::getTaskId, taskId));
+            }
         }
+        // v2: 纯 release 方案 — BASELINE_DOC_INHERIT 已将基线文档复制到本次 workspace，
+        // workspace 自包含，不再设置 baselineWorkspaceId（避免 getWorkspaceTree 合并基线草稿）。
 
         // 4. projectDir 通过 taskId 反查（pipeline 启动时 pullAndScan 已写入该目录）
         File projectDir = taskWorkspacePaths.taskProjectDir(taskId);
@@ -277,7 +286,36 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
         // 6. 根据 granularity 分发到整模块或按功能粒度
         if ("function".equalsIgnoreCase(docGenerationGranularity)) {
-            generateDraftDocumentByFunction(task, ws, hierarchy, projectDir, effective, changedFqSet);
+            // 构建反向 BFS 命中的入口类名集合（impact.hierarchyRetargetEntries）
+            java.util.Set<String> bfsHitClassNames = null;
+            if (impact != null && impact.isIncremental() && !impact.getHierarchyRetargetEntries().isEmpty()) {
+                bfsHitClassNames = new java.util.HashSet<>();
+                for (com.company.codeinsight.modules.entrypoint.model.EntryPoint ep : impact.getHierarchyRetargetEntries()) {
+                    if (ep.getClassName() != null) {
+                        bfsHitClassNames.add(ep.getClassName());
+                    }
+                }
+            }
+            // 构建入口 DIFF「内容变更」的类名集合（entrypoint bodyHash 变化的类）
+            java.util.Set<String> entryModifiedClassNames = null;
+            if (effective.isIncremental()) {
+                try {
+                    com.company.codeinsight.modules.entrypoint.dto.EntrypointDiffDto epDiff =
+                            entrypointReviewService.getEntrypointDiff(taskId);
+                    if (epDiff != null && epDiff.getModifiedRows() != null && !epDiff.getModifiedRows().isEmpty()) {
+                        entryModifiedClassNames = new java.util.HashSet<>();
+                        for (com.company.codeinsight.modules.entrypoint.model.EntrypointReviewView v : epDiff.getModifiedRows()) {
+                            if (v.getClassName() != null) {
+                                entryModifiedClassNames.add(v.getClassName());
+                            }
+                        }
+                    }
+                } catch (Exception e) {
+                    log.warn("获取入口 DIFF 失败，跳过入口内容变更检测 — taskId={}", taskId, e);
+                }
+            }
+            generateDraftDocumentByFunction(task, ws, hierarchy, projectDir, effective, changedFqSet,
+                    bfsHitClassNames, entryModifiedClassNames);
         } else {
             // --- 按模块（默认，现有行为）---
             int moduleIndex = 0;
@@ -348,6 +386,32 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     }
 
     /**
+     * 增量模式辅助（功能粒度）：判断单个 function 是否需要重新生成。
+     * <p>满足以下任一条件即需重跑：</p>
+     * <ul>
+     *   <li>① fn.classPaths ∩ changedFqSet ≠ ∅ — 直接 git diff 命中</li>
+     *   <li>② fn.classPaths ∩ bfsHitClassNames ≠ ∅ — 反向 BFS 命中入口类（依赖变更追溯到入口）</li>
+     *   <li>③ fn.classPaths ∩ entryModifiedClassNames ≠ ∅ — 入口内容变更（bodyHash 变化但功能不变也需重生成文档）</li>
+     * </ul>
+     */
+    private boolean functionTouchedByIncremental(
+            com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
+            java.util.Set<String> changedFqSet,
+            java.util.Set<String> bfsHitClassNames,
+            java.util.Set<String> entryModifiedClassNames) {
+        if (fn.getClassPaths() == null || fn.getClassPaths().isEmpty()) {
+            return false;
+        }
+        for (String cp : fn.getClassPaths()) {
+            if (cp == null) continue;
+            if (changedFqSet != null && changedFqSet.contains(cp)) return true;
+            if (bfsHitClassNames != null && bfsHitClassNames.contains(cp)) return true;
+            if (entryModifiedClassNames != null && entryModifiedClassNames.contains(cp)) return true;
+        }
+        return false;
+    }
+
+    /**
      * 项 3 新增：整模块喂 AI 生成 md 的核心流程
      */
     /**
@@ -359,7 +423,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                                                   com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy hierarchy,
                                                   File projectDir,
                                                   com.company.codeinsight.modules.scanner.model.IncrementalContext effective,
-                                                  java.util.Set<String> changedFqSet) {
+                                                  java.util.Set<String> changedFqSet,
+                                                  java.util.Set<String> bfsHitClassNames,
+                                                  java.util.Set<String> entryModifiedClassNames) {
         Long taskId = task.getId();
         int fnTotal = countFunctionsInHierarchy(hierarchy);
         int fnIndex = 0;
@@ -371,14 +437,12 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             for (com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm : m.getSubModules().values()) {
                 for (com.company.codeinsight.modules.hierarchy.model.FunctionDto fn : sm.getFunctions().values()) {
                     fnIndex++;
-                    // 增量：function.classPaths 全不在变更集 → 跳过
-                    if (changedFqSet != null) {
-                        boolean touched = false;
-                        if (fn.getClassPaths() != null) {
-                            for (String cp : fn.getClassPaths()) {
-                                if (changedFqSet.contains(cp)) { touched = true; break; }
-                            }
-                        }
+                    // 增量判定：function 需要重跑的条件（满足任一即可）
+                    //   ① fn.classPaths ∩ changedFqSet ≠ ∅  — 直接 git diff 命中
+                    //   ② fn.classPaths ∩ bfsHitClassNames ≠ ∅  — 反向 BFS 命中入口类
+                    //   ③ fn.classPaths ∩ entryModifiedClassNames ≠ ∅  — 入口内容变更（bodyHash 变化）
+                    if (changedFqSet != null || bfsHitClassNames != null || entryModifiedClassNames != null) {
+                        boolean touched = functionTouchedByIncremental(fn, changedFqSet, bfsHitClassNames, entryModifiedClassNames);
                         if (!touched) { skipped++; continue; }
                     }
                     String label = m.getModuleName() + " / " + sm.getSubModuleName() + " / " + fn.getFunctionName();
@@ -593,7 +657,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         String safeSub = sm.getSubModuleName().replaceAll("[\\s/\\(\\)]", "_");
         String safeFn = fn.getFunctionName().replaceAll("[\\s/\\(\\)]", "_");
         String relativeDocPath = "task_" + taskId + "/" + safeModule + "/" + safeSub + "/" + safeFn + ".md";
-        Path storePath = Paths.get(localStoragePath, "drafts", relativeDocPath);
+        Path storePath = storageResolver.draftsRoot().resolve(relativeDocPath);
         try {
             Files.createDirectories(storePath.getParent());
             Files.writeString(storePath, markdown);
@@ -601,33 +665,42 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             log.error("保存 Function 知识草稿文件失败", e);
         }
         String hash = DigestUtils.md5DigestAsHex(markdown.getBytes());
+        String fullModuleName = m.getModuleName() + " / " + sm.getSubModuleName() + " / " + fn.getFunctionName();
+        // 先按 filePath 查（正常路径：之前 AI 生成过、filePath 已是嵌套格式）
         KnowledgeDraft draft = knowledgeDraftMapper.selectOne(
                 new LambdaQueryWrapper<KnowledgeDraft>()
                         .eq(KnowledgeDraft::getWorkspaceId, ws.getId())
                         .eq(KnowledgeDraft::getFilePath, relativeDocPath));
+        // filePath 未找到时按 moduleName 查（覆盖增量场景：inheritDrafts 用扁平 filePath 复制了基线草稿，
+        // AI 重生成时 filePath 不匹配，但 moduleName 一致 → 找到继承草稿并覆盖）
+        if (draft == null) {
+            draft = knowledgeDraftMapper.selectOne(
+                    new LambdaQueryWrapper<KnowledgeDraft>()
+                            .eq(KnowledgeDraft::getWorkspaceId, ws.getId())
+                            .eq(KnowledgeDraft::getModuleName, fullModuleName));
+        }
         if (draft == null) {
             draft = new KnowledgeDraft();
             draft.setWorkspaceId(ws.getId());
             draft.setFilePath(relativeDocPath);
-            draft.setModuleName(m.getModuleName() + " / " + sm.getSubModuleName() + " / " + fn.getFunctionName());
+            draft.setModuleName(fullModuleName);
             String contentUri = com.company.codeinsight.common.util.DraftFileUtil.buildDraftUri(
                     task.getSystemId(), task.getRepositoryId(), taskId, relativeDocPath);
             draft.setContentUri(contentUri);
             draft.setStatus(initialStatus);
             draft.setHash(hash);
-            draft.setCreatedAt(LocalDateTime.now());
-            draft.setUpdatedAt(LocalDateTime.now());
+            draft.setCreatedDate(LocalDateTime.now());
+            draft.setUpdatedDate(LocalDateTime.now());
             knowledgeDraftMapper.insert(draft);
         } else {
-            String oldStatus = draft.getStatus();
             String contentUri = com.company.codeinsight.common.util.DraftFileUtil.buildDraftUri(
                     task.getSystemId(), task.getRepositoryId(), taskId, relativeDocPath);
+            draft.setFilePath(relativeDocPath);     // 确保 filePath 更新为 AI 嵌套格式（可能从继承的扁平路径迁移）
             draft.setContentUri(contentUri);
             draft.setHash(hash);
-            if (oldStatus == null || oldStatus.equals("AI_GENERATED") || oldStatus.equals("PENDING_REVIEW")) {
-                draft.setStatus(initialStatus);
-            }
-            draft.setUpdatedAt(LocalDateTime.now());
+            draft.setStatus(initialStatus);          // AI 重生成 → 需重新复核
+            draft.setBaselineTaskId(null);           // AI 重生成 → 不再是基线继承，标记为 modified
+            draft.setUpdatedDate(LocalDateTime.now());
             knowledgeDraftMapper.updateById(draft);
         }
         replaceDraftSourceReferencesForFunction(draft.getId(), taskId, fn, projectDir);
@@ -954,7 +1027,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         String moduleName = moduleDto.getModuleName();
         String safeModuleName = moduleName.replaceAll("[\\s/\\(\\)]", "_");
         String relativeDocPath = "task_" + taskId + "/" + safeModuleName + ".md";
-        Path storePath = Paths.get(localStoragePath, "drafts", relativeDocPath);
+        Path storePath = storageResolver.draftsRoot().resolve(relativeDocPath);
 
         // 写文件
         try {
@@ -998,15 +1071,15 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             draft.setContentUri(storePath.toAbsolutePath().toUri().toString());
             draft.setStatus(initialStatus);
             draft.setHash(hash);
-            draft.setCreatedAt(LocalDateTime.now());
-            draft.setUpdatedAt(LocalDateTime.now());
+            draft.setCreatedDate(LocalDateTime.now());
+            draft.setUpdatedDate(LocalDateTime.now());
             knowledgeDraftMapper.insert(draft);
         } else {
             draft.setHash(hash);
             draft.setStatus(initialStatus);
             draft.setModuleName(moduleName);
             draft.setContentUri(storePath.toAbsolutePath().toUri().toString());
-            draft.setUpdatedAt(LocalDateTime.now());
+            draft.setUpdatedDate(LocalDateTime.now());
             knowledgeDraftMapper.updateById(draft);
         }
 
@@ -1069,7 +1142,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                         ref.setStartLine(1);
                         ref.setEndLine(0);
                     }
-                    ref.setCreatedAt(LocalDateTime.now());
+                    ref.setCreatedDate(LocalDateTime.now());
                     draftSourceReferenceMapper.insert(ref);
                 }
                 return; // 主路径优先：找到任何绑定就完成引用落库，不再走旧路径
@@ -1103,7 +1176,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                         ref.setStartLine(1);
                         ref.setEndLine(0);
                     }
-                    ref.setCreatedAt(LocalDateTime.now());
+                    ref.setCreatedDate(LocalDateTime.now());
                     draftSourceReferenceMapper.insert(ref);
                 }
             }
@@ -1122,7 +1195,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             ref.setClassName(classPath);
             ref.setStartLine(1);
             ref.setEndLine(0);
-            ref.setCreatedAt(LocalDateTime.now());
+            ref.setCreatedDate(LocalDateTime.now());
             draftSourceReferenceMapper.insert(ref);
         }
     }
@@ -1218,16 +1291,17 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         record.setInputToken(inTokens);
         record.setOutputToken(outTokens);
         record.setIsSuccess(isSuccess ? 1 : 0);
-        record.setErrorReason(errorMsg);
+        record.setErrorReason(com.company.codeinsight.common.util.DbStringLimits.truncate(
+                errorMsg, com.company.codeinsight.common.util.DbStringLimits.ERROR_REASON));
         record.setDurationMs(duration);
-        record.setCreatedAt(LocalDateTime.now());
+        record.setCreatedDate(LocalDateTime.now());
         record.setCallStage(callStage);
 
         // 模拟请求和响应存储
         String stageTag = callStage == null ? "call" : callStage.toLowerCase();
-        String relativePath = "task_" + taskId + "/" + stageTag + "_" + (chunkId == null ? "0" : chunkId) + "_" + System.currentTimeMillis();
-        Path reqPath = Paths.get(localStoragePath, "ai_logs", relativePath + "_req.json");
-        Path respPath = Paths.get(localStoragePath, "ai_logs", relativePath + "_resp.txt");
+        String fileBase = stageTag + "_" + (chunkId == null ? "0" : chunkId) + "_" + System.currentTimeMillis();
+        Path reqPath = storageResolver.aiLogDir(taskId).resolve(fileBase + "_req.json");
+        Path respPath = storageResolver.aiLogDir(taskId).resolve(fileBase + "_resp.txt");
         try {
             Files.createDirectories(reqPath.getParent());
             Files.writeString(reqPath, "{\"chunkId\":" + chunkId + ",\"model\":\"" + model + "\",\"stage\":\"" + callStage + "\"}");
@@ -1306,9 +1380,15 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
         String callStage = callMeta != null && StringUtils.hasText(callMeta.getCallStage()) ? callMeta.getCallStage() : "PROMPT";
 
+        String debugTarget = callMeta != null && StringUtils.hasText(callMeta.getClassPath())
+                ? callMeta.getClassPath() : "-";
+
         if (shouldMock) {
             log.info("Mock 模式已开启 (aiMock={}, apiKey={})，对 task {} / stage {} 跳过真实 AI 调用",
                     this.aiMock, maskKey(activeApiKey), taskId, callStage);
+            // TEMP: 排查空响应根因，确认后删除
+            logAiCallTemp(taskId, callStage, debugTarget, "MOCK",
+                    "aiMock=" + this.aiMock + " apiKey=" + maskKey(activeApiKey) + " → return {}");
             saveCallRecordAndAudit(systemId, taskId, resolvePromptId(task, callStage), null,
                     null, modelToUse, currentEstimate, 2, "{}", true, "mock-mode", 100, callStage);
             return "{}";
@@ -1348,8 +1428,22 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             long duration = System.currentTimeMillis() - start;
 
             if (response.statusCode() == 200) {
-                JsonNode root = objectMapper.readTree(response.body());
-                String aiText = normalizeModelContent(root.path("choices").get(0).path("message").path("content").asText());
+                String rawBody = response.body();
+                JsonNode root = objectMapper.readTree(rawBody);
+                JsonNode choices = root.path("choices");
+                int choicesSize = choices.isArray() ? choices.size() : -1;
+                String finishReason = choicesSize > 0 ? choices.get(0).path("finish_reason").asText("") : "";
+                String rawContent = choicesSize > 0
+                        ? choices.get(0).path("message").path("content").asText(null)
+                        : null;
+                String aiText = normalizeModelContent(rawContent != null ? rawContent : "");
+                // TEMP: 排查空响应根因，确认后删除
+                logAiCallTemp(taskId, callStage, debugTarget, "HTTP_200",
+                        String.format("durationMs=%d choices=%d finish_reason=%s rawContentLen=%d normalizedLen=%d rawContent=\n%s",
+                                duration, choicesSize, finishReason,
+                                rawContent == null ? -1 : rawContent.length(),
+                                aiText.length(),
+                                rawContent == null ? "<null>" : rawContent));
                 int inTokens = root.path("usage").path("prompt_tokens").asInt(currentEstimate);
                 int outTokens = root.path("usage").path("completion_tokens").asInt(aiText.length() / 3);
                 saveCallRecordAndAudit(systemId, taskId, null, null,
@@ -1358,6 +1452,11 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             } else {
                 String errMsg = "HTTP " + response.statusCode() + ": " + response.body();
                 log.error("真实 AI 调用失败 task={} stage={} model={}: {}", taskId, callStage, modelToUse, errMsg);
+                // TEMP: 排查空响应根因，确认后删除
+                logAiCallTemp(taskId, callStage, debugTarget, "HTTP_ERROR",
+                        String.format("durationMs=%d status=%d body=\n%s → return {}",
+                                duration, response.statusCode(),
+                                truncateAiDebugBody(response.body())));
                 saveCallRecordAndAudit(systemId, taskId, null, null,
                         null, modelToUse, currentEstimate, 0, "{}", false, errMsg, duration, callStage);
                 return "{}";
@@ -1365,6 +1464,11 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
             log.error("真实 AI 调用异常 task={} stage={} model={}: {}", taskId, callStage, modelToUse, e.getMessage());
+            String kind = classifyAiCallFailure(e);
+            // TEMP: 排查空响应根因，确认后删除
+            logAiCallTemp(taskId, callStage, debugTarget, kind,
+                    String.format("durationMs=%d ex=%s msg=%s → return {}",
+                            duration, e.getClass().getName(), e.getMessage()));
             saveCallRecordAndAudit(systemId, taskId, resolvePromptId(task, callStage), null,
                     null, modelToUse, currentEstimate, 0, "{}", false, e.getMessage(), duration, callStage);
             return "{}";
@@ -1409,6 +1513,42 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         }
         String t = text.replace('\n', ' ').trim();
         return t.length() <= 200 ? t : t.substring(0, 200) + "...";
+    }
+
+    /** TEMP: 排查空响应根因，确认后删除 */
+    private void logAiCallTemp(Long taskId, String stage, String target, String kind, String detail) {
+        String msg = String.format("[AI-CALL-TEMP] stage=%s target=%s kind=%s %s",
+                stage, target, kind, detail);
+        log.warn(msg);
+        if (taskId != null) {
+            execLog.log(taskId, msg);
+        }
+    }
+
+    /** TEMP: 排查空响应根因，确认后删除 */
+    private static String classifyAiCallFailure(Exception e) {
+        Throwable cur = e;
+        while (cur != null) {
+            String name = cur.getClass().getName();
+            String msg = cur.getMessage() != null ? cur.getMessage() : "";
+            if (cur instanceof java.net.http.HttpTimeoutException
+                    || name.contains("Timeout")
+                    || msg.toLowerCase().contains("timed out")
+                    || msg.toLowerCase().contains("timeout")) {
+                return "TIMEOUT";
+            }
+            cur = cur.getCause();
+        }
+        return "EXCEPTION";
+    }
+
+    /** TEMP: 排查空响应根因，确认后删除 */
+    private static String truncateAiDebugBody(String body) {
+        if (body == null) {
+            return "<null>";
+        }
+        String t = body.trim();
+        return t.length() <= 2000 ? t : t.substring(0, 2000) + "...(truncated)";
     }
 
     private void logAiBlock(Long taskId, AiCallMeta callMeta, String reason) {

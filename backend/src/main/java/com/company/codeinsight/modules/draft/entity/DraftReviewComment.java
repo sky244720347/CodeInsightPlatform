@@ -3,17 +3,18 @@ package com.company.codeinsight.modules.draft.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 /**
  * 草稿评审复核意见实体类
  * 对应数据库中的 ci_draft_review_comment 表，保存评审人员在驳回或复核草稿时所填写的备注及批注意见。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_draft_review_comment")
-public class DraftReviewComment {
+public class DraftReviewComment extends BaseEntity {
 
     /**
      * 自增主键 ID
@@ -45,10 +46,4 @@ public class DraftReviewComment {
      * </ul>
      */
     private String type;
-
-    /**
-     * 评审记录创建时间
-     */
-    private LocalDateTime createdAt;
 }
-

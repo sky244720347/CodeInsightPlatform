@@ -53,6 +53,9 @@ public class MethodCallServiceImpl implements MethodCallService {
     @Autowired
     private JavaParserService javaParserService;
 
+    @Autowired
+    private com.company.codeinsight.modules.scanner.service.BaselineInheritanceService baselineInheritanceService;
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int persistAstForTask(Long taskId, File projectDir) {
@@ -74,7 +77,17 @@ public class MethodCallServiceImpl implements MethodCallService {
             return walkAndPersist(projectDir, projectDir, taskId, null);
         }
 
-        // 增量：先删「已删除文件」与「本次需重写文件」的历史记录
+        // v1 增量：基线 + 增量叠加
+        // 1) 从基线任务继承未变更文件的调用链（仅当 baselineTaskId 非空时执行）
+        if (effective.getBaselineTaskId() != null) {
+            // 排除路径 = 变更 + 删除
+            java.util.Set<String> excluded = new java.util.HashSet<>(effective.getChangedPaths().size() + effective.getDeletedPaths().size());
+            excluded.addAll(effective.getChangedPaths());
+            excluded.addAll(effective.getDeletedPaths());
+            baselineInheritanceService.inheritMethodCalls(taskId, effective.getBaselineTaskId(), excluded);
+        }
+
+        // 2) 已删除文件：从本任务 ci_method_call 删旧行
         if (!effective.getDeletedPaths().isEmpty()) {
             methodCallMapper.delete(
                     new LambdaQueryWrapper<MethodCall>()
@@ -82,6 +95,7 @@ public class MethodCallServiceImpl implements MethodCallService {
                             .in(MethodCall::getFilePath, effective.getDeletedPaths())
             );
         }
+        // 3) 本次重写文件：先删后插（基线继承的同 file_path 数据在删阶段一并清理）
         if (!effective.getChangedPaths().isEmpty()) {
             methodCallMapper.delete(
                     new LambdaQueryWrapper<MethodCall>()
@@ -89,7 +103,7 @@ public class MethodCallServiceImpl implements MethodCallService {
                             .in(MethodCall::getFilePath, effective.getChangedPaths())
             );
         }
-        // 只对变更文件重新解析；空集合 = 没有文件需要重写
+        // 4) 只对变更文件重新解析；空集合 = 没有文件需要重写
         int inserted = walkAndPersist(projectDir, projectDir, taskId, effective.getChangedPaths());
         log.info("AST incremental call-chain persistence done. taskId={}, ctx={}, callsInserted={}",
                 taskId, effective, inserted);
@@ -197,8 +211,10 @@ public class MethodCallServiceImpl implements MethodCallService {
                 mc.setExpression(truncate(src.getExpression(), MAX_EXPR_LEN));
                 mc.setLineNumber(src.getLineNumber());
                 // Phase 3：多态候选集透传（候选解析阶段已经在 parser 模块做完）
-                mc.setDependencyCandidates(src.getDependencyCandidates());
-                mc.setCreatedAt(LocalDateTime.now());
+                mc.setDependencyCandidates(com.company.codeinsight.common.util.DbStringLimits.truncate(
+                        src.getDependencyCandidates(),
+                        com.company.codeinsight.common.util.DbStringLimits.DEPENDENCY_CANDIDATES));
+                mc.setCreatedDate(LocalDateTime.now());
                 buffer.add(mc);
                 counters[2]++;
 

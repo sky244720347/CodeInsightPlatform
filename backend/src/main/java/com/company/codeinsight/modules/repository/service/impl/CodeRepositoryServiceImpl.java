@@ -46,7 +46,7 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
         queryWrapper.eq(systemId != null, CodeRepository::getSystemId, systemId)
                 .like(StringUtils.hasText(gitUrl), CodeRepository::getGitUrl, gitUrl)
                 .isNotNull(Boolean.TRUE.equals(hasPublished), CodeRepository::getLastPublishedVersionId)
-                .orderByDesc(CodeRepository::getCreatedAt);
+                .orderByDesc(CodeRepository::getCreatedDate);
         return this.page(page, queryWrapper);
     }
 

@@ -226,8 +226,8 @@ const TaskQueuePage: React.FC = () => {
       title: '排队时长',
       width: 160,
       render: (_: unknown, record: Task) => {
-        if (!record.createdAt) return '-';
-        const ms = Date.now() - new Date(record.createdAt).getTime();
+        if (!record.createdDate) return '-';
+        const ms = Date.now() - new Date(record.createdDate).getTime();
         const minutes = Math.floor(ms / 60000);
         const seconds = Math.floor((ms % 60000) / 1000);
         if (minutes > 0) return `${minutes} 分钟 ${seconds} 秒`;
@@ -236,8 +236,8 @@ const TaskQueuePage: React.FC = () => {
     },
     {
       title: '创建时间',
-      dataIndex: 'createdAt',
-      key: 'createdAt',
+      dataIndex: 'createdDate',
+      key: 'createdDate',
       width: 170,
       render: (time: string) => (time ? new Date(time).toLocaleString() : '-'),
     },

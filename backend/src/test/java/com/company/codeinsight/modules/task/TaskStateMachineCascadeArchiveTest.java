@@ -82,8 +82,8 @@ public class TaskStateMachineCascadeArchiveTest {
         ws.setSystemId(7001L);
         ws.setRepositoryId(7001L);
         ws.setStatus("ACTIVE");
-        ws.setCreatedAt(LocalDateTime.now());
-        ws.setUpdatedAt(LocalDateTime.now());
+        ws.setCreatedDate(LocalDateTime.now());
+        ws.setUpdatedDate(LocalDateTime.now());
         workspaceMapper.insert(ws);
         return ws;
     }
@@ -96,8 +96,8 @@ public class TaskStateMachineCascadeArchiveTest {
         draft.setContentUri("file:///tmp/" + moduleName + ".md");
         draft.setStatus(draftStatus);
         draft.setHash("hash-" + moduleName);
-        draft.setCreatedAt(LocalDateTime.now());
-        draft.setUpdatedAt(LocalDateTime.now());
+        draft.setCreatedDate(LocalDateTime.now());
+        draft.setUpdatedDate(LocalDateTime.now());
         draftMapper.insert(draft);
         return draft;
     }

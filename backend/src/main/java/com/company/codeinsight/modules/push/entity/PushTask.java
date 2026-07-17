@@ -3,7 +3,9 @@ package com.company.codeinsight.modules.push.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import java.time.LocalDateTime;
 
@@ -12,8 +14,9 @@ import java.time.LocalDateTime;
  * 对应数据库中的 ci_push_task 表，记录每次知识推送任务的生命周期状态与结果。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_push_task")
-public class PushTask {
+public class PushTask extends BaseEntity {
 
     /** 自增主键 ID */
     @TableId(type = IdType.AUTO)
@@ -48,7 +51,4 @@ public class PushTask {
 
     /** 完成时间 */
     private LocalDateTime completedAt;
-
-    /** 记录创建时间 */
-    private LocalDateTime createdAt;
 }

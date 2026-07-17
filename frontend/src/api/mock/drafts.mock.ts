@@ -49,8 +49,8 @@ const tasks: Task[] = [
     durationMs: 184200,
     startedAt: '2026-06-27T09:12:00.000Z',
     endedAt: '2026-06-27T09:15:04.200Z',
-    createdAt: '2026-06-27T09:12:00.000Z',
-    updatedAt: '2026-06-27T09:15:04.200Z',
+    createdDate: '2026-06-27T09:12:00.000Z',
+    updatedDate: '2026-06-27T09:15:04.200Z',
   },
   {
     id: 1002,
@@ -64,8 +64,8 @@ const tasks: Task[] = [
     durationMs: 92500,
     startedAt: '2026-06-28T10:30:00.000Z',
     endedAt: '2026-06-28T10:31:32.500Z',
-    createdAt: '2026-06-28T10:30:00.000Z',
-    updatedAt: '2026-06-28T10:31:32.500Z',
+    createdDate: '2026-06-28T10:30:00.000Z',
+    updatedDate: '2026-06-28T10:31:32.500Z',
   },
   {
     id: 1003,
@@ -79,8 +79,8 @@ const tasks: Task[] = [
     durationMs: 67800,
     startedAt: '2026-06-28T08:00:00.000Z',
     endedAt: '2026-06-28T08:01:07.800Z',
-    createdAt: '2026-06-28T08:00:00.000Z',
-    updatedAt: '2026-06-28T08:01:07.800Z',
+    createdDate: '2026-06-28T08:00:00.000Z',
+    updatedDate: '2026-06-28T08:01:07.800Z',
   },
   {
     id: 1004,
@@ -94,8 +94,8 @@ const tasks: Task[] = [
     durationMs: 213400,
     startedAt: '2026-06-25T14:00:00.000Z',
     endedAt: '2026-06-25T14:03:33.400Z',
-    createdAt: '2026-06-25T14:00:00.000Z',
-    updatedAt: '2026-06-25T14:03:33.400Z',
+    createdDate: '2026-06-25T14:00:00.000Z',
+    updatedDate: '2026-06-25T14:03:33.400Z',
   },
   {
     id: 1005,
@@ -109,8 +109,8 @@ const tasks: Task[] = [
     durationMs: 41200,
     startedAt: '2026-06-26T16:20:00.000Z',
     endedAt: '2026-06-26T16:20:41.200Z',
-    createdAt: '2026-06-26T16:20:00.000Z',
-    updatedAt: '2026-06-26T16:20:41.200Z',
+    createdDate: '2026-06-26T16:20:00.000Z',
+    updatedDate: '2026-06-26T16:20:41.200Z',
   },
 ];
 
@@ -121,8 +121,8 @@ const workspaces: DraftWorkspace[] = [
     systemId: 1,
     repositoryId: 11,
     status: 'ACTIVE',
-    createdAt: '2026-06-27T09:15:04.200Z',
-    updatedAt: '2026-06-28T11:18:00.000Z',
+    createdDate: '2026-06-27T09:15:04.200Z',
+    updatedDate: '2026-06-28T11:18:00.000Z',
   },
   {
     id: 5002,
@@ -130,8 +130,8 @@ const workspaces: DraftWorkspace[] = [
     systemId: 2,
     repositoryId: 21,
     status: 'ACTIVE',
-    createdAt: '2026-06-28T08:01:07.800Z',
-    updatedAt: '2026-06-28T08:01:07.800Z',
+    createdDate: '2026-06-28T08:01:07.800Z',
+    updatedDate: '2026-06-28T08:01:07.800Z',
   },
   {
     id: 5003,
@@ -139,8 +139,8 @@ const workspaces: DraftWorkspace[] = [
     systemId: 3,
     repositoryId: 31,
     status: 'COMPLETED',
-    createdAt: '2026-06-25T14:03:33.400Z',
-    updatedAt: '2026-06-26T16:20:41.200Z',
+    createdDate: '2026-06-25T14:03:33.400Z',
+    updatedDate: '2026-06-26T16:20:41.200Z',
   },
 ];
 
@@ -428,8 +428,8 @@ function buildDraft(
   status: string,
   sortOrder: number,
   isFolder: boolean,
-  createdAt: string,
-  updatedAt: string,
+  createdDate: string,
+  updatedDate: string,
 ): KnowledgeDraft {
   const draft: KnowledgeDraft = {
     id,
@@ -441,8 +441,8 @@ function buildDraft(
     status: isFolder ? 'DRAFT' : status,
     sortOrder,
     hash: isFolder ? '' : `mock-hash-${id}`,
-    createdAt,
-    updatedAt,
+    createdDate,
+    updatedDate,
   };
   draftStore.set(id, draft);
   return draft;
@@ -473,36 +473,36 @@ buildDraft(6302, 5003, null, 'alerts.md', '告警规则', 'CONFIRMED', 2, false,
 
 const revisions: DraftRevision[] = [
   // 订单服务总览
-  { id: nextRevId(), draftId: 6102, contentUri: 'mock://drafts/6102.md', author: 'AI', remark: 'AI 初次生成', createdAt: '2026-06-27T09:15:01.000Z' },
-  { id: nextRevId(), draftId: 6102, contentUri: 'mock://drafts/6102.md', author: '张伟', remark: '补充索引策略章节', createdAt: '2026-06-27T11:20:00.000Z' },
-  { id: nextRevId(), draftId: 6102, contentUri: 'mock://drafts/6102.md', author: '张伟', remark: '修复表格换行问题', createdAt: '2026-06-28T09:05:00.000Z' },
+  { id: nextRevId(), draftId: 6102, contentUri: 'mock://drafts/6102.md', author: 'AI', remark: 'AI 初次生成', createdDate: '2026-06-27T09:15:01.000Z' },
+  { id: nextRevId(), draftId: 6102, contentUri: 'mock://drafts/6102.md', author: '张伟', remark: '补充索引策略章节', createdDate: '2026-06-27T11:20:00.000Z' },
+  { id: nextRevId(), draftId: 6102, contentUri: 'mock://drafts/6102.md', author: '张伟', remark: '修复表格换行问题', createdDate: '2026-06-28T09:05:00.000Z' },
   // 订单状态机
-  { id: nextRevId(), draftId: 6103, contentUri: 'mock://drafts/6103.md', author: 'AI', remark: 'AI 初次生成', createdAt: '2026-06-27T09:15:02.000Z' },
-  { id: nextRevId(), draftId: 6103, contentUri: 'mock://drafts/6103.md', author: '李婷', remark: '调整状态图为 v2 语法', createdAt: '2026-06-28T10:00:00.000Z' },
+  { id: nextRevId(), draftId: 6103, contentUri: 'mock://drafts/6103.md', author: 'AI', remark: 'AI 初次生成', createdDate: '2026-06-27T09:15:02.000Z' },
+  { id: nextRevId(), draftId: 6103, contentUri: 'mock://drafts/6103.md', author: '李婷', remark: '调整状态图为 v2 语法', createdDate: '2026-06-28T10:00:00.000Z' },
   // 优惠券系统
-  { id: nextRevId(), draftId: 6201, contentUri: 'mock://drafts/6201.md', author: 'AI', remark: 'AI 初次生成', createdAt: '2026-06-28T08:01:00.000Z' },
+  { id: nextRevId(), draftId: 6201, contentUri: 'mock://drafts/6201.md', author: 'AI', remark: 'AI 初次生成', createdDate: '2026-06-28T08:01:00.000Z' },
 ];
 
 const comments: DraftReviewComment[] = [
-  { id: nextCmtId(), draftId: 6102, author: '王总监', comment: '建议补充订单合并支付的设计思路，未来是个高频场景。', type: 'NORMAL', createdAt: '2026-06-27T14:32:00.000Z' },
-  { id: nextCmtId(), draftId: 6102, author: '张伟', comment: '已加入待优化项清单，谢谢提醒。', type: 'NORMAL', createdAt: '2026-06-27T15:01:00.000Z' },
-  { id: nextCmtId(), draftId: 6103, author: '王总监', comment: '请补充异常分支的代码示例，便于新人理解。', type: 'NORMAL', createdAt: '2026-06-28T10:20:00.000Z' },
-  { id: nextCmtId(), draftId: 6201, author: '陈', comment: '券叠加规则需要和反作弊团队再 review 一遍。', type: 'NORMAL', createdAt: '2026-06-28T09:45:00.000Z' },
-  { id: nextCmtId(), draftId: 6106, author: '王总监', comment: '表结构与索引说明清晰，已通过审核。', type: 'PASS', createdAt: '2026-06-28T09:30:00.000Z' },
+  { id: nextCmtId(), draftId: 6102, author: '王总监', comment: '建议补充订单合并支付的设计思路，未来是个高频场景。', type: 'NORMAL', createdDate: '2026-06-27T14:32:00.000Z' },
+  { id: nextCmtId(), draftId: 6102, author: '张伟', comment: '已加入待优化项清单，谢谢提醒。', type: 'NORMAL', createdDate: '2026-06-27T15:01:00.000Z' },
+  { id: nextCmtId(), draftId: 6103, author: '王总监', comment: '请补充异常分支的代码示例，便于新人理解。', type: 'NORMAL', createdDate: '2026-06-28T10:20:00.000Z' },
+  { id: nextCmtId(), draftId: 6201, author: '陈', comment: '券叠加规则需要和反作弊团队再 review 一遍。', type: 'NORMAL', createdDate: '2026-06-28T09:45:00.000Z' },
+  { id: nextCmtId(), draftId: 6106, author: '王总监', comment: '表结构与索引说明清晰，已通过审核。', type: 'PASS', createdDate: '2026-06-28T09:30:00.000Z' },
   // 6203 的复核提示：v0.3 起不再用驳回机制，复核人通过直接编辑修改草稿
-  { id: nextCmtId(), draftId: 6203, author: '陈', comment: '建议补充风控接入说明，便于读者了解与反作弊团队的对接流程。', type: 'NORMAL', createdAt: '2026-06-28T09:30:00.000Z' },
+  { id: nextCmtId(), draftId: 6203, author: '陈', comment: '建议补充风控接入说明，便于读者了解与反作弊团队的对接流程。', type: 'NORMAL', createdDate: '2026-06-28T09:30:00.000Z' },
 ];
 
 const references: DraftSourceReference[] = [
-  { id: nextRefId(), draftId: 6102, filePath: 'orderhub/order-service/src/main/java/com/orderhub/OrderService.java', startLine: 1, endLine: 80, createdAt: '2026-06-27T09:15:01.000Z' },
-  { id: nextRefId(), draftId: 6102, filePath: 'orderhub/order-service/src/main/java/com/orderhub/state/OrderStatusMachine.java', startLine: 1, endLine: 120, createdAt: '2026-06-27T09:15:01.000Z' },
-  { id: nextRefId(), draftId: 6103, filePath: 'orderhub/order-service/src/main/java/com/orderhub/state/OrderStatusMachine.java', startLine: 30, endLine: 150, createdAt: '2026-06-27T09:15:02.000Z' },
-  { id: nextRefId(), draftId: 6104, filePath: 'orderhub/payment-service/src/main/java/com/orderhub/pay/PaymentCallbackService.java', startLine: 40, endLine: 220, createdAt: '2026-06-27T09:15:03.000Z' },
-  { id: nextRefId(), draftId: 6106, filePath: 'orderhub/order-repository/src/main/resources/db/schema.sql', startLine: 100, endLine: 180, createdAt: '2026-06-27T09:15:05.000Z' },
-  { id: nextRefId(), draftId: 6201, filePath: 'promo/coupon-service/src/main/java/com/promo/coupon/CouponService.java', startLine: 1, endLine: 90, createdAt: '2026-06-28T08:01:00.000Z' },
-  { id: nextRefId(), draftId: 6202, filePath: 'promo/rule-engine/src/main/java/com/promo/rule/FullReductionRule.java', startLine: 1, endLine: 60, createdAt: '2026-06-28T08:01:01.000Z' },
-  { id: nextRefId(), draftId: 6203, filePath: 'promo/user-integration/src/main/java/com/promo/profile/UserProfileClient.java', startLine: 1, endLine: 40, createdAt: '2026-06-28T08:01:02.000Z' },
-  { id: nextRefId(), draftId: 6301, filePath: 'monitor/exporter/src/main/java/com/monitor/MetricsExporter.java', startLine: 1, endLine: 70, createdAt: '2026-06-25T14:03:00.000Z' },
+  { id: nextRefId(), draftId: 6102, filePath: 'orderhub/order-service/src/main/java/com/orderhub/OrderService.java', startLine: 1, endLine: 80, createdDate: '2026-06-27T09:15:01.000Z' },
+  { id: nextRefId(), draftId: 6102, filePath: 'orderhub/order-service/src/main/java/com/orderhub/state/OrderStatusMachine.java', startLine: 1, endLine: 120, createdDate: '2026-06-27T09:15:01.000Z' },
+  { id: nextRefId(), draftId: 6103, filePath: 'orderhub/order-service/src/main/java/com/orderhub/state/OrderStatusMachine.java', startLine: 30, endLine: 150, createdDate: '2026-06-27T09:15:02.000Z' },
+  { id: nextRefId(), draftId: 6104, filePath: 'orderhub/payment-service/src/main/java/com/orderhub/pay/PaymentCallbackService.java', startLine: 40, endLine: 220, createdDate: '2026-06-27T09:15:03.000Z' },
+  { id: nextRefId(), draftId: 6106, filePath: 'orderhub/order-repository/src/main/resources/db/schema.sql', startLine: 100, endLine: 180, createdDate: '2026-06-27T09:15:05.000Z' },
+  { id: nextRefId(), draftId: 6201, filePath: 'promo/coupon-service/src/main/java/com/promo/coupon/CouponService.java', startLine: 1, endLine: 90, createdDate: '2026-06-28T08:01:00.000Z' },
+  { id: nextRefId(), draftId: 6202, filePath: 'promo/rule-engine/src/main/java/com/promo/rule/FullReductionRule.java', startLine: 1, endLine: 60, createdDate: '2026-06-28T08:01:01.000Z' },
+  { id: nextRefId(), draftId: 6203, filePath: 'promo/user-integration/src/main/java/com/promo/profile/UserProfileClient.java', startLine: 1, endLine: 40, createdDate: '2026-06-28T08:01:02.000Z' },
+  { id: nextRefId(), draftId: 6301, filePath: 'monitor/exporter/src/main/java/com/monitor/MetricsExporter.java', startLine: 1, endLine: 70, createdDate: '2026-06-25T14:03:00.000Z' },
 ];
 
 /* ============================================================
@@ -591,7 +591,7 @@ export async function mockListReviewableTasks(params: {
   return tasks
     .filter((t) => (params.systemId == null ? true : t.systemId === params.systemId))
     .filter((t) => statuses.includes(t.status))
-    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+    .sort((a, b) => (a.updatedDate < b.updatedDate ? 1 : -1));
 }
 
 export async function mockGetWorkspaceByTask(taskId: number): Promise<{ workspace: DraftWorkspace; drafts: KnowledgeDraft[] }> {
@@ -681,7 +681,7 @@ export async function mockSaveDraft(draftId: number, content: string, author?: s
   contentStore.set(draftId, content);
   const d = draftStore.get(draftId);
   if (d) {
-    d.updatedAt = nowIso();
+    d.updatedDate = nowIso();
     draftStore.set(draftId, d);
   }
   revisions.unshift({
@@ -690,7 +690,7 @@ export async function mockSaveDraft(draftId: number, content: string, author?: s
     contentUri: `mock://drafts/${draftId}.md`,
     author: author ?? 'Admin',
     remark: remark || '人工保存',
-    createdAt: nowIso(),
+    createdDate: nowIso(),
   });
 }
 
@@ -700,7 +700,7 @@ export async function mockAutoSaveDraft(draftId: number, content: string, _autho
   // 自动保存不产生修订记录，仅更新 updated_at（避免列表噪音）
   const d = draftStore.get(draftId);
   if (d) {
-    d.updatedAt = nowIso();
+    d.updatedDate = nowIso();
     draftStore.set(draftId, d);
   }
 }
@@ -710,7 +710,7 @@ export async function mockConfirmDraft(draftId: number, author?: string, comment
   const d = draftStore.get(draftId);
   if (!d) throw new Error(`草稿 ${draftId} 不存在`);
   d.status = 'CONFIRMED';
-  d.updatedAt = nowIso();
+  d.updatedDate = nowIso();
   draftStore.set(draftId, d);
   revisions.unshift({
     id: nextRevId(),
@@ -718,7 +718,7 @@ export async function mockConfirmDraft(draftId: number, author?: string, comment
     contentUri: `mock://drafts/${draftId}.md`,
     author: author ?? 'Admin',
     remark: '复核通过 · 已确认',
-    createdAt: nowIso(),
+    createdDate: nowIso(),
   });
   // 填写了通过意见则写入复核意见表（type=PASS）
   if (comment && comment.trim()) {
@@ -728,7 +728,7 @@ export async function mockConfirmDraft(draftId: number, author?: string, comment
       author: author ?? 'Admin',
       comment: comment.trim(),
       type: 'PASS',
-      createdAt: nowIso(),
+      createdDate: nowIso(),
     });
   }
 }
@@ -742,14 +742,14 @@ export async function mockGetRevisions(draftId: number): Promise<DraftRevision[]
   await wait(80);
   return revisions
     .filter((r) => r.draftId === draftId)
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    .sort((a, b) => (a.createdDate < b.createdDate ? 1 : -1));
 }
 
 export async function mockGetComments(draftId: number): Promise<DraftReviewComment[]> {
   await wait(80);
   return comments
     .filter((c) => c.draftId === draftId)
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+    .sort((a, b) => (a.createdDate < b.createdDate ? 1 : -1));
 }
 
 /**
@@ -768,7 +768,7 @@ export async function mockListTaskComments(
   }
   return comments
     .filter((c) => draftMap.has(c.draftId))
-    .sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+    .sort((a, b) => (a.createdDate < b.createdDate ? 1 : -1))
     .map((c) => {
       const d = draftMap.get(c.draftId)!;
       return {
@@ -779,7 +779,7 @@ export async function mockListTaskComments(
         author: c.author,
         comment: c.comment,
         type: c.type,
-        createdAt: c.createdAt,
+        createdDate: c.createdDate,
       };
     });
 }
@@ -805,11 +805,11 @@ export async function mockGetRepositoryReadiness(): Promise<RepositoryReadiness>
         moduleName: d.moduleName,
         status: d.status,
         workspaceId: d.workspaceId,
-        updatedAt: d.updatedAt,
+        updatedDate: d.updatedDate,
       });
     }
   }
-  blocking.sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+  blocking.sort((a, b) => (a.updatedDate < b.updatedDate ? 1 : -1));
   // 把 workspace 关联信息补全（taskId / systemId / repositoryId）
   for (const item of blocking) {
     const ws = workspaces.find((w) => w.id === item.workspaceId);
@@ -834,5 +834,5 @@ export async function mockListAllTasksBySystem(systemId: number): Promise<Task[]
   await wait(120);
   return tasks
     .filter((t) => t.systemId === systemId)
-    .sort((a, b) => (a.updatedAt < b.updatedAt ? 1 : -1));
+    .sort((a, b) => (a.updatedDate < b.updatedDate ? 1 : -1));
 }

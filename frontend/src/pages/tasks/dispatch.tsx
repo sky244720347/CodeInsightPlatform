@@ -727,8 +727,8 @@ const TaskDispatchPage: React.FC = () => {
                     },
                     {
                       title: '更新时间',
-                      dataIndex: 'updatedAt',
-                      key: 'updatedAt',
+                      dataIndex: 'updatedDate',
+                      key: 'updatedDate',
                       width: 170,
                       render: (t: string) => (t ? new Date(t).toLocaleString() : '-'),
                     },

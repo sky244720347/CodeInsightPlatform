@@ -11,9 +11,9 @@ import java.util.List;
 @Mapper
 public interface RepositoryPublishSnapshotMapper extends BaseMapper<RepositoryPublishSnapshot> {
 
-    @Select("SELECT * FROM ci_repository_publish_snapshot WHERE version_id = #{versionId} LIMIT 1")
+    @Select("SELECT * FROM ci_repository_publish_snapshot WHERE version_id = #{versionId} AND is_deleted = 0 LIMIT 1")
     RepositoryPublishSnapshot selectByVersionId(@Param("versionId") Long versionId);
 
-    @Select("SELECT * FROM ci_repository_publish_snapshot WHERE repository_id = #{repositoryId} ORDER BY published_at DESC")
+    @Select("SELECT * FROM ci_repository_publish_snapshot WHERE repository_id = #{repositoryId} AND is_deleted = 0 ORDER BY published_at DESC")
     List<RepositoryPublishSnapshot> selectByRepositoryId(@Param("repositoryId") Long repositoryId);
 }

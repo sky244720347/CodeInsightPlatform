@@ -2,6 +2,7 @@ package com.company.codeinsight.modules.callchain.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.company.codeinsight.modules.callchain.entity.MethodCall;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 import org.apache.ibatis.annotations.Select;
@@ -31,7 +32,7 @@ public interface MethodCallMapper extends BaseMapper<MethodCall> {
      */
     @Select("<script>" +
             "SELECT DISTINCT caller_signature FROM ci_method_call " +
-            "WHERE task_id = #{taskId} " +
+            "WHERE task_id = #{taskId} AND is_deleted = 0 " +
             "AND caller_signature IN " +
             "<foreach collection='fullSignatures' item='sig' open='(' separator=',' close=')'>" +
             "#{sig}" +
@@ -39,4 +40,28 @@ public interface MethodCallMapper extends BaseMapper<MethodCall> {
             "</script>")
     List<String> selectExistingCallerSignatures(@Param("taskId") Long taskId,
                                                  @Param("fullSignatures") List<String> fullSignatures);
+
+    /**
+     * v1: 从基线任务继承方法调用链到本任务。
+     * <p>仅复制基线任务中 file_path 不在 excludedPaths 集合内的行；
+     * 复制时把 task_id 改为 currentTaskId，并保留每行自身的 baseline_task_id。</p>
+     */
+    @Insert("<script>" +
+            "INSERT INTO ci_method_call " +
+            "(task_id, file_path, class_name, caller_method, dependency_name, target_method, expression, line_number, " +
+            " caller_signature, target_signature, dependency_candidates, baseline_task_id, created_date) " +
+            "SELECT " +
+            "  #{currentTaskId}, file_path, class_name, caller_method, dependency_name, target_method, expression, line_number, " +
+            "  caller_signature, target_signature, dependency_candidates, #{baselineTaskId}, created_date " +
+            "FROM ci_method_call " +
+            "WHERE task_id = #{baselineTaskId} " +
+            "AND is_deleted = 0 " +
+            "AND file_path NOT IN " +
+            "<foreach collection='excludedPaths' item='p' open='(' separator=',' close=')'>" +
+            "  #{p} " +
+            "</foreach>" +
+            "</script>")
+    int inheritFromBaseline(@Param("currentTaskId") Long currentTaskId,
+                            @Param("baselineTaskId") Long baselineTaskId,
+                            @Param("excludedPaths") List<String> excludedPaths);
 }

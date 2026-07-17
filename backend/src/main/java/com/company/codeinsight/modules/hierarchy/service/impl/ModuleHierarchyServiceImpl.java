@@ -48,6 +48,7 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Iterator;
+import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
@@ -103,6 +104,15 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
 
     @Autowired
     private TaskExecutionLogger execLog;
+
+    @Autowired
+    private com.company.codeinsight.modules.entrypoint.mapper.EntrypointMapper entrypointMapper;
+
+    @Autowired
+    private com.company.codeinsight.modules.repository.service.CodeRepositoryService codeRepositoryService;
+
+    @Autowired
+    private com.company.codeinsight.modules.scanner.service.BaselineInheritanceService baselineInheritanceService;
 
     @Autowired
     private PromptTemplateLoader promptTemplateLoader;
@@ -161,10 +171,46 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         }
         IncrementalContext effective = ctx == null ? IncrementalContext.fullScan() : ctx;
 
-        // 1. 加载已有节点 → 重建 DTO
+        // v1: INCREMENTAL 任务下，先从基线任务继承整树
+        //    （基线节点全部入库；后续 AI 重提炼 retarget 入口时，会先把 retarget 入口的旧节点 delete 再重做）
+        if (effective.isIncremental() && effective.getBaselineTaskId() != null) {
+            int inherited = baselineInheritanceService.inheritModuleHierarchy(taskId, effective.getBaselineTaskId());
+            log.info("ModuleHierarchy.buildAndPersist — INCREMENTAL 任务从基线继承整树 taskId={} baselineTaskId={} rows={}",
+                    taskId, effective.getBaselineTaskId(), inherited);
+        }
+
+        // 1. 加载已有节点 → 重建 DTO（INCREMENTAL 任务下这里会包含基线继承的节点）
         ModuleHierarchy hierarchy = loadByTaskId(taskId);
         hierarchy.setTaskId(taskId);
         hierarchy.setSystemId(task.getSystemId());
+
+        // 1.5 【v1 重构】预处理：基于入口 diff 剔除被删入口对应的整模块
+        //    同步逻辑删 DB + reserved node_id，禁止 AI 占用已删模块 id（见方案 §5.2.1）
+        Set<String> reservedDeletedNodeIds = new HashSet<>();
+        if (effective.isIncremental() && effective.getBaselineTaskId() != null) {
+            Set<String> currentNames = new HashSet<>();
+            for (EntryPoint ep : entrypointReviewService.loadEnabledEntries(taskId)) {
+                if (ep.getClassName() != null) currentNames.add(ep.getClassName());
+            }
+            Set<String> deletedNames = new HashSet<>();
+            for (com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity be :
+                    entrypointMapper.selectByTaskId(effective.getBaselineTaskId())) {
+                if (be.getClassName() != null && !currentNames.contains(be.getClassName())) {
+                    deletedNames.add(be.getClassName());
+                }
+            }
+            List<ModuleDto> preprocessedDeleted = preprocessHierarchy(hierarchy, currentNames, deletedNames);
+            for (ModuleDto deletedMod : preprocessedDeleted) {
+                collectModuleTreeNodeIds(deletedMod, reservedDeletedNodeIds);
+            }
+            if (!reservedDeletedNodeIds.isEmpty()) {
+                int softDeleted = nodeMapper.deleteByTaskIdAndNodeIds(taskId, reservedDeletedNodeIds);
+                log.info("预处理逻辑删已删入口模块树 — taskId={} reservedNodeIds={} dbRows={}",
+                        taskId, reservedDeletedNodeIds.size(), softDeleted);
+            }
+            log.info("ModuleHierarchy.buildAndPersist 预处理 — taskId={} baselineTaskId={} deletedEntries={} preprocessedDeletedModules={}",
+                    taskId, effective.getBaselineTaskId(), deletedNames.size(), preprocessedDeleted.size());
+        }
 
         // 2. 读取已落表的入口（用户在 ENTRYPOINT_REVIEW 阶段确认后的快照）；
         //    这里不再做入口识别与 EntryPointConfig 解析——由 ENTRYPOINT_REVIEW 阶段统一负责并落表。
@@ -195,28 +241,47 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
 
         int processedByAi = 0;
         if (!toProcess.isEmpty()) {
-            // 4a. 并行调用 AI（每个入口独立请求，I/O 密集型，线程池控制并发度为 4）
+            // 方案 B：INITIAL 全量重写 binding 前先逻辑删腾出 uk_mfb_*_active
+            if (!effective.isIncremental() && methodFunctionBindingMapper != null) {
+                methodFunctionBindingMapper.deleteByTaskId(taskId);
+            }
+            // INCREMENTAL：不再按 sourceEntryClass 整入口清空 FUNCTION（否则 AI 会重划未变方法的挂载）。
+            // 删除签名的清理在 merge 后 purgeDeletedMethodSignatures 中按入口 DIFF 处理。
             final String finalPrompt = promptTemplate;
             final com.company.codeinsight.modules.entrypoint.model.EntryPointConfig finalConfig =
                     entrypointReviewService.resolveConfig(task);
             final DecompileTask finalTask = task;
             final File finalProjectDir = projectDir;
-            List<CompletableFuture<JsonNode>> futures = toProcess.stream()
-                    .map(entry -> CompletableFuture.supplyAsync(
-                            () -> callAiForEntry(finalTask, entry, finalPrompt, finalProjectDir, finalConfig),
-                            aiExecutor))
-                    .toList();
-
-            // 4b. 顺序合并结果到 DTO（共享 hierarchy 需要单线程写入）
-            for (int i = 0; i < futures.size(); i++) {
-                JsonNode inc = futures.get(i).join();
+            Long baselineTaskIdForDiff = effective.isIncremental() ? effective.getBaselineTaskId() : null;
+            for (EntryPoint entry : toProcess) {
+                Map<String, String> methodDiffBySig = baselineTaskIdForDiff == null
+                        ? java.util.Collections.emptyMap()
+                        : buildEntrypointMethodDiffStatus(taskId, baselineTaskIdForDiff, entry.getClassName());
+                JsonNode inc = callAiForEntry(finalTask, entry, finalPrompt, finalProjectDir, finalConfig,
+                        hierarchy, methodDiffBySig);
                 if (inc != null) {
-                    mergeEntryResult(hierarchy, toProcess.get(i), inc, methodsByClass);
+                    mergeEntryResult(hierarchy, entry, inc, methodDiffBySig, reservedDeletedNodeIds);
+                    purgeDeletedMethodSignatures(hierarchy, methodDiffBySig);
                     persistMethodBindingsFromIncrement(taskId, task.getSystemId(),
-                            toProcess.get(i), inc, methodsByClass);
+                            entry, inc, methodsByClass);
                     processedByAi++;
+                    log.info("MODULE_HIERARCHY 串行处理进度 — taskId={} {}/{} entry={} modules={}",
+                            taskId, processedByAi, toProcess.size(), entry.getClassName(),
+                            hierarchy.getModules().size());
                 }
             }
+        }
+
+        // 1.7 合并后按基线同名强制改回旧 ID（AI 发明新 id 时的兜底，如 mK7qP→mQ8nR）
+        if (effective.isIncremental() && effective.getBaselineTaskId() != null) {
+            ModuleHierarchy baselineForReconcile = loadByTaskId(effective.getBaselineTaskId());
+            reconcileModuleIdsWithBaseline(hierarchy, baselineForReconcile);
+        }
+
+        // 1.8 【v1 重构】反向检索：按 methodSignature 配对基线 vs 当前，给每个 FUNCTION 标 diffStatus
+        if (effective.isIncremental() && effective.getBaselineTaskId() != null) {
+            ModuleHierarchy baseline = loadByTaskId(effective.getBaselineTaskId());
+            reverseEngineerDiff(hierarchy, baseline);
         }
 
         backfillMethodSignaturesFromEntrypoints(hierarchy, methodsByClass);
@@ -228,8 +293,15 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     taskId, effective.getDeletedPaths().size(), removedRefs);
         }
 
-        // 6. 全量重写（保证幂等；增量模式下未变节点仍会被原样重写）
-        persistAll(taskId, task.getSystemId(), hierarchy);
+        // 6. 落表：
+        //   - INITIAL 模式：走原 persistAll（deleteByTaskId + 3 步 batchInsert）
+        //   - INCREMENTAL 模式：retarget 入口的旧节点已在前置步骤删除；其余节点来自基线继承不动；
+        //     只对 retarget 入口的新 DTO 子树做 batchInsert 3 步（生成新 DB ID 和 parent_id）
+        if (effective.isIncremental()) {
+            persistIncremental(taskId, task.getSystemId(), hierarchy, toProcess);
+        } else {
+            persistAll(taskId, task.getSystemId(), hierarchy);
+        }
 
         int failedByAi = toProcess.size() - processedByAi;
         execLog.log(taskId, String.format(
@@ -239,6 +311,167 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         log.info("ModuleHierarchyService.buildAndPersist done. taskId={} modules={} functions={} aiCalls={} skipped={}",
                 taskId, hierarchy.getModules().size(), countFunctions(hierarchy), processedByAi, skippedByIncremental);
         return hierarchy;
+    }
+
+    /**
+     * v1: 增量模式落表。
+     * <p>语义：
+     * <ul>
+     *   <li>retarget 入口的旧节点已在前置 {@code deleteByTaskIdAndSourceEntryClass} 删除</li>
+     *   <li>基线继承的节点不动</li>
+     *   <li>AI 重提炼产生的新 DTO 子树用 3 步 batchInsert（MODULE → SUB_MODULE → FUNCTION）落表</li>
+     * </ul>
+     * </p>
+     * <p>实现细节：toProcess 列表里的入口对应的"新生成的 DTO 节点"靠 DTO 的判定
+     * （AI 重提炼会通过 {@link #mergeEntryResult} 把节点挂到 hierarchy 上），
+     * 落表时按"DB 中已存在的 nodeId 跳过"避免重复插入。</p>
+     */
+    /**
+     * 增量落表：基线节点不动；仅 insert 内存树中 DB 尚不存在的 node_id。
+     * <p>支持「复用已有 MODULE/SUB，只追加新 FUNCTION」——同名强制复用 ID 后必须能把新功能写进已有模块下。</p>
+     */
+    private void persistIncremental(Long taskId, Long systemId, ModuleHierarchy hierarchy,
+                                     List<EntryPoint> toProcess) {
+        if (hierarchy.getModules().isEmpty()) {
+            return;
+        }
+        Set<String> existingNodeIds = new HashSet<>();
+        List<ModuleHierarchyNode> existingRows = nodeMapper.selectList(
+                new LambdaQueryWrapper<ModuleHierarchyNode>().eq(ModuleHierarchyNode::getTaskId, taskId));
+        for (ModuleHierarchyNode r : existingRows) {
+            if (StringUtils.hasText(r.getNodeId())) {
+                existingNodeIds.add(r.getNodeId());
+            }
+        }
+
+        LocalDateTime now = LocalDateTime.now();
+        String sourceEntry = firstToProcessClassName(toProcess);
+
+        // MODULE：只插新 id
+        List<ModuleHierarchyNode> modRows = new ArrayList<>();
+        for (ModuleDto m : hierarchy.getModules().values()) {
+            if (existingNodeIds.contains(m.getId())) {
+                continue;
+            }
+            ModuleHierarchyNode modRow = new ModuleHierarchyNode();
+            modRow.setTaskId(taskId);
+            modRow.setSystemId(systemId);
+            modRow.setLevel(LEVEL_MODULE);
+            modRow.setParentId(null);
+            modRow.setNodeId(m.getId());
+            modRow.setName(m.getModuleName());
+            modRow.setKeywords(serializeJsonArray(m.getKeywords()));
+            modRow.setClassPaths(null);
+            modRow.setConfirmed(Boolean.TRUE.equals(m.getConfirmed()));
+            modRow.setSourceEntryClass(sourceEntry);
+            modRow.setCreatedDate(now);
+            modRow.setUpdatedDate(now);
+            modRows.add(modRow);
+        }
+        if (!modRows.isEmpty()) {
+            nodeMapper.batchInsert(modRows);
+        }
+        Map<String, Long> moduleRowIdByNodeId = loadTaskNodeIdToPk(taskId, LEVEL_MODULE);
+
+        // SUB_MODULE：父模块可以是基线已有；只插新 sub id
+        List<ModuleHierarchyNode> subRows = new ArrayList<>();
+        Set<String> seenSubNodeIds = new HashSet<>();
+        for (ModuleDto m : hierarchy.getModules().values()) {
+            Long parentRowId = moduleRowIdByNodeId.get(m.getId());
+            if (parentRowId == null) {
+                continue;
+            }
+            for (SubModuleDto sm : m.getSubModules().values()) {
+                if (!seenSubNodeIds.add(sm.getId())) {
+                    continue;
+                }
+                if (existingNodeIds.contains(sm.getId())) {
+                    continue;
+                }
+                ModuleHierarchyNode subRow = new ModuleHierarchyNode();
+                subRow.setTaskId(taskId);
+                subRow.setSystemId(systemId);
+                subRow.setLevel(LEVEL_SUB_MODULE);
+                subRow.setParentId(parentRowId);
+                subRow.setNodeId(sm.getId());
+                subRow.setName(sm.getSubModuleName());
+                subRow.setKeywords(serializeJsonArray(sm.getKeywords()));
+                subRow.setClassPaths(null);
+                subRow.setConfirmed(Boolean.TRUE.equals(sm.getConfirmed()));
+                subRow.setSourceEntryClass(sourceEntry);
+                subRow.setCreatedDate(now);
+                subRow.setUpdatedDate(now);
+                subRows.add(subRow);
+            }
+        }
+        if (!subRows.isEmpty()) {
+            nodeMapper.batchInsert(subRows);
+        }
+        Map<String, Long> subModuleRowIdByNodeId = loadTaskNodeIdToPk(taskId, LEVEL_SUB_MODULE);
+
+        // FUNCTION：父 sub 可以是基线已有；只插新 function id
+        List<ModuleHierarchyNode> fnRows = new ArrayList<>();
+        Set<String> seenFunctionNodeIds = new HashSet<>();
+        for (ModuleDto m : hierarchy.getModules().values()) {
+            for (SubModuleDto sm : m.getSubModules().values()) {
+                Long parentRowId = subModuleRowIdByNodeId.get(sm.getId());
+                if (parentRowId == null) {
+                    continue;
+                }
+                for (FunctionDto fn : sm.getFunctions().values()) {
+                    if (!seenFunctionNodeIds.add(fn.getId())) {
+                        continue;
+                    }
+                    if (existingNodeIds.contains(fn.getId())) {
+                        continue;
+                    }
+                    ModuleHierarchyNode fnRow = new ModuleHierarchyNode();
+                    fnRow.setTaskId(taskId);
+                    fnRow.setSystemId(systemId);
+                    fnRow.setLevel(LEVEL_FUNCTION);
+                    fnRow.setParentId(parentRowId);
+                    fnRow.setNodeId(fn.getId());
+                    fnRow.setName(fn.getFunctionName());
+                    fnRow.setKeywords(null);
+                    fnRow.setClassPaths(serializeJsonArray(new ArrayList<>(fn.getClassPaths())));
+                    fnRow.setMethodSignatures(serializeJsonArray(new ArrayList<>(fn.getMethodSignatures())));
+                    fnRow.setConfirmed(Boolean.TRUE.equals(fn.getConfirmed()));
+                    fnRow.setSourceEntryClass(sourceEntry);
+                    fnRow.setCreatedDate(now);
+                    fnRow.setUpdatedDate(now);
+                    fnRows.add(fnRow);
+                }
+            }
+        }
+        if (!fnRows.isEmpty()) {
+            nodeMapper.batchInsert(fnRows);
+        }
+        log.info("persistIncremental done. taskId={} newModules={} newSubModules={} newFunctions={}",
+                taskId, modRows.size(), subRows.size(), fnRows.size());
+    }
+
+    private Map<String, Long> loadTaskNodeIdToPk(Long taskId, String level) {
+        Map<String, Long> map = new HashMap<>();
+        List<ModuleHierarchyNode> rows = nodeMapper.selectList(
+                new LambdaQueryWrapper<ModuleHierarchyNode>()
+                        .eq(ModuleHierarchyNode::getTaskId, taskId)
+                        .eq(ModuleHierarchyNode::getLevel, level));
+        for (ModuleHierarchyNode n : rows) {
+            if (StringUtils.hasText(n.getNodeId())) {
+                map.put(n.getNodeId(), n.getId());
+            }
+        }
+        return map;
+    }
+
+    /**
+     * 辅助：取 retarget 入口列表中第一个的 className 作为 sourceEntryClass 标记
+     * （当 toProcess 只有一个入口时，这就是该入口；多个入口时仍能追溯到任一处理方）
+     */
+    private String firstToProcessClassName(List<EntryPoint> toProcess) {
+        if (toProcess == null || toProcess.isEmpty()) return null;
+        EntryPoint first = toProcess.get(0);
+        return first == null ? null : first.getClassName();
     }
 
     /**
@@ -328,6 +561,7 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                 m.setModuleName(n.getName());
                 m.setKeywords(parseJsonArray(n.getKeywords()));
                 m.setConfirmed(n.getConfirmed());
+                m.setSourceEntryClass(n.getSourceEntryClass());
                 hierarchy.getModules().put(m.getId(), m);
             } else if (LEVEL_SUB_MODULE.equals(n.getLevel()) && n.getParentId() != null) {
                 ModuleHierarchyNode parent = idToNode.get(n.getParentId());
@@ -362,6 +596,7 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     fn.setClassPaths(new LinkedHashSet<>(parseJsonArray(n.getClassPaths())));
                     fn.setMethodSignatures(new LinkedHashSet<>(parseJsonArray(n.getMethodSignatures())));
                     fn.setConfirmed(n.getConfirmed());
+                    fn.setSourceEntryClass(n.getSourceEntryClass());
                     sm.getFunctions().put(fn.getId(), fn);
                 }
             }
@@ -369,15 +604,511 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         return hierarchy;
     }
 
+    @Override
+    public com.company.codeinsight.modules.hierarchy.dto.ModuleHierarchyDiffDto getHierarchyDiff(Long taskId) {
+        com.company.codeinsight.modules.hierarchy.dto.ModuleHierarchyDiffDto result =
+                new com.company.codeinsight.modules.hierarchy.dto.ModuleHierarchyDiffDto();
+        DecompileTask task = taskMapper.selectById(taskId);
+        if (task == null) {
+            return result;
+        }
+        if (!"INCREMENTAL".equals(task.getType()) || task.getRepositoryId() == null) {
+            return result;
+        }
+        com.company.codeinsight.modules.repository.entity.CodeRepository repo =
+                codeRepositoryService.getById(task.getRepositoryId());
+        Long baselineTaskId = repo == null ? null : repo.getLastPublishedTaskId();
+        if (baselineTaskId == null) {
+            return result;
+        }
+
+        // 每次请求现场加载并重算——不依赖 build 阶段未落库的 diffStatus / 单例缓存
+        ModuleHierarchy current = loadByTaskId(taskId);
+        ModuleHierarchy baseline = loadByTaskId(baselineTaskId);
+        reverseEngineerDiff(current, baseline);
+
+        ModuleHierarchy newHier = newEmptyHierarchy(taskId, task.getSystemId());
+        ModuleHierarchy modifiedHier = newEmptyHierarchy(taskId, task.getSystemId());
+        ModuleHierarchy inheritedHier = newEmptyHierarchy(taskId, task.getSystemId());
+        ModuleHierarchy deletedHier = newEmptyHierarchy(baselineTaskId, task.getSystemId());
+
+        Map<String, ModuleDto> currentMods = current != null && current.getModules() != null
+                ? current.getModules() : java.util.Collections.emptyMap();
+        Map<String, ModuleDto> baselineMods = baseline != null && baseline.getModules() != null
+                ? baseline.getModules() : java.util.Collections.emptyMap();
+
+        // 先 ID 精确配对，再同名 1:1 兜底（避免「商品管理」成对新增+删除）
+        Map<String, String> currentToBaselineId = pairModulesForDiff(currentMods, baselineMods);
+        Set<String> matchedBaselineIds = new HashSet<>(currentToBaselineId.values());
+
+        for (ModuleDto m : currentMods.values()) {
+            String pairedBaselineId = currentToBaselineId.get(m.getId());
+            ModuleDto bm = pairedBaselineId == null ? null : baselineMods.get(pairedBaselineId);
+            ModuleDto cp = copyModuleTree(m);
+            if (bm == null) {
+                // 真新增：清空跨基线签名误标的 ~改，统一按 new 展示
+                markAllFunctionsNew(cp);
+                cp.setDiffStatus("new");
+                newHier.getModules().put(m.getId(), cp);
+            } else if (isModuleContentModified(m, bm)) {
+                // classPaths / 方法签名 / 功能名 任一相对基线有变 → 本次变更（含仅功能级 +/-/~）
+                cp.setDiffStatus("modified");
+                modifiedHier.getModules().put(m.getId(), cp);
+            } else {
+                cp.setDiffStatus("unchanged");
+                inheritedHier.getModules().put(m.getId(), cp);
+            }
+        }
+        for (ModuleDto bm : baselineMods.values()) {
+            if (!matchedBaselineIds.contains(bm.getId())) {
+                ModuleDto cp = copyModuleTree(bm);
+                cp.setDiffStatus("deleted");
+                deletedHier.getModules().put(bm.getId(), cp);
+            }
+        }
+
+        result.setNewHierarchy(newHier);
+        result.setModifiedHierarchy(modifiedHier);
+        result.setInheritedHierarchy(inheritedHier);
+        result.setDeletedHierarchy(deletedHier);
+        log.info("ModuleHierarchyDiff — taskId={} baselineTaskId={} newMod={} modifiedMod={} inheritedMod={} deletedMod={}",
+                taskId, baselineTaskId,
+                newHier.getModules().size(), modifiedHier.getModules().size(),
+                inheritedHier.getModules().size(), deletedHier.getModules().size());
+        return result;
+    }
+
+    /**
+     * 模块配对：先 moduleId，再 normalize(moduleName) 1:1；同名多模块时 classPaths Jaccard 优先。
+     * @return currentModuleId → baselineModuleId
+     */
+    private Map<String, String> pairModulesForDiff(Map<String, ModuleDto> currentMods,
+                                                   Map<String, ModuleDto> baselineMods) {
+        Map<String, String> currentToBaseline = new HashMap<>();
+        Set<String> matchedBaseline = new HashSet<>();
+
+        for (ModuleDto m : currentMods.values()) {
+            if (baselineMods.containsKey(m.getId())) {
+                currentToBaseline.put(m.getId(), m.getId());
+                matchedBaseline.add(m.getId());
+            }
+        }
+
+        Map<String, List<ModuleDto>> unmatchedBaselineByName = new HashMap<>();
+        for (ModuleDto bm : baselineMods.values()) {
+            if (matchedBaseline.contains(bm.getId())) {
+                continue;
+            }
+            String key = normalizeModuleNameKey(bm.getModuleName());
+            if (key == null) {
+                continue;
+            }
+            unmatchedBaselineByName.computeIfAbsent(key, k -> new ArrayList<>()).add(bm);
+        }
+
+        List<ModuleDto> unmatchedCurrent = new ArrayList<>();
+        for (ModuleDto m : currentMods.values()) {
+            if (!currentToBaseline.containsKey(m.getId())) {
+                unmatchedCurrent.add(m);
+            }
+        }
+        // 稳定顺序，便于平局时字典序
+        unmatchedCurrent.sort((a, b) -> String.valueOf(a.getId()).compareTo(String.valueOf(b.getId())));
+
+        for (ModuleDto m : unmatchedCurrent) {
+            String key = normalizeModuleNameKey(m.getModuleName());
+            if (key == null) {
+                continue;
+            }
+            List<ModuleDto> candidates = unmatchedBaselineByName.get(key);
+            if (candidates == null || candidates.isEmpty()) {
+                continue;
+            }
+            ModuleDto best = pickBestNameMatch(m, candidates);
+            if (best == null) {
+                continue;
+            }
+            candidates.remove(best);
+            currentToBaseline.put(m.getId(), best.getId());
+            matchedBaseline.add(best.getId());
+            log.info("DIFF_NAME_PAIR current={} baseline={} name={}", m.getId(), best.getId(), m.getModuleName());
+        }
+        return currentToBaseline;
+    }
+
+    private String normalizeModuleNameKey(String name) {
+        if (!StringUtils.hasText(name)) {
+            return null;
+        }
+        return name.trim();
+    }
+
+    /** 同名候选中选 classPaths Jaccard 最大者；平局取 id 字典序最小 */
+    private ModuleDto pickBestNameMatch(ModuleDto current, List<ModuleDto> candidates) {
+        if (candidates == null || candidates.isEmpty()) {
+            return null;
+        }
+        Set<String> curPaths = collectFunctionClassPaths(current);
+        ModuleDto best = null;
+        double bestScore = -1;
+        for (ModuleDto c : candidates) {
+            double score = jaccard(curPaths, collectFunctionClassPaths(c));
+            if (best == null
+                    || score > bestScore
+                    || (score == bestScore && String.valueOf(c.getId()).compareTo(String.valueOf(best.getId())) < 0)) {
+                best = c;
+                bestScore = score;
+            }
+        }
+        return best;
+    }
+
+    private double jaccard(Set<String> a, Set<String> b) {
+        if (a.isEmpty() && b.isEmpty()) {
+            return 1.0;
+        }
+        if (a.isEmpty() || b.isEmpty()) {
+            return 0.0;
+        }
+        int inter = 0;
+        for (String x : a) {
+            if (b.contains(x)) {
+                inter++;
+            }
+        }
+        int union = a.size() + b.size() - inter;
+        return union == 0 ? 0.0 : (double) inter / union;
+    }
+
+    /** 真新增模块：功能统一标 new，避免跨基线签名误出 ~改 */
+    private void markAllFunctionsNew(ModuleDto m) {
+        if (m == null || m.getSubModules() == null) {
+            return;
+        }
+        for (SubModuleDto sm : m.getSubModules().values()) {
+            if (sm.getFunctions() == null) {
+                continue;
+            }
+            for (FunctionDto fn : sm.getFunctions().values()) {
+                fn.setDiffStatus("new");
+            }
+        }
+    }
+
+    private ModuleHierarchy newEmptyHierarchy(Long taskId, Long systemId) {
+        ModuleHierarchy h = new ModuleHierarchy();
+        h.setTaskId(taskId);
+        h.setSystemId(systemId);
+        return h;
+    }
+
+    /** 复制模块整棵子树（含 function，供 DIFF 分组用，避免共享可变引用） */
+    private ModuleDto copyModuleTree(ModuleDto src) {
+        ModuleDto cp = copyModule(src);
+        cp.setDiffStatus(src.getDiffStatus());
+        if (src.getSubModules() == null) {
+            return cp;
+        }
+        for (SubModuleDto sm : src.getSubModules().values()) {
+            SubModuleDto smCp = copySubModule(sm);
+            if (sm.getFunctions() != null) {
+                for (FunctionDto fn : sm.getFunctions().values()) {
+                    smCp.getFunctions().put(fn.getId(), fn);
+                }
+            }
+            cp.getSubModules().put(smCp.getId(), smCp);
+        }
+        return cp;
+    }
+
+    /**
+     * 预处理：inheritModuleHierarchy 之后剔除「被删入口」对应的整模块，避免 AI 复用已删模块 ID。
+     * <p>返回值供调用方收集 reserved node_id 并逻辑删 DB；DIFF 分类在 {@link #getHierarchyDiff} 内按基线/当前 ID 重算。</p>
+     */
+    private List<ModuleDto> preprocessHierarchy(
+            ModuleHierarchy hierarchy,
+            Set<String> currentEntryClassNames,
+            Set<String> deletedEntryClassNames) {
+        List<ModuleDto> deletedModules = new ArrayList<>();
+        Iterator<Map.Entry<String, ModuleDto>> it = hierarchy.getModules().entrySet().iterator();
+        while (it.hasNext()) {
+            ModuleDto m = it.next().getValue();
+            Set<String> moduleClassPaths = collectFunctionClassPaths(m);
+            if (moduleClassPaths.isEmpty()) continue;
+            // 整模块入口被全删（基线有入口但本次都没有）→ 整模块剔除
+            boolean hasAnyDeleted = moduleClassPaths.stream()
+                .anyMatch(deletedEntryClassNames::contains);
+            if (hasAnyDeleted && moduleClassPaths.stream()
+                    .noneMatch(currentEntryClassNames::contains)) {
+                m.setDiffStatus("deleted");
+                deletedModules.add(m);
+                it.remove();
+                continue;
+            }
+            // 部分入口被删 → 从 FUNCTION.classPaths 中剔除已删除的入口类（消除歧义）
+            for (SubModuleDto sm : m.getSubModules().values()) {
+                if (sm.getFunctions() == null) continue;
+                for (FunctionDto fn : sm.getFunctions().values()) {
+                    if (fn.getClassPaths() == null) continue;
+                    boolean hasDeleted = fn.getClassPaths().stream()
+                        .anyMatch(deletedEntryClassNames::contains);
+                    if (hasDeleted) {
+                        fn.getClassPaths().removeAll(deletedEntryClassNames);
+                    }
+                }
+            }
+        }
+        return deletedModules;
+    }
+
+    /** 收集模块树全部 node_id（module + sub + function），供 reserved / 逻辑删。 */
+    private void collectModuleTreeNodeIds(ModuleDto module, Set<String> out) {
+        if (module == null || out == null) {
+            return;
+        }
+        if (StringUtils.hasText(module.getId())) {
+            out.add(module.getId());
+        }
+        if (module.getSubModules() == null) {
+            return;
+        }
+        for (SubModuleDto sm : module.getSubModules().values()) {
+            if (sm == null) {
+                continue;
+            }
+            if (StringUtils.hasText(sm.getId())) {
+                out.add(sm.getId());
+            }
+            if (sm.getFunctions() == null) {
+                continue;
+            }
+            for (FunctionDto fn : sm.getFunctions().values()) {
+                if (fn != null && StringUtils.hasText(fn.getId())) {
+                    out.add(fn.getId());
+                }
+            }
+        }
+    }
+
+    /**
+     * 按 methodSignature 配对基线 vs 当前，标记 FUNCTION 的 diffStatus（仅内存，供 UI 着色；不落库）。
+     * <p>除签名增删/改名外：同签名但模块/子模块路径不同 → modified（结构/归属变更）。</p>
+     */
+    private void reverseEngineerDiff(ModuleHierarchy currentHier, ModuleHierarchy baselineHier) {
+        Map<String, FunctionDto> baselineBySig = new HashMap<>();
+        Map<String, String> baselinePathBySig = new HashMap<>();
+        if (baselineHier != null && baselineHier.getModules() != null) {
+            for (ModuleDto bm : baselineHier.getModules().values()) {
+                if (bm.getSubModules() == null) continue;
+                for (SubModuleDto bs : bm.getSubModules().values()) {
+                    if (bs.getFunctions() == null) continue;
+                    String path = hierarchyPath(bm.getModuleName(), bs.getSubModuleName());
+                    for (FunctionDto bf : bs.getFunctions().values()) {
+                        if (bf.getMethodSignatures() == null) continue;
+                        for (String sig : bf.getMethodSignatures()) {
+                            baselineBySig.put(sig, bf);
+                            baselinePathBySig.put(sig, path);
+                        }
+                    }
+                }
+            }
+        }
+        if (currentHier == null || currentHier.getModules() == null) {
+            return;
+        }
+        for (ModuleDto m : currentHier.getModules().values()) {
+            if (m.getSubModules() == null) continue;
+            for (SubModuleDto sm : m.getSubModules().values()) {
+                if (sm.getFunctions() == null) continue;
+                String curPath = hierarchyPath(m.getModuleName(), sm.getSubModuleName());
+                for (FunctionDto fn : sm.getFunctions().values()) {
+                    if (fn.getMethodSignatures() == null || fn.getMethodSignatures().isEmpty()) {
+                        continue;
+                    }
+                    boolean anyNew = false;
+                    boolean anyMod = false;
+                    boolean anyUnchanged = false;
+                    for (String sig : fn.getMethodSignatures()) {
+                        FunctionDto bf = baselineBySig.get(sig);
+                        if (bf == null) {
+                            anyNew = true;
+                        } else if (fn.getFunctionName() == null
+                                || !fn.getFunctionName().equals(bf.getFunctionName())) {
+                            anyMod = true;
+                        } else {
+                            String basePath = baselinePathBySig.get(sig);
+                            if (basePath != null && !basePath.equals(curPath)) {
+                                anyMod = true; // 同签名换了模块/子模块挂载
+                            } else {
+                                anyUnchanged = true;
+                            }
+                        }
+                    }
+                    if (anyNew) {
+                        fn.setDiffStatus("new");
+                    } else if (anyMod) {
+                        fn.setDiffStatus("modified");
+                    } else if (anyUnchanged) {
+                        fn.setDiffStatus("unchanged");
+                    }
+                }
+            }
+        }
+    }
+
+    private static String hierarchyPath(String moduleName, String subModuleName) {
+        return String.valueOf(moduleName) + "/" + String.valueOf(subModuleName);
+    }
+
+    /** v1: 收集一个模块下所有 FUNCTION 节点的 classPaths 并集（用于判断 modified vs unchanged） */
+    private java.util.Set<String> collectFunctionClassPaths(ModuleDto m) {
+        java.util.Set<String> fp = new java.util.HashSet<>();
+        if (m.getSubModules() == null) return fp;
+        for (SubModuleDto sm : m.getSubModules().values()) {
+            if (sm.getFunctions() == null) continue;
+            for (FunctionDto fn : sm.getFunctions().values()) {
+                if (fn.getClassPaths() != null) fp.addAll(fn.getClassPaths());
+            }
+        }
+        return fp;
+    }
+
+    /**
+     * 配对成功的模块是否相对基线有内容变更。
+     * <p>不仅看 classPaths：方法签名增删、功能名变更（reverseEngineerDiff 标 new/modified）
+     * 均应进「本次变更」，避免「基线继承」里仍出现 +/~ 功能却 ~0 变更。</p>
+     */
+    private boolean isModuleContentModified(ModuleDto current, ModuleDto baseline) {
+        if (!collectFunctionClassPaths(current).equals(collectFunctionClassPaths(baseline))) {
+            return true;
+        }
+        if (!collectFunctionMethodSignatures(current).equals(collectFunctionMethodSignatures(baseline))) {
+            return true;
+        }
+        return hasFunctionStatus(current, "new", "modified", "deleted");
+    }
+
+    private java.util.Set<String> collectFunctionMethodSignatures(ModuleDto m) {
+        java.util.Set<String> sigs = new java.util.HashSet<>();
+        if (m == null || m.getSubModules() == null) {
+            return sigs;
+        }
+        for (SubModuleDto sm : m.getSubModules().values()) {
+            if (sm.getFunctions() == null) {
+                continue;
+            }
+            for (FunctionDto fn : sm.getFunctions().values()) {
+                if (fn.getMethodSignatures() != null) {
+                    sigs.addAll(fn.getMethodSignatures());
+                }
+            }
+        }
+        return sigs;
+    }
+
+    private boolean hasFunctionStatus(ModuleDto m, String... statuses) {
+        if (m == null || m.getSubModules() == null || statuses == null || statuses.length == 0) {
+            return false;
+        }
+        Set<String> want = new HashSet<>(java.util.Arrays.asList(statuses));
+        for (SubModuleDto sm : m.getSubModules().values()) {
+            if (sm.getFunctions() == null) {
+                continue;
+            }
+            for (FunctionDto fn : sm.getFunctions().values()) {
+                if (fn.getDiffStatus() != null && want.contains(fn.getDiffStatus())) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    // 辅助：复制 ModuleDto（避免共享引用）
+    private ModuleDto copyModule(ModuleDto src) {
+        ModuleDto m = new ModuleDto();
+        m.setId(src.getId());
+        m.setModuleName(src.getModuleName());
+        m.setKeywords(new java.util.ArrayList<>(src.getKeywords()));
+        m.setConfirmed(src.getConfirmed());
+        m.setSourceEntryClass(src.getSourceEntryClass());
+        return m;
+    }
+
+    // 辅助：复制 SubModuleDto（避免共享引用）
+    private SubModuleDto copySubModule(SubModuleDto src) {
+        SubModuleDto sm = new SubModuleDto();
+        sm.setId(src.getId());
+        sm.setSubModuleName(src.getSubModuleName());
+        sm.setKeywords(new java.util.ArrayList<>(src.getKeywords()));
+        sm.setConfirmed(src.getConfirmed());
+        return sm;
+    }
+
     // ============================ private helpers ============================
+
+    /**
+     * 序列化 hierarchy 为 AI prompt 用的精简 JSON。
+     * <p>保留：id / module_name / sub_module_name / function_name / keywords / class_paths<br>
+     * 去掉：method_signatures / url / 时间戳（避免 token 浪费）</p>
+     * <p>保留 class_paths：与提示词「类路径命中 → 复用已有节点」对齐，避免 AI 重新发明 ID。</p>
+     */
+    private String serializeHierarchyForPrompt(ModuleHierarchy hierarchy) {
+        if (hierarchy == null || hierarchy.getModules() == null || hierarchy.getModules().isEmpty()) {
+            return "{\"modules\":[]}";
+        }
+        java.util.Map<String, Object> root = new java.util.LinkedHashMap<>();
+        java.util.List<java.util.Map<String, Object>> modulesOut = new java.util.ArrayList<>();
+        for (ModuleDto m : hierarchy.getModules().values()) {
+            java.util.Map<String, Object> modMap = new java.util.LinkedHashMap<>();
+            modMap.put("id", m.getId());
+            modMap.put("module_name", m.getModuleName());
+            modMap.put("keywords", m.getKeywords());
+            java.util.List<java.util.Map<String, Object>> subsOut = new java.util.ArrayList<>();
+            for (SubModuleDto sm : m.getSubModules().values()) {
+                java.util.Map<String, Object> subMap = new java.util.LinkedHashMap<>();
+                subMap.put("id", sm.getId());
+                subMap.put("sub_module_name", sm.getSubModuleName());
+                subMap.put("keywords", sm.getKeywords());
+                java.util.List<java.util.Map<String, Object>> fnsOut = new java.util.ArrayList<>();
+                for (FunctionDto fn : sm.getFunctions().values()) {
+                    java.util.Map<String, Object> fnMap = new java.util.LinkedHashMap<>();
+                    fnMap.put("id", fn.getId());
+                    fnMap.put("function_name", fn.getFunctionName());
+                    if (fn.getClassPaths() != null && !fn.getClassPaths().isEmpty()) {
+                        fnMap.put("class_paths", new ArrayList<>(fn.getClassPaths()));
+                    }
+                    fnsOut.add(fnMap);
+                }
+                subMap.put("functions", fnsOut);
+                subsOut.add(subMap);
+            }
+            modMap.put("sub_modules", subsOut);
+            modulesOut.add(modMap);
+        }
+        root.put("modules", modulesOut);
+        try {
+            return objectMapper.writeValueAsString(root);
+        } catch (Exception e) {
+            log.warn("serializeHierarchyForPrompt 失败，返回空对象：{}", e.getMessage());
+            return "{\"modules\":[]}";
+        }
+    }
 
     /**
      * 并行阶段：对单个入口渲染 prompt 并调 AI（含可配置重试），返回解析后的 JSON 节点。
      * 失败时写入 pipeline.log 并返回 null。
+     *
+     * <p>v1 单次调用 + 共享上下文：传入 {@code existingHierarchy}（当前任务的最新模块树），
+     * 序列化为精简 JSON 注入 prompt 的 {@code {module_hierarchy.json}} 占位符；
+     * AI 据此判断复用已有 ID 还是新建。</p>
+     * <p>若 {@code methodDiffBySig} 含 new/modified/deleted：追加方法变更提示，并拒绝空 {@code modules}。</p>
      */
     private JsonNode callAiForEntry(DecompileTask task, EntryPoint entry,
                                     String promptTemplate, File projectDir,
-                                    EntryPointConfig entryPointConfig) {
+                                    EntryPointConfig entryPointConfig,
+                                    ModuleHierarchy existingHierarchy,
+                                    Map<String, String> methodDiffBySig) {
         Long taskId = task.getId();
         String entryLabel = entry.getClassName();
         try {
@@ -389,17 +1120,37 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
             }
 
             String businessKnowledge = businessKnowledgeService.getContentBySystemId(task.getSystemId());
-            String promptInput = promptTemplateLoader.render(promptTemplate, javaCode, businessKnowledge, "{}");
+            String hierarchyJson = serializeHierarchyForPrompt(existingHierarchy);
+            log.warn("[AI-HIERARCHY-TEMP] target={} len={} module_hierarchy.json=\n{}",
+                    entryLabel, hierarchyJson == null ? -1 : hierarchyJson.length(), hierarchyJson);
+            execLog.log(taskId, String.format(
+                    "[AI-HIERARCHY-TEMP] target=%s len=%d module_hierarchy.json=\n%s",
+                    entryLabel,
+                    hierarchyJson == null ? -1 : hierarchyJson.length(),
+                    hierarchyJson == null ? "null" : hierarchyJson));
+            String promptInput = promptTemplateLoader.render(promptTemplate, javaCode, businessKnowledge, hierarchyJson);
             if (promptTemplateLoader.hasUnresolvedPlaceholders(promptInput)) {
                 log.warn("Prompt 仍有未替换占位符，跳过入口 {}", entryLabel);
                 execLog.log(taskId, "[AI-SKIP] stage=MODULE_HIERARCHY target=" + entryLabel + " reason=unresolved prompt placeholders");
                 return null;
             }
 
+            boolean hasMethodDiffHint = hasEntrypointMethodChanges(methodDiffBySig);
+            boolean rejectEmptyModules = hasNewOrModifiedMethodDiff(methodDiffBySig);
+            if (hasMethodDiffHint) {
+                String diffHint = buildMethodDiffPromptHint(methodDiffBySig);
+                promptInput = promptInput + "\n\n" + diffHint;
+                log.info("MODULE_HIERARCHY 入口有方法 DIFF — entry={} rejectEmptyModules={}",
+                        entryLabel, rejectEmptyModules);
+                execLog.log(taskId, "[AI-HINT] stage=MODULE_HIERARCHY target=" + entryLabel
+                        + " rejectEmptyModules=" + rejectEmptyModules + " methodDiffHint appended");
+            }
+
             AiSummaryService.AiCallMeta meta = new AiSummaryService.AiCallMeta();
             meta.setCallStage("MODULE_HIERARCHY");
             meta.setClassPath(entryLabel);
 
+            final boolean requireNonEmptyModules = rejectEmptyModules;
             String aiPayload = pipelineAiCaller.callWithRetry(
                     taskId,
                     "MODULE_HIERARCHY",
@@ -413,21 +1164,39 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                         }
                         try {
                             String cleaned = AiResponseJsonExtractor.extractJsonPayload(response);
-                            objectMapper.readTree(cleaned);
+                            JsonNode tree = objectMapper.readTree(cleaned);
+                            if (requireNonEmptyModules && isEmptyModulesPayload(tree)) {
+                                return PipelineAiCaller.ValidationResult.fail(
+                                        "empty modules while entrypoint has new/modified methods");
+                            }
                             return PipelineAiCaller.ValidationResult.ok(cleaned);
                         } catch (Exception e) {
                             return PipelineAiCaller.ValidationResult.fail("JSON parse: " + e.getMessage());
                         }
                     },
-                    (original, current, failedAttempt, reason) -> original
-                            + "\n\n[系统提示] 上轮输出 JSON 解析失败：" + reason
-                            + "\n请确保输出是合法的 JSON 格式（用 ```json ... ``` 包裹），字段约束见上方模板。"
+                    (original, current, failedAttempt, reason) -> {
+                        String retry = original
+                                + "\n\n[系统提示] 上轮输出未通过校验：" + reason
+                                + "\n请确保输出是合法的 JSON（可用 ```json ... ``` 包裹）。";
+                        if (requireNonEmptyModules) {
+                            retry += "\n本入口存在方法 new/modified：即使 class_paths 已命中已有模块，"
+                                    + "也必须在已有模块/子模块 id 下输出功能增量；禁止输出 { \"modules\": [] }。";
+                        }
+                        return retry;
+                    }
             );
 
             if (!StringUtils.hasText(aiPayload) || "{}".equals(aiPayload.trim())) {
                 return null;
             }
-            return objectMapper.readTree(aiPayload);
+            JsonNode result = objectMapper.readTree(aiPayload);
+            if (requireNonEmptyModules && isEmptyModulesPayload(result)) {
+                log.warn("callAiForEntry 重试后仍为空 modules，放弃合并增量 — entry={}", entryLabel);
+                execLog.log(taskId, "[AI-FAIL] stage=MODULE_HIERARCHY target=" + entryLabel
+                        + " reason=empty modules after retries with new/modified methods");
+                return null;
+            }
+            return result;
         } catch (Exception e) {
             log.error("callAiForEntry failed for {}: {}", entryLabel, e.getMessage(), e);
             execLog.logException(taskId, "[AI-FAIL] stage=MODULE_HIERARCHY target=" + entryLabel, e);
@@ -435,16 +1204,103 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         return null;
     }
 
-    private void mergeEntryResult(ModuleHierarchy hierarchy, EntryPoint entry, JsonNode inc,
-                                  Map<String, List<EntrypointMethodView>> methodsByClass) {
-        Set<String> newlyCreatedFunctionIds = new LinkedHashSet<>();
-        mergeIncrementIntoHierarchy(hierarchy, inc, newlyCreatedFunctionIds);
+    /** 入口相对基线是否存在方法级 new/modified/deleted。 */
+    private boolean hasEntrypointMethodChanges(Map<String, String> methodDiffBySig) {
+        if (methodDiffBySig == null || methodDiffBySig.isEmpty()) {
+            return false;
+        }
+        for (String st : methodDiffBySig.values()) {
+            if ("new".equals(st) || "modified".equals(st) || "deleted".equals(st)) {
+                return true;
+            }
+        }
+        return false;
+    }
 
+    /** 仅 new/modified 时强制非空 modules（纯 deleted 由 purge 处理，允许空增量）。 */
+    private boolean hasNewOrModifiedMethodDiff(Map<String, String> methodDiffBySig) {
+        if (methodDiffBySig == null || methodDiffBySig.isEmpty()) {
+            return false;
+        }
+        for (String st : methodDiffBySig.values()) {
+            if ("new".equals(st) || "modified".equals(st)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isEmptyModulesPayload(JsonNode tree) {
+        if (tree == null || tree.isNull() || !tree.isObject()) {
+            return true;
+        }
+        JsonNode modules = tree.get("modules");
+        return modules == null || !modules.isArray() || modules.isEmpty();
+    }
+
+    /**
+     * 追加到 prompt：列出本入口方法 DIFF，避免「类路径已命中就输出空 modules」。
+     */
+    private String buildMethodDiffPromptHint(Map<String, String> methodDiffBySig) {
+        java.util.LinkedHashSet<String> news = new java.util.LinkedHashSet<>();
+        java.util.LinkedHashSet<String> mods = new java.util.LinkedHashSet<>();
+        java.util.LinkedHashSet<String> dels = new java.util.LinkedHashSet<>();
+        for (Map.Entry<String, String> e : methodDiffBySig.entrySet()) {
+            String sig = e.getKey();
+            if (!StringUtils.hasText(sig) || sig.contains("#")) {
+                // 优先展示短签名；Class#method 与短签名成对写入时跳过带 # 的，避免重复
+                continue;
+            }
+            String st = e.getValue();
+            if ("new".equals(st)) {
+                news.add(sig);
+            } else if ("modified".equals(st)) {
+                mods.add(sig);
+            } else if ("deleted".equals(st)) {
+                dels.add(sig);
+            }
+        }
+        // 若短签名全被跳过（异常），回退用全部 key
+        if (news.isEmpty() && mods.isEmpty() && dels.isEmpty()) {
+            for (Map.Entry<String, String> e : methodDiffBySig.entrySet()) {
+                String st = e.getValue();
+                if ("new".equals(st)) {
+                    news.add(e.getKey());
+                } else if ("modified".equals(st)) {
+                    mods.add(e.getKey());
+                } else if ("deleted".equals(st)) {
+                    dels.add(e.getKey());
+                }
+            }
+        }
+        StringBuilder sb = new StringBuilder();
+        sb.append("[系统增量提示] 本入口相对基线存在方法变更。即使 module_hierarchy.json 的 class_paths 已命中，")
+                .append("也必须输出非空 modules 增量：在已有模块/子模块 id 下给出 new/modified 对应的功能节点；")
+                .append("禁止输出 { \"modules\": [] }。\n");
+        if (!news.isEmpty()) {
+            sb.append("- new: ").append(String.join(", ", news)).append('\n');
+        }
+        if (!mods.isEmpty()) {
+            sb.append("- modified: ").append(String.join(", ", mods)).append('\n');
+        }
+        if (!dels.isEmpty()) {
+            sb.append("- deleted（程序会 purge，无需编造删除节点）: ").append(String.join(", ", dels)).append('\n');
+        }
+        return sb.toString().trim();
+    }
+
+    private void mergeEntryResult(ModuleHierarchy hierarchy, EntryPoint entry, JsonNode inc,
+                                  Map<String, String> methodDiffBySig,
+                                  Set<String> reservedDeletedNodeIds) {
+        Set<String> newlyCreatedFunctionIds = new LinkedHashSet<>();
+        mergeIncrementIntoHierarchy(hierarchy, inc, newlyCreatedFunctionIds, methodDiffBySig,
+                reservedDeletedNodeIds);
+
+        // 只注入入口类路径；不把 methods_json 全集灌进新建功能（避免整类污染 method_signatures）
         for (String fnId : newlyCreatedFunctionIds) {
             FunctionDto fn = findFunctionById(hierarchy, fnId);
-            if (fn != null) {
+            if (fn != null && StringUtils.hasText(entry.getClassName())) {
                 fn.getClassPaths().add(entry.getClassName());
-                backfillFunctionMethodSignatures(fn, methodsByClass);
             }
         }
     }
@@ -591,9 +1447,20 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
             }
             return;
         }
-        int upserted = methodFunctionBindingMapper.batchUpsertBindings(rows);
-        log.info("入口 {} binding 入库: 笛卡尔+交叉校验后 {} 行, upsert {} 行 (call-graph 不存在 {} 条)",
-                entryClassName, rows.size(), upserted, skippedNotExisting);
+        // 方案 B：plain INSERT 前逻辑删 — 同 function 旧行 + 即将写入的 (class,sig) 活行键
+        java.util.Set<String> functionIds = new java.util.LinkedHashSet<>();
+        for (MethodFunctionBinding r : rows) {
+            if (StringUtils.hasText(r.getFunctionNodeId())) {
+                functionIds.add(r.getFunctionNodeId());
+            }
+        }
+        if (!functionIds.isEmpty()) {
+            methodFunctionBindingMapper.deleteByTaskIdAndFunctionNodeIds(taskId, functionIds);
+        }
+        methodFunctionBindingMapper.deleteByTaskIdAndClassMethodKeys(taskId, rows);
+        int inserted = methodFunctionBindingMapper.batchInsertBindings(rows);
+        log.info("入口 {} binding 入库: 笛卡尔+交叉校验后 {} 行, insert {} 行 (call-graph 不存在 {} 条)",
+                entryClassName, rows.size(), inserted, skippedNotExisting);
     }
 
     /** 收集 JSON 数组节点的文本值到 Set（trim 后非空） */
@@ -742,11 +1609,15 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     }
 
     /**
-     * 把 AI 返回的增量 JSON 合并进 DTO（复用已有 ID / 不存在则生成）
+     * 把 AI 返回的增量 JSON 合并进 DTO。
+     * <p>合并顺序（防 ID 劫持）：同名优先 → ID 命中且名称一致才复用 → ID 命中但改名则拆新节点 → 否则新建。</p>
+     * <p>INCREMENTAL：若提供 {@code methodDiffBySig}，则跳过「仅含入口 unchanged 签名」的功能节点，防止 AI 把未变方法搬家。</p>
      * @param newlyCreatedFunctionIds 输出本次新增的 function id 列表
      */
     private void mergeIncrementIntoHierarchy(ModuleHierarchy hierarchy, JsonNode increment,
-                                             Set<String> newlyCreatedFunctionIds) {
+                                             Set<String> newlyCreatedFunctionIds,
+                                             Map<String, String> methodDiffBySig,
+                                             Set<String> reservedDeletedNodeIds) {
         JsonNode modulesNode = increment.path("modules");
         if (!modulesNode.isArray()) {
             return;
@@ -760,114 +1631,648 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                 existingFunctionIds.addAll(sm.getFunctions().keySet());
             }
         }
+        // 已删入口模块的 node_id 仍占用，禁止 AI 新建时复用（即使已不在内存树）
+        if (reservedDeletedNodeIds != null && !reservedDeletedNodeIds.isEmpty()) {
+            existingModuleIds.addAll(reservedDeletedNodeIds);
+            existingSubModuleIds.addAll(reservedDeletedNodeIds);
+            existingFunctionIds.addAll(reservedDeletedNodeIds);
+        }
+        // 快照：用于区分「本次新建功能」vs「复用已有」（供入口 classPath 注入）
+        Set<String> knownFunctionIdsAtStart = Set.copyOf(existingFunctionIds);
+        boolean filterByEntrypointDiff = methodDiffBySig != null && !methodDiffBySig.isEmpty();
 
         for (JsonNode modNode : modulesNode) {
-            String modId = modNode.path("id").asText("");
-            if (!StringUtils.hasText(modId)) continue;
-            // 归一化 AI 输出的 ID：后端约定 prefix + 4 位 Base62 = 5 位总长，
-            // 但 AI 可能按 "5 位 Base62" 字面理解为 prefix + 5 位 = 6 位，
-            // 此处统一截断为 5 位后再做冲突检测与复用。
-            String rawModId = modId;
-            modId = normalizeAiNodeId(modId, 'm', hierarchy.getModules().keySet());
-            ModuleDto module = hierarchy.getModules().get(modId);
-            if (module == null) {
-                // 归一化后未匹配到模块：检查原始截断前的 ID（AI 输出的原值）是否存在于 map 中。
-                // 场景：DB 中有历史遗留的 6 位 ID（如 mA1b2C），AI 本次输出同样的 6 位值，
-                // 归一化截断为 5 位 (mA1b2) 后与 map 中的 key (mA1b2C) 不一致。
-                // 此时应将遗留模块重命名到归一化后的 5 位 ID，避免 persistAll 保存重复。
-                if (!modId.equals(rawModId)) {
-                    module = hierarchy.getModules().get(rawModId);
-                    if (module != null) {
-                        log.info("将历史遗留 6 位模块 ID {} 重命名为 5 位 ID {}", rawModId, modId);
-                        hierarchy.getModules().remove(rawModId);
-                    }
-                }
-                if (module == null) {
-                    module = new ModuleDto();
-                }
-                module.setId(modId);
-                hierarchy.getModules().put(modId, module);
-            }
-            if (StringUtils.hasText(modNode.path("module_name").asText(""))) {
-                module.setModuleName(modNode.path("module_name").asText());
+            String rawModId = modNode.path("id").asText("").trim();
+            if (!StringUtils.hasText(rawModId)) continue;
+            String modName = modNode.path("module_name").asText("").trim();
+            String candidateId = normalizeAiNodeId(rawModId, 'm', existingModuleIds);
+
+            ModuleDto module = resolveModuleForMerge(
+                    hierarchy, existingModuleIds, candidateId, rawModId, modName, reservedDeletedNodeIds);
+            if (StringUtils.hasText(modName)) {
+                module.setModuleName(modName);
             }
             mergeKeywords(module.getKeywords(), modNode.path("keywords"));
 
             JsonNode subsNode = modNode.path("sub_modules");
             if (!subsNode.isArray()) continue;
             for (JsonNode subNode : subsNode) {
-                String subId = subNode.path("id").asText("");
-                if (!StringUtils.hasText(subId)) continue;
-                String rawSubId = subId;
-                subId = normalizeAiNodeId(subId, 's', existingSubModuleIds);
-                if (existingSubModuleIds.contains(subId) && !module.getSubModules().containsKey(subId)) {
-                    log.warn("AI 输出子模块 ID {} 与同任务其他模块冲突，重新生成", subId);
-                    subId = base62Generator.generateUnique('s', existingSubModuleIds);
-                }
-                SubModuleDto sub = module.getSubModules().get(subId);
-                if (sub == null) {
-                    // 兼容历史遗留 6 位 ID：查原始截断前的 key
-                    if (!subId.equals(rawSubId)) {
-                        sub = module.getSubModules().get(rawSubId);
-                        if (sub != null) {
-                            log.info("将历史遗留 6 位子模块 ID {} 重命名为 5 位 ID {}", rawSubId, subId);
-                            module.getSubModules().remove(rawSubId);
-                        }
-                    }
-                    if (sub == null) {
-                        sub = new SubModuleDto();
-                    }
-                    sub.setId(subId);
-                    module.getSubModules().put(subId, sub);
-                    existingSubModuleIds.add(subId);
-                }
-                if (StringUtils.hasText(subNode.path("sub_module_name").asText(""))) {
-                    sub.setSubModuleName(subNode.path("sub_module_name").asText());
+                String rawSubId = subNode.path("id").asText("").trim();
+                if (!StringUtils.hasText(rawSubId)) continue;
+                String subName = subNode.path("sub_module_name").asText("").trim();
+                String candidateSubId = normalizeAiNodeId(rawSubId, 's', existingSubModuleIds);
+
+                SubModuleDto sub = resolveSubModuleForMerge(
+                        module, existingSubModuleIds, candidateSubId, rawSubId, subName, reservedDeletedNodeIds);
+                if (StringUtils.hasText(subName)) {
+                    sub.setSubModuleName(subName);
                 }
                 mergeKeywords(sub.getKeywords(), subNode.path("keywords"));
 
                 JsonNode fnsNode = subNode.path("functions");
                 if (!fnsNode.isArray()) continue;
                 for (JsonNode fnNode : fnsNode) {
-                    String fnId = fnNode.path("id").asText("");
-                    if (!StringUtils.hasText(fnId)) continue;
-                    String rawFnId = fnId;
-                    fnId = normalizeAiNodeId(fnId, 'f', existingFunctionIds);
-                    if (existingFunctionIds.contains(fnId) && !sub.getFunctions().containsKey(fnId)) {
-                        log.warn("AI 输出功能 ID {} 与同任务其他子模块冲突，重新生成", fnId);
-                        fnId = base62Generator.generateUnique('f', existingFunctionIds);
+                    String rawFnId = fnNode.path("id").asText("").trim();
+                    if (!StringUtils.hasText(rawFnId)) continue;
+                    if (filterByEntrypointDiff && shouldSkipAiFunctionForUnchangedOnly(fnNode, methodDiffBySig)) {
+                        log.info("SKIP_AI_FUNCTION_UNCHANGED sigs-only-unchanged fnId={} name={}",
+                                rawFnId, fnNode.path("function_name").asText(""));
+                        continue;
                     }
-                    FunctionDto fn = sub.getFunctions().get(fnId);
-                    if (fn == null) {
-                        // 兼容历史遗留 6 位 ID：查原始截断前的 key
-                        if (!fnId.equals(rawFnId)) {
-                            fn = sub.getFunctions().get(rawFnId);
-                            if (fn != null) {
-                                log.info("将历史遗留 6 位功能 ID {} 重命名为 5 位 ID {}", rawFnId, fnId);
-                                sub.getFunctions().remove(rawFnId);
-                            }
-                        }
-                        if (fn == null) {
-                            fn = new FunctionDto();
-                        }
-                        fn.setId(fnId);
-                        sub.getFunctions().put(fnId, fn);
-                        existingFunctionIds.add(fnId);
-                        newlyCreatedFunctionIds.add(fnId);
+                    String fnName = fnNode.path("function_name").asText("").trim();
+                    String candidateFnId = normalizeAiNodeId(rawFnId, 'f', existingFunctionIds);
+
+                    FunctionDto fn = resolveFunctionForMerge(
+                            sub, existingFunctionIds, candidateFnId, rawFnId, fnName, reservedDeletedNodeIds);
+                    // 合并前已知名单；resolve 可能往 existingFunctionIds 追加新建 id
+                    if (!knownFunctionIdsAtStart.contains(fn.getId())) {
+                        newlyCreatedFunctionIds.add(fn.getId());
                     }
-                    if (StringUtils.hasText(fnNode.path("function_name").asText(""))) {
-                        fn.setFunctionName(fnNode.path("function_name").asText());
+                    if (StringUtils.hasText(fnName)) {
+                        fn.setFunctionName(fnName);
                     }
-                    // 解析 AI 输出的 class_paths（不再由程序兜底，但保留 processEntry 的兜底注入逻辑兼容旧数据）
                     mergeClassPaths(fn, fnNode.path("class_paths"));
-                    // 解析 AI 输出的 method_signatures
                     mergeMethodSignatures(fn, fnNode.path("method_signatures"));
                 }
             }
         }
+    }
 
-        // 兼容：AI 输出的 modules[].functions 直接挂在 module 下时（罕见），归到默认 sub_module
-        // 当前需求不覆盖此情况，保持简单
+    /**
+     * 入口方法 DIFF 状态：key 同时放入「短签名 method(args)」与「Class#method(args)」便于与 AI 输出对齐。
+     */
+    private Map<String, String> buildEntrypointMethodDiffStatus(Long taskId, Long baselineTaskId, String className) {
+        Map<String, String> out = new HashMap<>();
+        if (taskId == null || baselineTaskId == null || !StringUtils.hasText(className)) {
+            return out;
+        }
+        List<com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity> currentRows =
+                entrypointMapper.selectByTaskId(taskId);
+        List<com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity> baselineRows =
+                entrypointMapper.selectByTaskId(baselineTaskId);
+        com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity cur = null;
+        com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity base = null;
+        for (com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity r : currentRows) {
+            if (className.equals(r.getClassName())) {
+                cur = r;
+                break;
+            }
+        }
+        for (com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity r : baselineRows) {
+            if (className.equals(r.getClassName())) {
+                base = r;
+                break;
+            }
+        }
+        List<EntrypointMethodView> currentMethods = cur == null
+                ? java.util.Collections.emptyList()
+                : deserializeEntrypointMethods(cur.getMethodsJson());
+        List<EntrypointMethodView> baselineMethods = base == null
+                ? java.util.Collections.emptyList()
+                : deserializeEntrypointMethods(base.getMethodsJson());
+        Map<String, String> baselineBodyByShort = new HashMap<>();
+        Set<String> baselineShort = new HashSet<>();
+        for (EntrypointMethodView m : baselineMethods) {
+            String shortSig = shortMethodSignature(m.getMethodSignature());
+            if (!StringUtils.hasText(shortSig)) {
+                continue;
+            }
+            baselineShort.add(shortSig);
+            if (StringUtils.hasText(m.getBodyHash())) {
+                baselineBodyByShort.put(shortSig, m.getBodyHash());
+            }
+        }
+        Set<String> currentShort = new HashSet<>();
+        for (EntrypointMethodView m : currentMethods) {
+            String shortSig = shortMethodSignature(m.getMethodSignature());
+            if (!StringUtils.hasText(shortSig)) {
+                continue;
+            }
+            currentShort.add(shortSig);
+            String status;
+            if (!baselineShort.contains(shortSig)) {
+                status = "new";
+            } else {
+                String bh = baselineBodyByShort.get(shortSig);
+                if (StringUtils.hasText(bh) && StringUtils.hasText(m.getBodyHash()) && !bh.equals(m.getBodyHash())) {
+                    status = "modified";
+                } else {
+                    status = "unchanged";
+                }
+            }
+            putMethodDiffStatus(out, m.getMethodSignature(), shortSig, status);
+        }
+        for (EntrypointMethodView m : baselineMethods) {
+            String shortSig = shortMethodSignature(m.getMethodSignature());
+            if (StringUtils.hasText(shortSig) && !currentShort.contains(shortSig)) {
+                putMethodDiffStatus(out, m.getMethodSignature(), shortSig, "deleted");
+            }
+        }
+        return out;
+    }
+
+    private void putMethodDiffStatus(Map<String, String> out, String fullSig, String shortSig, String status) {
+        if (StringUtils.hasText(shortSig)) {
+            out.put(shortSig, status);
+        }
+        if (StringUtils.hasText(fullSig)) {
+            out.put(fullSig.trim(), status);
+        }
+    }
+
+    private static String shortMethodSignature(String sig) {
+        if (!StringUtils.hasText(sig)) {
+            return null;
+        }
+        String raw = sig.trim();
+        int hash = raw.indexOf('#');
+        return hash >= 0 && hash < raw.length() - 1 ? raw.substring(hash + 1) : raw;
+    }
+
+    private List<EntrypointMethodView> deserializeEntrypointMethods(String methodsJson) {
+        if (!StringUtils.hasText(methodsJson)) {
+            return java.util.Collections.emptyList();
+        }
+        try {
+            return objectMapper.readValue(methodsJson,
+                    objectMapper.getTypeFactory().constructCollectionType(List.class, EntrypointMethodView.class));
+        } catch (Exception e) {
+            log.warn("deserializeEntrypointMethods failed: {}", e.getMessage());
+            return java.util.Collections.emptyList();
+        }
+    }
+
+    /** AI 功能节点的 method_signatures 全部为入口 unchanged → 跳过，避免搬家 */
+    private boolean shouldSkipAiFunctionForUnchangedOnly(JsonNode fnNode, Map<String, String> methodDiffBySig) {
+        JsonNode sigs = fnNode.path("method_signatures");
+        if (!sigs.isArray() || sigs.isEmpty()) {
+            return false; // 无签名时不拦（兼容旧输出）
+        }
+        boolean sawAny = false;
+        for (JsonNode s : sigs) {
+            String sig = s.asText("").trim();
+            if (!StringUtils.hasText(sig)) {
+                continue;
+            }
+            sawAny = true;
+            String st = lookupMethodDiffStatus(methodDiffBySig, sig);
+            if (!"unchanged".equals(st)) {
+                return false;
+            }
+        }
+        return sawAny;
+    }
+
+    private String lookupMethodDiffStatus(Map<String, String> methodDiffBySig, String sig) {
+        if (methodDiffBySig == null || !StringUtils.hasText(sig)) {
+            return null;
+        }
+        String st = methodDiffBySig.get(sig);
+        if (st != null) {
+            return st;
+        }
+        return methodDiffBySig.get(shortMethodSignature(sig));
+    }
+
+    /** 从层级树移除入口 DIFF 标记为 deleted 的方法签名；功能无签名则删节点 */
+    private void purgeDeletedMethodSignatures(ModuleHierarchy hierarchy, Map<String, String> methodDiffBySig) {
+        if (hierarchy == null || hierarchy.getModules() == null
+                || methodDiffBySig == null || methodDiffBySig.isEmpty()) {
+            return;
+        }
+        Set<String> deletedShort = new HashSet<>();
+        for (Map.Entry<String, String> e : methodDiffBySig.entrySet()) {
+            if ("deleted".equals(e.getValue())) {
+                String shortSig = shortMethodSignature(e.getKey());
+                if (StringUtils.hasText(shortSig)) {
+                    deletedShort.add(shortSig);
+                }
+            }
+        }
+        if (deletedShort.isEmpty()) {
+            return;
+        }
+        for (ModuleDto m : hierarchy.getModules().values()) {
+            if (m.getSubModules() == null) continue;
+            for (SubModuleDto sm : m.getSubModules().values()) {
+                if (sm.getFunctions() == null) continue;
+                Iterator<Map.Entry<String, FunctionDto>> it = sm.getFunctions().entrySet().iterator();
+                while (it.hasNext()) {
+                    FunctionDto fn = it.next().getValue();
+                    if (fn.getMethodSignatures() == null || fn.getMethodSignatures().isEmpty()) {
+                        continue;
+                    }
+                    fn.getMethodSignatures().removeIf(sig -> deletedShort.contains(shortMethodSignature(sig)));
+                    if (fn.getMethodSignatures().isEmpty()) {
+                        it.remove();
+                        log.info("PURGE_DELETED_FUNCTION id={} name={}", fn.getId(), fn.getFunctionName());
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 模块解析：1) 同名优先 2) ID 命中且名称不冲突 3) ID 劫持则新生成 4) 否则新建。
+     */
+    private ModuleDto resolveModuleForMerge(ModuleHierarchy hierarchy,
+                                            Set<String> existingModuleIds,
+                                            String candidateId,
+                                            String rawModId,
+                                            String modName,
+                                            Set<String> reservedDeletedNodeIds) {
+        // 1) 同名优先
+        if (StringUtils.hasText(modName)) {
+            ModuleDto byName = findModuleByName(hierarchy, modName);
+            if (byName != null) {
+                if (!byName.getId().equals(candidateId) && !byName.getId().equals(rawModId)) {
+                    log.info("NAME_REMAP module aiId={} name={} → reuse={}", candidateId, modName, byName.getId());
+                }
+                return byName;
+            }
+        }
+        // 2) ID 命中
+        ModuleDto byId = hierarchy.getModules().get(candidateId);
+        if (byId == null && !candidateId.equals(rawModId)) {
+            byId = hierarchy.getModules().get(rawModId);
+            if (byId != null && !namesConflict(byId.getModuleName(), modName)) {
+                // 历史 6 位 ID 归一化为 5 位
+                log.info("将历史遗留 6 位模块 ID {} 重命名为 5 位 ID {}", rawModId, candidateId);
+                hierarchy.getModules().remove(rawModId);
+                byId.setId(candidateId);
+                hierarchy.getModules().put(candidateId, byId);
+                existingModuleIds.add(candidateId);
+                return byId;
+            }
+        }
+        if (byId != null) {
+            if (namesConflict(byId.getModuleName(), modName)) {
+                String newId = base62Generator.generateUnique('m', existingModuleIds);
+                log.warn("ID_HIJACK_BLOCKED module aiId={} aiName={} existingName={} → newId={}",
+                        candidateId, modName, byId.getModuleName(), newId);
+                ModuleDto created = new ModuleDto();
+                created.setId(newId);
+                hierarchy.getModules().put(newId, created);
+                existingModuleIds.add(newId);
+                return created;
+            }
+            return byId;
+        }
+        // 3) 新建（candidate 若在 reserved/已占用集合中则换新 id）
+        String newId = candidateId;
+        if (existingModuleIds.contains(candidateId)) {
+            newId = base62Generator.generateUnique('m', existingModuleIds);
+            boolean reserved = reservedDeletedNodeIds != null
+                    && (reservedDeletedNodeIds.contains(candidateId) || reservedDeletedNodeIds.contains(rawModId));
+            log.warn("{} module aiId={} aiName={} → newId={}",
+                    reserved ? "ID_RESERVED_FROM_DELETED" : "ID_COLLISION",
+                    candidateId, modName, newId);
+        }
+        ModuleDto created = new ModuleDto();
+        created.setId(newId);
+        hierarchy.getModules().put(newId, created);
+        existingModuleIds.add(newId);
+        return created;
+    }
+
+    private SubModuleDto resolveSubModuleForMerge(ModuleDto module,
+                                                  Set<String> existingSubModuleIds,
+                                                  String candidateId,
+                                                  String rawSubId,
+                                                  String subName,
+                                                  Set<String> reservedDeletedNodeIds) {
+        // 1) 同名优先（本模块内）
+        if (StringUtils.hasText(subName)) {
+            SubModuleDto byName = findSubModuleByName(module, subName);
+            if (byName != null) {
+                if (!byName.getId().equals(candidateId) && !byName.getId().equals(rawSubId)) {
+                    log.info("NAME_REMAP subModule aiId={} name={} module={} → reuse={}",
+                            candidateId, subName, module.getId(), byName.getId());
+                }
+                return byName;
+            }
+        }
+        // 2) 本模块内 ID 命中
+        SubModuleDto byId = module.getSubModules().get(candidateId);
+        if (byId == null && !candidateId.equals(rawSubId)) {
+            byId = module.getSubModules().get(rawSubId);
+            if (byId != null && !namesConflict(byId.getSubModuleName(), subName)) {
+                log.info("将历史遗留 6 位子模块 ID {} 重命名为 5 位 ID {}", rawSubId, candidateId);
+                module.getSubModules().remove(rawSubId);
+                byId.setId(candidateId);
+                module.getSubModules().put(candidateId, byId);
+                existingSubModuleIds.add(candidateId);
+                return byId;
+            }
+        }
+        if (byId != null) {
+            if (namesConflict(byId.getSubModuleName(), subName)) {
+                String newId = base62Generator.generateUnique('s', existingSubModuleIds);
+                log.warn("ID_HIJACK_BLOCKED subModule aiId={} aiName={} existingName={} module={} → newId={}",
+                        candidateId, subName, byId.getSubModuleName(), module.getId(), newId);
+                SubModuleDto created = new SubModuleDto();
+                created.setId(newId);
+                module.getSubModules().put(newId, created);
+                existingSubModuleIds.add(newId);
+                return created;
+            }
+            return byId;
+        }
+        // 3) 跨模块 id 冲突 / reserved → 重新生成
+        String newId = candidateId;
+        if (existingSubModuleIds.contains(candidateId)) {
+            newId = base62Generator.generateUnique('s', existingSubModuleIds);
+            boolean reserved = reservedDeletedNodeIds != null
+                    && (reservedDeletedNodeIds.contains(candidateId) || reservedDeletedNodeIds.contains(rawSubId));
+            log.warn("{} subModule aiId={} → newId={}",
+                    reserved ? "ID_RESERVED_FROM_DELETED" : "ID_COLLISION",
+                    candidateId, newId);
+        }
+        SubModuleDto created = new SubModuleDto();
+        created.setId(newId);
+        module.getSubModules().put(newId, created);
+        existingSubModuleIds.add(newId);
+        return created;
+    }
+
+    private FunctionDto resolveFunctionForMerge(SubModuleDto sub,
+                                                Set<String> existingFunctionIds,
+                                                String candidateId,
+                                                String rawFnId,
+                                                String fnName,
+                                                Set<String> reservedDeletedNodeIds) {
+        // 1) 同名优先（本子模块内）
+        if (StringUtils.hasText(fnName)) {
+            FunctionDto byName = findFunctionByName(sub, fnName);
+            if (byName != null) {
+                if (!byName.getId().equals(candidateId) && !byName.getId().equals(rawFnId)) {
+                    log.info("NAME_REMAP function aiId={} name={} sub={} → reuse={}",
+                            candidateId, fnName, sub.getId(), byName.getId());
+                }
+                return byName;
+            }
+        }
+        // 2) 本子模块内 ID 命中
+        FunctionDto byId = sub.getFunctions().get(candidateId);
+        if (byId == null && !candidateId.equals(rawFnId)) {
+            byId = sub.getFunctions().get(rawFnId);
+            if (byId != null && !namesConflict(byId.getFunctionName(), fnName)) {
+                log.info("将历史遗留 6 位功能 ID {} 重命名为 5 位 ID {}", rawFnId, candidateId);
+                sub.getFunctions().remove(rawFnId);
+                byId.setId(candidateId);
+                sub.getFunctions().put(candidateId, byId);
+                existingFunctionIds.add(candidateId);
+                return byId;
+            }
+        }
+        if (byId != null) {
+            if (namesConflict(byId.getFunctionName(), fnName)) {
+                String newId = base62Generator.generateUnique('f', existingFunctionIds);
+                log.warn("ID_HIJACK_BLOCKED function aiId={} aiName={} existingName={} sub={} → newId={}",
+                        candidateId, fnName, byId.getFunctionName(), sub.getId(), newId);
+                FunctionDto created = new FunctionDto();
+                created.setId(newId);
+                sub.getFunctions().put(newId, created);
+                existingFunctionIds.add(newId);
+                return created;
+            }
+            return byId;
+        }
+        // 3) 跨子模块 id 冲突 / reserved → 重新生成
+        String newId = candidateId;
+        if (existingFunctionIds.contains(candidateId)) {
+            newId = base62Generator.generateUnique('f', existingFunctionIds);
+            boolean reserved = reservedDeletedNodeIds != null
+                    && (reservedDeletedNodeIds.contains(candidateId) || reservedDeletedNodeIds.contains(rawFnId));
+            log.warn("{} function aiId={} → newId={}",
+                    reserved ? "ID_RESERVED_FROM_DELETED" : "ID_COLLISION",
+                    candidateId, newId);
+        }
+        FunctionDto created = new FunctionDto();
+        created.setId(newId);
+        sub.getFunctions().put(newId, created);
+        existingFunctionIds.add(newId);
+        return created;
+    }
+
+    /** AI 名称非空且与已有名称不同 → 冲突（ID 劫持） */
+    private boolean namesConflict(String existingName, String aiName) {
+        if (!StringUtils.hasText(aiName)) {
+            return false;
+        }
+        if (!StringUtils.hasText(existingName)) {
+            return false;
+        }
+        return !aiName.trim().equals(existingName.trim());
+    }
+
+    /**
+     * AI 合并后：按基线同名强制改回旧 module/sub/function ID，避免落库成对新增+删除。
+     */
+    private void reconcileModuleIdsWithBaseline(ModuleHierarchy current, ModuleHierarchy baseline) {
+        if (current == null || current.getModules() == null || baseline == null || baseline.getModules() == null) {
+            return;
+        }
+        Map<String, ModuleDto> baselineByName = new LinkedHashMap<>();
+        for (ModuleDto bm : baseline.getModules().values()) {
+            String key = normalizeModuleNameKey(bm.getModuleName());
+            if (key != null) {
+                baselineByName.putIfAbsent(key, bm);
+            }
+        }
+
+        Map<String, ModuleDto> rebuilt = new LinkedHashMap<>();
+        Set<String> consumedCurrentIds = new HashSet<>();
+
+        // 1) 已与基线同 id 且名称不冲突的节点先入座（继承空壳 / 已复用）
+        for (ModuleDto m : current.getModules().values()) {
+            ModuleDto bm = baseline.getModules().get(m.getId());
+            if (bm == null || namesConflict(bm.getModuleName(), m.getModuleName())) {
+                continue;
+            }
+            reconcileSubFunctionIdsWithBaseline(m, bm);
+            rebuilt.put(m.getId(), m);
+            consumedCurrentIds.add(m.getId());
+        }
+
+        // 2) 其余：同名 → 并入基线 id；无同名 → 原样保留
+        for (ModuleDto m : current.getModules().values()) {
+            if (consumedCurrentIds.contains(m.getId())) {
+                continue;
+            }
+            String key = normalizeModuleNameKey(m.getModuleName());
+            ModuleDto bm = key == null ? null : baselineByName.get(key);
+            if (bm != null) {
+                ModuleDto target = rebuilt.get(bm.getId());
+                if (target != null) {
+                    log.info("POST_AI_ID_REMAP merge name={} dropId={} keepId={}",
+                            m.getModuleName(), m.getId(), bm.getId());
+                    mergeModuleChildrenByName(target, m);
+                } else {
+                    log.info("POST_AI_ID_REMAP name={} {} → {}", m.getModuleName(), m.getId(), bm.getId());
+                    m.setId(bm.getId());
+                    reconcileSubFunctionIdsWithBaseline(m, bm);
+                    rebuilt.put(bm.getId(), m);
+                }
+                consumedCurrentIds.add(m.getId());
+            } else {
+                rebuilt.put(m.getId(), m);
+                consumedCurrentIds.add(m.getId());
+            }
+        }
+        current.setModules(rebuilt);
+    }
+
+    /** 将 from 的子树按同名合并进 into（保留 into 的 id） */
+    private void mergeModuleChildrenByName(ModuleDto into, ModuleDto from) {
+        if (into == null || from == null || from.getSubModules() == null) {
+            return;
+        }
+        if (into.getKeywords() != null && from.getKeywords() != null) {
+            for (String kw : from.getKeywords()) {
+                if (StringUtils.hasText(kw) && !into.getKeywords().contains(kw)) {
+                    into.getKeywords().add(kw);
+                }
+            }
+        }
+        for (SubModuleDto fromSub : from.getSubModules().values()) {
+            SubModuleDto intoSub = findSubModuleByName(into, fromSub.getSubModuleName());
+            if (intoSub == null) {
+                into.getSubModules().put(fromSub.getId(), fromSub);
+            } else {
+                mergeSubModuleChildrenByName(intoSub, fromSub);
+            }
+        }
+    }
+
+    private void mergeSubModuleChildrenByName(SubModuleDto into, SubModuleDto from) {
+        if (into.getKeywords() != null && from.getKeywords() != null) {
+            for (String kw : from.getKeywords()) {
+                if (StringUtils.hasText(kw) && !into.getKeywords().contains(kw)) {
+                    into.getKeywords().add(kw);
+                }
+            }
+        }
+        if (from.getFunctions() == null) {
+            return;
+        }
+        for (FunctionDto fromFn : from.getFunctions().values()) {
+            FunctionDto intoFn = findFunctionByName(into, fromFn.getFunctionName());
+            if (intoFn == null) {
+                into.getFunctions().put(fromFn.getId(), fromFn);
+            } else {
+                if (fromFn.getClassPaths() != null) {
+                    intoFn.getClassPaths().addAll(fromFn.getClassPaths());
+                }
+                if (fromFn.getMethodSignatures() != null) {
+                    intoFn.getMethodSignatures().addAll(fromFn.getMethodSignatures());
+                }
+            }
+        }
+    }
+
+    /** 在已改回基线 moduleId 的模块上，按同名把 sub/function id 也对齐基线 */
+    private void reconcileSubFunctionIdsWithBaseline(ModuleDto currentMod, ModuleDto baselineMod) {
+        if (currentMod == null || baselineMod == null
+                || currentMod.getSubModules() == null || baselineMod.getSubModules() == null) {
+            return;
+        }
+        Map<String, SubModuleDto> rebuiltSubs = new LinkedHashMap<>();
+        for (SubModuleDto sm : currentMod.getSubModules().values()) {
+            SubModuleDto bsm = findSubModuleByName(baselineMod, sm.getSubModuleName());
+            if (bsm != null && !bsm.getId().equals(sm.getId())) {
+                log.info("POST_AI_ID_REMAP sub name={} {} → {}", sm.getSubModuleName(), sm.getId(), bsm.getId());
+                SubModuleDto existing = rebuiltSubs.get(bsm.getId());
+                if (existing != null) {
+                    mergeSubModuleChildrenByName(existing, sm);
+                    continue;
+                }
+                sm.setId(bsm.getId());
+                reconcileFunctionIdsWithBaseline(sm, bsm);
+            } else if (bsm != null) {
+                reconcileFunctionIdsWithBaseline(sm, bsm);
+            }
+            SubModuleDto clash = rebuiltSubs.get(sm.getId());
+            if (clash != null && clash != sm) {
+                mergeSubModuleChildrenByName(clash, sm);
+            } else {
+                rebuiltSubs.put(sm.getId(), sm);
+            }
+        }
+        currentMod.setSubModules(rebuiltSubs);
+    }
+
+    private void reconcileFunctionIdsWithBaseline(SubModuleDto currentSub, SubModuleDto baselineSub) {
+        if (currentSub == null || baselineSub == null
+                || currentSub.getFunctions() == null || baselineSub.getFunctions() == null) {
+            return;
+        }
+        Map<String, FunctionDto> rebuilt = new LinkedHashMap<>();
+        for (FunctionDto fn : currentSub.getFunctions().values()) {
+            FunctionDto bf = findFunctionByName(baselineSub, fn.getFunctionName());
+            if (bf != null && !bf.getId().equals(fn.getId())) {
+                log.info("POST_AI_ID_REMAP function name={} {} → {}", fn.getFunctionName(), fn.getId(), bf.getId());
+                FunctionDto existing = rebuilt.get(bf.getId());
+                if (existing != null) {
+                    if (fn.getClassPaths() != null) {
+                        existing.getClassPaths().addAll(fn.getClassPaths());
+                    }
+                    if (fn.getMethodSignatures() != null) {
+                        existing.getMethodSignatures().addAll(fn.getMethodSignatures());
+                    }
+                    continue;
+                }
+                fn.setId(bf.getId());
+            }
+            FunctionDto clash = rebuilt.get(fn.getId());
+            if (clash != null && clash != fn) {
+                if (fn.getClassPaths() != null) {
+                    clash.getClassPaths().addAll(fn.getClassPaths());
+                }
+                if (fn.getMethodSignatures() != null) {
+                    clash.getMethodSignatures().addAll(fn.getMethodSignatures());
+                }
+            } else {
+                rebuilt.put(fn.getId(), fn);
+            }
+        }
+        currentSub.setFunctions(rebuilt);
+    }
+
+    private ModuleDto findModuleByName(ModuleHierarchy hierarchy, String moduleName) {
+        if (hierarchy == null || hierarchy.getModules() == null || !StringUtils.hasText(moduleName)) {
+            return null;
+        }
+        for (ModuleDto m : hierarchy.getModules().values()) {
+            if (moduleName.equals(m.getModuleName())) {
+                return m;
+            }
+        }
+        return null;
+    }
+
+    private SubModuleDto findSubModuleByName(ModuleDto module, String subModuleName) {
+        if (module == null || module.getSubModules() == null || !StringUtils.hasText(subModuleName)) {
+            return null;
+        }
+        for (SubModuleDto sm : module.getSubModules().values()) {
+            if (subModuleName.equals(sm.getSubModuleName())) {
+                return sm;
+            }
+        }
+        return null;
+    }
+
+    private FunctionDto findFunctionByName(SubModuleDto sub, String functionName) {
+        if (sub == null || sub.getFunctions() == null || !StringUtils.hasText(functionName)) {
+            return null;
+        }
+        for (FunctionDto fn : sub.getFunctions().values()) {
+            if (functionName.equals(fn.getFunctionName())) {
+                return fn;
+            }
+        }
+        return null;
     }
 
     private void mergeKeywords(List<String> existing, JsonNode keywordsNode) {
@@ -923,7 +2328,7 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
      * 全量重写：先 deleteByTaskId，再把 DTO 树展开为 3 行结构批量 insert
      */
     private void persistAll(Long taskId, Long systemId, ModuleHierarchy hierarchy) {
-        nodeMapper.delete(new LambdaQueryWrapper<ModuleHierarchyNode>().eq(ModuleHierarchyNode::getTaskId, taskId));
+        nodeMapper.deleteByTaskId(taskId);
         if (hierarchy.getModules().isEmpty()) {
             return;
         }
@@ -940,8 +2345,8 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
             modRow.setKeywords(serializeJsonArray(m.getKeywords()));
             modRow.setClassPaths(null);
             modRow.setConfirmed(Boolean.TRUE.equals(m.getConfirmed()));
-            modRow.setCreatedAt(now);
-            modRow.setUpdatedAt(now);
+            modRow.setCreatedDate(now);
+            modRow.setUpdatedDate(now);
             rows.add(modRow);
         }
         nodeMapper.batchInsert(rows);
@@ -977,8 +2382,8 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                 subRow.setKeywords(serializeJsonArray(sm.getKeywords()));
                 subRow.setClassPaths(null);
                 subRow.setConfirmed(Boolean.TRUE.equals(sm.getConfirmed()));
-                subRow.setCreatedAt(now);
-                subRow.setUpdatedAt(now);
+                subRow.setCreatedDate(now);
+                subRow.setUpdatedDate(now);
                 subRows.add(subRow);
             }
         }
@@ -1019,8 +2424,8 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     fnRow.setClassPaths(serializeJsonArray(new ArrayList<>(fn.getClassPaths())));
                     fnRow.setMethodSignatures(serializeJsonArray(new ArrayList<>(fn.getMethodSignatures())));
                     fnRow.setConfirmed(Boolean.TRUE.equals(fn.getConfirmed()));
-                    fnRow.setCreatedAt(now);
-                    fnRow.setUpdatedAt(now);
+                    fnRow.setCreatedDate(now);
+                    fnRow.setUpdatedDate(now);
                     fnRows.add(fnRow);
                 }
             }

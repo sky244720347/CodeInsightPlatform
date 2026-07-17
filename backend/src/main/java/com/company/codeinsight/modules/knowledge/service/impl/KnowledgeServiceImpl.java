@@ -83,11 +83,10 @@ public class KnowledgeServiceImpl implements KnowledgeService {
     private TaskWorkspacePaths taskWorkspacePaths;
 
     /**
-     * 草稿正文存储根目录，与 ci_knowledge_draft.content_uri 的相对路径拼接。
-     * 配置项：{@code code-insight.storage.local-path}，默认 {@code ./storage}。
+     * 草稿正文存储根目录，与 ci_knowledge_draft.content_uri 经 EnvStorageResolver 解析。
      */
     @Autowired
-    private com.company.codeinsight.common.storage.StorageProperties storageProperties;
+    private com.company.codeinsight.common.storage.EnvStorageResolver storageResolver;
 
     @Autowired
     private com.company.codeinsight.modules.draft.service.DraftService draftService;
@@ -170,7 +169,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
 
             // 拷贝各个草稿的物理 Markdown 到发布目录下
             for (KnowledgeDraft draft : drafts) {
-                File draftFile = DraftFileUtil.resolve(draft.getContentUri(), storageProperties).toFile();
+                File draftFile = DraftFileUtil.resolve(draft.getContentUri(), storageResolver).toFile();
                 String content = draftFile.exists() ? Files.readString(draftFile.toPath()) : "# " + draft.getModuleName();
 
                 String cleanFileName = draft.getModuleName().replaceAll("[\\s/\\(\\)]", "_") + ".md";
@@ -317,7 +316,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             pcBuilder.append("# 待确认事项汇总清单\n\n");
             boolean hasPc = false;
             for (KnowledgeDraft draft : drafts) {
-                File draftFile = DraftFileUtil.resolve(draft.getContentUri(), storageProperties).toFile();
+                File draftFile = DraftFileUtil.resolve(draft.getContentUri(), storageResolver).toFile();
                 if (draftFile.exists()) {
                     List<String> lines = Files.readAllLines(draftFile.toPath());
                     for (String line : lines) {
@@ -386,7 +385,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         version.setPushMethod("GIT");
         version.setConfirmedBy(confirmedBy);
         version.setConfirmedAt(LocalDateTime.now());
-        version.setCreatedAt(LocalDateTime.now());
+        version.setCreatedDate(LocalDateTime.now());
 
         versionMapper.insert(version);
         return version;
@@ -427,7 +426,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         LambdaQueryWrapper<KnowledgeVersion> qw = new LambdaQueryWrapper<>();
         qw.eq(systemId != null, KnowledgeVersion::getSystemId, systemId)
           .eq(repositoryId != null, KnowledgeVersion::getRepositoryId, repositoryId)
-          .orderByDesc(KnowledgeVersion::getCreatedAt);
+          .orderByDesc(KnowledgeVersion::getCreatedDate);
         Page<KnowledgeVersion> result = versionMapper.selectPage(page, qw);
         enrichActivePublished(result.getRecords());
         return result;

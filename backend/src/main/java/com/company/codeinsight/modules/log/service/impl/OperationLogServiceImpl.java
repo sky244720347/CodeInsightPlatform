@@ -35,9 +35,10 @@ public class OperationLogServiceImpl extends ServiceImpl<OperationLogMapper, Ope
         log.setActionType(truncate(actionType, MAX_ACTION_TYPE_LENGTH));
         log.setDetail(truncate(detail, MAX_DETAIL_LENGTH));
         log.setIpAddress("127.0.0.1");
-        log.setExceptionMsg(exceptionMsg);
+        log.setExceptionMsg(com.company.codeinsight.common.util.DbStringLimits.truncate(
+                exceptionMsg, com.company.codeinsight.common.util.DbStringLimits.EXCEPTION_MSG));
         log.setIsSuccess(success ? 1 : 0);
-        log.setCreatedAt(LocalDateTime.now());
+        log.setCreatedDate(LocalDateTime.now());
         this.save(log);
     }
 
@@ -54,7 +55,7 @@ public class OperationLogServiceImpl extends ServiceImpl<OperationLogMapper, Ope
                 .like(StringUtils.hasText(username), OperationLog::getUsername, username)
                 .eq(StringUtils.hasText(actionType), OperationLog::getActionType, actionType)
                 .eq(isSuccess != null, OperationLog::getIsSuccess, isSuccess)
-                .orderByDesc(OperationLog::getCreatedAt);
+                .orderByDesc(OperationLog::getCreatedDate);
         return this.page(page, queryWrapper);
     }
 

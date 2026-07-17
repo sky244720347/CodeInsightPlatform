@@ -41,7 +41,7 @@ public class UserQuotaServiceImpl extends ServiceImpl<UserQuotaMapper, UserQuota
             java.util.List<Long> ids = users.stream().map(UserAccount::getId).toList();
             qw.in(UserQuota::getUserId, ids);
         }
-        qw.orderByDesc(UserQuota::getUpdatedAt);
+        qw.orderByDesc(UserQuota::getUpdatedDate);
         return this.page(page, qw);
     }
 }

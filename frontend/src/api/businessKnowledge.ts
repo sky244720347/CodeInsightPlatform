@@ -13,8 +13,8 @@ export interface BusinessKnowledge {
   version: number;
   /** 最后修改人 */
   updatedBy?: string | null;
-  createdAt: string;
-  updatedAt: string;
+  createdDate: string;
+  updatedDate: string;
 }
 
 /**

@@ -103,8 +103,8 @@ const SystemPromptEditorModal: React.FC<Props> = ({
       isDefault: 0,
       promptType,
       lifecycle: 'DRAFT',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
+      createdDate: new Date().toISOString(),
+      updatedDate: new Date().toISOString(),
     };
     setTrialPreview(preview);
     setTrialOpen(true);

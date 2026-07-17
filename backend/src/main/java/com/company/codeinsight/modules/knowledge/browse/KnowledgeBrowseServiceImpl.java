@@ -88,7 +88,7 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
     private String sourceType;
 
     @Autowired
-    private com.company.codeinsight.common.storage.StorageProperties storageProperties;
+    private com.company.codeinsight.common.storage.EnvStorageResolver storageResolver;
 
     @Autowired
     private SystemApplicationMapper systemMapper;
@@ -140,8 +140,8 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
         enrichItemsWithContext(items, taskById);
         items = applyClientSideFilters(items, query);
         items.sort((a, b) -> {
-            String ua = a.getUpdatedAt() == null ? "" : a.getUpdatedAt();
-            String ub = b.getUpdatedAt() == null ? "" : b.getUpdatedAt();
+            String ua = a.getUpdatedDate() == null ? "" : a.getUpdatedDate();
+            String ub = b.getUpdatedDate() == null ? "" : b.getUpdatedDate();
             return ub.compareTo(ua);
         });
 
@@ -167,7 +167,7 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
         }
         if (StringUtils.hasText(req.getContentUri())) {
             try {
-                Path p = DraftFileUtil.resolve(req.getContentUri(), storageProperties);
+                Path p = DraftFileUtil.resolve(req.getContentUri(), storageResolver);
                 if (!Files.isRegularFile(p)) {
                     throw new BusinessException("文件不存在");
                 }
@@ -226,7 +226,7 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
                 item.setFilePath(e.relativePath());
                 item.setSize(e.size());
                 item.setStatus(STATUS_GENERATED);
-                item.setUpdatedAt(formatDate(e.updatedAt()));
+                item.setUpdatedDate(formatDate(e.updatedDate()));
                 item.setSource(SOURCE_RELEASE);
                 item.setContentUri(releaseBrowseHelper.buildContentUri(ctx, e.relativePath()));
                 item.setSystemId(ctx.getSystemId());
@@ -244,8 +244,8 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
 
         items = applyClientSideFilters(items, query);
         items.sort((a, b) -> {
-            String ua = a.getUpdatedAt() == null ? "" : a.getUpdatedAt();
-            String ub = b.getUpdatedAt() == null ? "" : b.getUpdatedAt();
+            String ua = a.getUpdatedDate() == null ? "" : a.getUpdatedDate();
+            String ub = b.getUpdatedDate() == null ? "" : b.getUpdatedDate();
             return ub.compareTo(ua);
         });
 
@@ -328,7 +328,7 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
             if (narrowedWsIds.isEmpty()) return Collections.emptyList();
             qw.in(KnowledgeDraft::getWorkspaceId, narrowedWsIds);
         }
-        qw.orderByDesc(KnowledgeDraft::getUpdatedAt);
+        qw.orderByDesc(KnowledgeDraft::getUpdatedDate);
         List<KnowledgeDraft> drafts = draftMapper.selectList(qw);
         if (drafts.isEmpty()) return Collections.emptyList();
 
@@ -352,7 +352,7 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
             item.setFilePath(d.getFilePath());
             item.setSize(safeFileSize(d.getContentUri()));
             item.setStatus(d.getStatus());
-            item.setUpdatedAt(formatDate(d.getUpdatedAt()));
+            item.setUpdatedDate(formatDate(d.getUpdatedDate()));
             item.setSource(SOURCE_DB);
             out.add(item);
         }
@@ -394,7 +394,7 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
                 item.setFilePath(e.relativePath());
                 item.setSize(e.size());
                 item.setStatus(STATUS_GENERATED);
-                item.setUpdatedAt(formatDate(e.updatedAt()));
+                item.setUpdatedDate(formatDate(e.updatedDate()));
                 item.setSource(SOURCE_TEMP_REPOS);
                 out.add(item);
             }
@@ -431,8 +431,8 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
         if (items.isEmpty()) return items;
         String keyword = StringUtils.hasText(query.getKeyword()) ? query.getKeyword().trim().toLowerCase(Locale.ROOT) : null;
         String status = StringUtils.hasText(query.getStatus()) ? query.getStatus().toUpperCase(Locale.ROOT) : null;
-        LocalDateTime from = parseDate(query.getCreatedAtStart());
-        LocalDateTime to = parseDate(query.getCreatedAtEnd());
+        LocalDateTime from = parseDate(query.getCreatedDateStart());
+        LocalDateTime to = parseDate(query.getCreatedDateEnd());
 
         return items.stream().filter(it -> {
             // keyword 匹配文件名（不区分大小写）
@@ -461,9 +461,9 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
                     return false;
                 }
             }
-            // 时间区间（updatedAt）
+            // 时间区间（updatedDate）
             if (from != null || to != null) {
-                LocalDateTime u = parseDate(it.getUpdatedAt());
+                LocalDateTime u = parseDate(it.getUpdatedDate());
                 if (u == null) return false;
                 if (from != null && u.isBefore(from)) return false;
                 if (to != null && u.isAfter(to)) return false;
@@ -498,7 +498,7 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
     private Long safeFileSize(String contentUri) {
         if (!StringUtils.hasText(contentUri)) return null;
         try {
-            Path p = DraftFileUtil.resolve(contentUri, storageProperties);
+            Path p = DraftFileUtil.resolve(contentUri, storageResolver);
             File f = p.toFile();
             return f.exists() ? Files.size(p) : 0L;
         } catch (Exception e) {

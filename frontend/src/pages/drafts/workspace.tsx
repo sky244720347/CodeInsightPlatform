@@ -41,7 +41,7 @@ import {
   ColumnHeightOutlined,
 } from '@ant-design/icons';
 // 模块目录树节点改用 Tag 展示每个文档的状态文案，不再依赖 Badge 小圆点
-import Editor from '@monaco-editor/react';
+import Editor, { DiffEditor } from '@monaco-editor/react';
 import DraftModuleDirectory from '../../components/DraftModuleDirectory';
 import MarkdownView from '../../components/MarkdownView';
 import { getModuleHierarchy } from '../../api/task';
@@ -55,6 +55,8 @@ import {
   getRevisions,
   getWorkspaceByTask,
   getWorkspaceTree,
+  getWorkspaceTreeDiff,
+  getDocumentDiff,
   releaseDraftEditLock,
   renewDraftEditLock,
   saveDraft,
@@ -62,12 +64,13 @@ import {
   type DraftReviewComment,
   type DraftRevision,
   type DraftSourceReference,
-  approveDraft,
-  regenerateDraft,
   type DraftTreeNode,
+  type DraftTreeDiffDto,
   type DraftWorkspace,
   type KnowledgeDraft,
   type TaskCommentDto,
+  approveDraft,
+  regenerateDraft,
 } from '../../api/draft';
 import type { Task } from '../../types';
 import type { DraftHierarchyTreeNode } from '../../utils/draftHierarchyTree';
@@ -79,7 +82,7 @@ import {
   flattenDraftLeaves,
 } from '../../utils/draftHierarchyTree';
 import { buildHierarchyAntTreeNodes } from '../../utils/draftHierarchyTreeUi';
-import { confirmTask, getTask } from '../../api/task';
+import { confirmTask, getTask, getModuleHierarchyDiff, type ModuleHierarchyDiffDto } from '../../api/task';
 import { getCurrentOperator } from '../../api/auth';
 
 const { Text } = Typography;
@@ -121,7 +124,7 @@ const READ_ONLY_STATUSES = ['PUSHED', 'PUSHING', 'ARCHIVED'];
  * - preview 只显示 Markdown 渲染（含 Mermaid 图）
  * - split  左右分屏：左编辑右预览
  */
-type ViewMode = 'edit' | 'preview' | 'split';
+type ViewMode = 'edit' | 'preview' | 'split' | 'diff';
 
 /** 草稿编辑锁状态（对接后端 Redis 分布式锁） */
 type EditLockStatus = 'off' | 'acquiring' | 'held' | 'blocked';
@@ -213,6 +216,8 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
 
   // ============ 当前任务 ============
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
+  /** v1: Phase 4 diff 视图模式（INITIAL 任务默认 full，INCREMENTAL 任务默认 diff） */
+  const [displayMode, setDisplayMode] = useState<'full' | 'diff'>('full');
   const [taskLoading, setTaskLoading] = useState(false);
 
   // ============ 演示模式开关 ============
@@ -235,6 +240,19 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   const [editLockStatus, setEditLockStatus] = useState<EditLockStatus>('off');
   const editLockDraftIdRef = useRef<number | null>(null);
   const editLockRenewTimer = useRef<number | null>(null);
+
+  // ============ DIFF 视图状态 ============
+  const [diffBaselineContent, setDiffBaselineContent] = useState('');
+  const [diffCurrentContent, setDiffCurrentContent] = useState('');
+  const [diffLoading, setDiffLoading] = useState(false);
+
+  // ============ 增量 DIFF 桶 + 层级 DIFF（INCREMENTAL 任务） ============
+  // diffBuckets: 文档树 4 桶（new/modified/inherited/deleted），用于 DIFF 视图过滤 + Badge
+  // hierarchyDiff: 模块层级 DIFF，用于模块目录小窗的新增/删除/修改标记
+  const [diffBuckets, setDiffBuckets] = useState<DraftTreeDiffDto | null>(null);
+  const [hierarchyDiff, setHierarchyDiff] = useState<ModuleHierarchyDiffDto | null>(null);
+  /** v2: 递增计数器，用于手动触发 diff 桶刷新（approve 后调用） */
+  const [diffVersion, setDiffVersion] = useState(0);
 
   // ============ 信息查询弹窗 ============
   // 由「代码来源 / 修订记录」两个按钮触发（复核意见已抽到任务级），null 表示无弹窗。
@@ -328,7 +346,10 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   useEffect(() => {
     setTaskLoading(true);
     getTask(taskId)
-      .then(setSelectedTask)
+      .then((t) => {
+        setSelectedTask(t);
+        if (t?.type === 'INCREMENTAL') setDisplayMode('diff');
+      })
       .catch(() => {
         message.error('加载任务信息失败');
         setSelectedTask(null);
@@ -351,8 +372,147 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     [isReadOnly, isTaskLocked, editLockStatus],
   );
 
-  // 平铺有文档的功能叶子，用于上一篇/下一篇导航
-  const documentLeaves = useMemo(() => collectDocumentLeaves(hierarchyTree), [hierarchyTree]);
+  // v2: 构建 draftId → 变更类型 映射（INCREMENTAL 任务，用于 Badge + DIFF 过滤）
+  const draftDiffTypeMap = useMemo(() => {
+    const map = new Map<number, 'new' | 'modified' | 'inherited' | 'deleted'>();
+    if (!diffBuckets) return map;
+    diffBuckets.newRows.forEach((n) => n.id > 0 && map.set(n.id, 'new'));
+    diffBuckets.modifiedRows.forEach((n) => n.id > 0 && map.set(n.id, 'modified'));
+    diffBuckets.inheritedRows.forEach((n) => n.id > 0 && map.set(n.id, 'inherited'));
+    diffBuckets.deletedRows.forEach((n) => n.id > 0 && map.set(n.id, 'deleted'));
+    return map;
+  }, [diffBuckets]);
+
+  // v2: 构建 模块/子模块/功能 名称路径 → 变更类型 映射（用于模块目录小窗 Badge）
+  const hierarchyDiffTypeMap = useMemo(() => {
+    const map = new Map<string, 'new' | 'modified' | 'inherited' | 'deleted'>();
+    if (!hierarchyDiff) return map;
+    const collectNames = (h: { modules?: Record<string, any> } | null | undefined, type: 'new' | 'modified' | 'inherited' | 'deleted') => {
+      if (!h?.modules) return;
+      Object.values(h.modules).forEach((m: any) => {
+        if (m.moduleName) map.set(m.moduleName, type);
+        if (m.subModules) {
+          Object.values(m.subModules).forEach((sm: any) => {
+            if (sm.subModuleName) map.set(`${m.moduleName}/${sm.subModuleName}`, type);
+            if (sm.functions) {
+              Object.values(sm.functions).forEach((fn: any) => {
+                if (fn.functionName) map.set(`${m.moduleName}/${sm.subModuleName}/${fn.functionName}`, type);
+              });
+            }
+          });
+        }
+      });
+    };
+    collectNames(hierarchyDiff.newHierarchy, 'new');
+    collectNames(hierarchyDiff.modifiedHierarchy, 'modified');
+    collectNames(hierarchyDiff.inheritedHierarchy, 'inherited');
+    collectNames(hierarchyDiff.deletedHierarchy, 'deleted');
+    return map;
+  }, [hierarchyDiff]);
+
+  // v2: 为层级树节点添加 diffType 标记 + 追加删除节点
+  const taggedHierarchyTree = useMemo((): DraftHierarchyTreeNode[] => {
+    const tagNodes = (nodes: DraftHierarchyTreeNode[], ancestors: string[]): DraftHierarchyTreeNode[] =>
+      nodes.map((n) => {
+        const pathParts = [...ancestors, n.title];
+        const path = pathParts.join('/');
+        let diffType: DraftHierarchyTreeNode['diffType'] | undefined;
+        if (n.nodeType === 'FUNCTION' && n.draftId != null) {
+          diffType = draftDiffTypeMap.get(n.draftId);
+        }
+        if (!diffType && hierarchyDiffTypeMap.size > 0) {
+          diffType = hierarchyDiffTypeMap.get(path);
+          if (!diffType && n.nodeType === 'MODULE') {
+            diffType = hierarchyDiffTypeMap.get(n.title);
+          }
+        }
+        const children = n.children?.length ? tagNodes(n.children, pathParts) : undefined;
+        return { ...n, diffType, children };
+      });
+
+    let result = tagNodes(hierarchyTree, []);
+
+    // v2: 追加已删除的模块层级节点（从 hierarchyDiff.deletedHierarchy 构建）
+    if (hierarchyDiff?.deletedHierarchy?.modules) {
+      const deletedNodes: DraftHierarchyTreeNode[] = [];
+      Object.values(hierarchyDiff.deletedHierarchy.modules).forEach((m: any) => {
+        const modNode: DraftHierarchyTreeNode = {
+          key: `deleted-mod-${m.id || m.moduleName}`,
+          nodeType: 'MODULE',
+          title: m.moduleName,
+          hasDocument: false,
+          diffType: 'deleted',
+          children: [],
+        };
+        if (m.subModules) {
+          Object.values(m.subModules).forEach((sm: any) => {
+            const subNode: DraftHierarchyTreeNode = {
+              key: `deleted-sub-${m.id || m.moduleName}-${sm.id || sm.subModuleName}`,
+              nodeType: 'SUB_MODULE',
+              title: sm.subModuleName,
+              hasDocument: false,
+              diffType: 'deleted',
+              children: [],
+            };
+            if (sm.functions) {
+              Object.values(sm.functions).forEach((fn: any) => {
+                subNode.children!.push({
+                  key: `deleted-fn-${m.id || m.moduleName}-${sm.id || sm.subModuleName}-${fn.id || fn.functionName}`,
+                  nodeType: 'FUNCTION',
+                  title: fn.functionName,
+                  hasDocument: false,
+                  diffType: 'deleted',
+                  classPaths: fn.classPaths,
+                  methodSignatures: fn.methodSignatures,
+                });
+              });
+            }
+            modNode.children!.push(subNode);
+          });
+        }
+        deletedNodes.push(modNode);
+      });
+      if (deletedNodes.length > 0) result = [...result, ...deletedNodes];
+    }
+
+    return result;
+  }, [hierarchyTree, draftDiffTypeMap, hierarchyDiffTypeMap, hierarchyDiff]);
+
+  // v2: DIFF 模式下过滤层级树 — 只展示 modified + new + deleted，不含 inherited
+  const isIncremental = selectedTask?.type === 'INCREMENTAL';
+  const effectiveHierarchyTree = useMemo(() => {
+    if (selectedTask?.type !== 'INCREMENTAL' || displayMode !== 'diff') {
+      return taggedHierarchyTree.map((n) => ({ ...n }));
+    }
+    const filterNodes = (nodes: DraftHierarchyTreeNode[]): DraftHierarchyTreeNode[] =>
+      nodes
+        .map((n) => {
+          if (n.children?.length) {
+            const filteredChildren = filterNodes(n.children);
+            if (filteredChildren.length > 0) return { ...n, children: filteredChildren };
+          }
+          // DIFF 模式：只展示非 inherited 的节点（new/modified/deleted）
+          if (n.diffType && n.diffType !== 'inherited') return n;
+          // 无 diffType 的功能节点（全量任务文档）在 DIFF 模式不展示
+          if (n.nodeType === 'FUNCTION' && n.hasDocument && !n.diffType) return null;
+          // MODULE/SUB_MODULE 无文档子节点时也过滤掉
+          if (n.nodeType !== 'FUNCTION' && !n.children?.length) return null;
+          return null;
+        })
+        .filter((n): n is DraftHierarchyTreeNode => n !== null);
+    return filterNodes(taggedHierarchyTree);
+  }, [taggedHierarchyTree, selectedTask, displayMode]);
+
+  const hierarchyFunctionCount = useMemo(() => countHierarchyFunctions(effectiveHierarchyTree), [effectiveHierarchyTree]);
+
+  // 模块层级树 → AntD Tree（使用 effectiveHierarchyTree 支持过滤 + Badge）
+  const treeNodes = useMemo(
+    () => buildHierarchyAntTreeNodes(effectiveHierarchyTree),
+    [effectiveHierarchyTree],
+  );
+
+  // 平铺有文档的功能叶子，用于上一篇/下一篇导航（v2: 使用 effectiveHierarchyTree 支持 DIFF 过滤）
+  const documentLeaves = useMemo(() => collectDocumentLeaves(effectiveHierarchyTree), [effectiveHierarchyTree]);
   const flatLeaves = useMemo(
     () => flattenDraftLeaves(treeData),
     [treeData],
@@ -439,6 +599,22 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
       .finally(() => setDraftsLoading(false));
   }, [taskId, demoMode]);
 
+  // v2: INCREMENTAL 任务加载 DIFF 桶 + 层级 DIFF（用于过滤 + Badge）
+  useEffect(() => {
+    if (!workspace?.id || !selectedTask || selectedTask.type !== 'INCREMENTAL') {
+      setDiffBuckets(null);
+      setHierarchyDiff(null);
+      return;
+    }
+    Promise.all([
+      getWorkspaceTreeDiff(workspace.id).catch(() => null),
+      getModuleHierarchyDiff(taskId).catch(() => null),
+    ]).then(([buckets, hDiff]) => {
+      setDiffBuckets(buckets);
+      setHierarchyDiff(hDiff);
+    });
+  }, [workspace?.id, selectedTask, taskId, diffVersion]);
+
   // 选中草稿变更：拉取内容 + 修订记录 + 复核意见 + 代码来源引用
   useEffect(() => {
     if (!selectedDraftId) {
@@ -475,6 +651,48 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
       })
       .finally(() => setInfoLoading(false));
   }, [treeData, selectedDraftId, demoMode]);
+
+  // v2: 当 effectiveHierarchyTree 变化时，如果当前选中不在有效树中，自动选第一个
+  useEffect(() => {
+    if (effectiveHierarchyTree.length > 0 && selectedDraftId) {
+      const allLeaves = collectDocumentLeaves(effectiveHierarchyTree);
+      const stillValid = allLeaves.some((leaf) => leaf.draftId === selectedDraftId);
+      if (!stillValid) {
+        const firstId = findFirstDraftId(effectiveHierarchyTree);
+        setSelectedDraftId(firstId);
+      }
+    } else if (effectiveHierarchyTree.length > 0 && !selectedDraftId) {
+      const firstId = findFirstDraftId(effectiveHierarchyTree);
+      setSelectedDraftId(firstId);
+    }
+  }, [effectiveHierarchyTree]);
+
+  useEffect(() => {
+    if (viewMode !== 'diff' || !selectedDraftId) {
+      setDiffBaselineContent('');
+      setDiffCurrentContent('');
+      return;
+    }
+    let cancelled = false;
+    setDiffLoading(true);
+    getDocumentDiff(selectedDraftId)
+      .then(async (dto) => {
+        if (cancelled) return;
+        const current = await getDraftContent(dto.currentDraftId);
+        if (cancelled) return;
+        setDiffCurrentContent(current);
+        setDiffBaselineContent(dto.baselineContent ?? '');
+      })
+      .catch(() => {
+        if (!cancelled) message.error('加载 DIFF 内容失败');
+      })
+      .finally(() => {
+        if (!cancelled) setDiffLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [viewMode, selectedDraftId]);
 
   // 草稿编辑锁：选中可编辑草稿时 acquire，周期 renew，切换/离开时 release
   useEffect(() => {
@@ -659,6 +877,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
       message.success('已审核通过，文档已锁定');
 
       const synced = await syncWorkspaceTreeFromServer();
+      setDiffVersion((v) => v + 1); // v2: 刷新 DIFF 桶
       if (!synced) return;
 
       const freshLeaves = collectDocumentLeaves(synced.hierarchyTree);
@@ -846,13 +1065,6 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   };
 
   const drawerVisible = moduleDirOpen || moduleDirPinned;
-  const hierarchyFunctionCount = useMemo(() => countHierarchyFunctions(hierarchyTree), [hierarchyTree]);
-
-  // 模块层级树 → AntD Tree
-  const treeNodes = useMemo(
-    () => buildHierarchyAntTreeNodes(hierarchyTree),
-    [hierarchyTree],
-  );
 
   // 状态栏渲染函数：提取为独立函数，页面和全屏 Modal 复用
   const renderStatusBar = () => (
@@ -992,15 +1204,71 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
       </div>
     ) : null;
 
-    // 视图切换组：edit / preview / split；位于工具栏最左侧，作为第一组
+    // 视图切换组：edit / preview / split + 变更类型感知的 DIFF 按钮
     // 容器复用 .ci-action-group（与"代码来源/重跑"等按钮组同尺寸），
     // Segmented 内部样式清零，让 label 与 .ci-action-group 内的按钮完全同尺寸
+    //
+    // v2: DIFF 按钮改为变更类型感知：
+    //   - 增量 + modified → "DIFF" 按钮，可点击切换到左右对比视图
+    //   - 增量 + new      → "新增" Tag，不可点击（无基线可对比）
+    //   - 增量 + inherited → "继承" Tag，不可点击（与基线一致，无差异）
+    //   - 非增量 / 无 diffType → 不展示
+    const currentDraftDiffType = selectedDraftId ? draftDiffTypeMap.get(selectedDraftId) : undefined;
+    const diffIndicator = (() => {
+      if (!isIncremental || !selectedDraftId) return null;
+      if (currentDraftDiffType === 'modified') {
+        return (
+          <Tooltip title="与基线版本左右对比">
+            <Button
+              size="small"
+              type={viewMode === 'diff' ? 'primary' : 'default'}
+              icon={<EyeOutlined />}
+              onClick={() => setViewMode(viewMode === 'diff' ? 'preview' : 'diff')}
+            >
+              DIFF
+            </Button>
+          </Tooltip>
+        );
+      }
+      if (currentDraftDiffType === 'new') {
+        return (
+          <Tooltip title="本次新增文档，无基线版本可对比">
+            <Tag color="green" style={{ margin: 0, cursor: 'default', fontSize: 12, padding: '2px 8px' }}>
+              新增
+            </Tag>
+          </Tooltip>
+        );
+      }
+      if (currentDraftDiffType === 'inherited') {
+        return (
+          <Tooltip title="基线继承文档，内容与已发布版本一致">
+            <Tag color="default" style={{ margin: 0, cursor: 'default', fontSize: 12, padding: '2px 8px' }}>
+              继承
+            </Tag>
+          </Tooltip>
+        );
+      }
+      // deleted 类型不在编辑器中展示（已在树中标记）
+      // 无 diffType 但有 baselineTaskId（旧数据兼容）→ 也展示 DIFF
+      const dn = findNodeInTreeData(treeData, selectedDraftId);
+      if (dn?.baselineTaskId) {
+        return (
+          <Tooltip title="基线继承文档，内容与已发布版本一致">
+            <Tag color="default" style={{ margin: 0, cursor: 'default', fontSize: 12, padding: '2px 8px' }}>
+              继承
+            </Tag>
+          </Tooltip>
+        );
+      }
+      return null;
+    })();
+
     const viewGroup = (
-      <Tooltip title="切换文档视图：编辑 / 预览 / 分屏">
-        <div className="ci-action-group">
+      <div className="ci-action-group" style={{ gap: 6 }}>
+        <Tooltip title="切换文档视图：编辑 / 预览 / 分屏">
           <Segmented
             className="ci-view-group"
-            value={viewMode}
+            value={viewMode === 'diff' ? 'preview' : viewMode}  // diff 模式时 Segmented 不高亮任何选项
             onChange={(v) => setViewMode(v as ViewMode)}
             options={VIEW_MODE_OPTIONS.map((o) => ({
               value: o.value,
@@ -1012,8 +1280,9 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
               ),
             }))}
           />
-        </div>
-      </Tooltip>
+        </Tooltip>
+        {diffIndicator}
+      </div>
     );
 
     // 当前草稿编辑组：仅保存这一篇选中草稿；任务级别操作已抽到顶层 renderTaskActions
@@ -1036,12 +1305,12 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
           }
         >
           <Button
-            icon={<CheckCircleOutlined />}
+            icon={isCurrentDraftConfirmed ? <CheckOutlined /> : <CheckCircleOutlined />}
             onClick={handleApprove}
             loading={approveInFlight}
             disabled={isTaskLocked || approveInFlight || isCurrentDraftConfirmed}
           >
-            通过
+            {isCurrentDraftConfirmed ? '已通过' : '通过'}
           </Button>
         </Tooltip>
         <Tooltip title="重跑此文档（重置为可编辑）">
@@ -1233,7 +1502,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                     <div className="ci-info-timeline-meta">
                       <span>操作人 {rev.author}</span>
                       <span className="ci-info-timeline-meta-sep">·</span>
-                      <span>{new Date(rev.createdAt).toLocaleString()}</span>
+                      <span>{new Date(rev.createdDate).toLocaleString()}</span>
                     </div>
                   </div>
                 </div>
@@ -1276,7 +1545,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                       </div>
                       <div className="ci-info-timeline-meta">
                         <ClockCircleOutlined />
-                        <span>{new Date(c.createdAt).toLocaleString()}</span>
+                        <span>{new Date(c.createdDate).toLocaleString()}</span>
                       </div>
                       <div className="ci-info-timeline-content">{c.comment}</div>
                     </div>
@@ -1352,6 +1621,18 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
               </>
             )}
             {taskLoading && <Text type="secondary">加载中…</Text>}
+            {/* v1: Phase 4 diff 视图切换（INCREMENTAL 任务可用） */}
+            {selectedTask?.type === 'INCREMENTAL' && (
+              <Segmented
+                size="small"
+                options={[
+                  { value: 'full', label: '全量' },
+                  { value: 'diff', label: 'DIFF' },
+                ]}
+                value={displayMode}
+                onChange={(v) => setDisplayMode(v as 'full' | 'diff')}
+              />
+            )}
           </Space>
           {renderTaskActions()}
         </div>
@@ -1376,6 +1657,14 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                           {statusLabel[selectedDraft.status] ?? selectedDraft.status}
                         </Tag>
                       )}
+                      {/* v2: 变更类型标识（INCREMENTAL 任务下） */}
+                      {isIncremental && selectedDraftId && (() => {
+                        const diffType = draftDiffTypeMap.get(selectedDraftId);
+                        if (diffType === 'new') return <Tag color="green">新增</Tag>;
+                        if (diffType === 'modified') return <Tag color="orange">修改</Tag>;
+                        if (diffType === 'inherited') return <Tag color="default">基线继承</Tag>;
+                        return null;
+                      })()}
                       {isTaskLocked && <Tag color="red">任务已锁定</Tag>}
                       {isReadOnly && <Tag color="default">只读浏览</Tag>}
                     </div>
@@ -1430,6 +1719,36 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                     {(viewMode === 'preview' || viewMode === 'split') && (
                       <div className="ci-md-scroll">
                         <MarkdownView content={editorContent} />
+                      </div>
+                    )}
+                    {viewMode === 'diff' && (
+                      <div className="ci-editor-shell ci-editor-shell-premium" style={{ minHeight: 0, height: '100%' }}>
+                        {diffLoading ? (
+                          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+                            <Text type="secondary">加载 DIFF 内容中…</Text>
+                          </div>
+                        ) : diffBaselineContent ? (
+                          <DiffEditor
+                            height="100%"
+                            language="markdown"
+                            original={diffBaselineContent}
+                            modified={diffCurrentContent}
+                            theme="vs-light"
+                            options={{
+                              readOnly: true,
+                              renderSideBySide: true,
+                              minimap: { enabled: false },
+                              wordWrap: 'on',
+                              fontSize: 14,
+                              fontFamily: 'Consolas, "Courier New", monospace',
+                              lineHeight: 22,
+                            }}
+                          />
+                        ) : (
+                          <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+                            <Text type="secondary">无基线版本可对比（本次新增文档）</Text>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -1815,7 +2134,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                         </div>
                         <div className="ci-info-timeline-meta">
                           <ClockCircleOutlined />
-                          <span>{new Date(c.createdAt).toLocaleString()}</span>
+                          <span>{new Date(c.createdDate).toLocaleString()}</span>
                           {c.filePath && (
                             <>
                               <FileTextOutlined style={{ marginLeft: 12 }} />
@@ -1871,6 +2190,16 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                     {statusLabel[selectedDraft.status] ?? selectedDraft.status}
                   </Tag>
                 )}
+                {/* v2: 变更类型标识（INCREMENTAL 任务下） */}
+                {selectedTask?.type === 'INCREMENTAL' && selectedDraftId && (() => {
+                  const diffType = draftDiffTypeMap.get(selectedDraftId);
+                  if (diffType === 'new') return <Tag color="green">新增</Tag>;
+                  if (diffType === 'modified') return <Tag color="orange">修改</Tag>;
+                  if (diffType === 'inherited') return <Tag color="default">基线继承</Tag>;
+                  const dn = findNodeInTreeData(treeData, selectedDraftId);
+                  if (dn?.baselineTaskId) return <Tag color="default">基线继承</Tag>;
+                  return <Tag color="geekblue">本次新增</Tag>;
+                })()}
                 {isTaskLocked && <Tag color="red">任务已锁定</Tag>}
                 {isReadOnly && <Tag color="default">只读浏览</Tag>}
               </div>
@@ -1906,6 +2235,33 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
               <div className="ci-md-scroll" style={{ height: '100%' }}>
                 <MarkdownView content={editorContent} />
               </div>
+            ) : viewMode === 'diff' ? (
+              diffLoading ? (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+                  <Text type="secondary">加载 DIFF 内容中…</Text>
+                </div>
+              ) : diffBaselineContent ? (
+                <DiffEditor
+                  height="100%"
+                  language="markdown"
+                  original={diffBaselineContent}
+                  modified={diffCurrentContent}
+                  theme="vs-light"
+                  options={{
+                    readOnly: true,
+                    renderSideBySide: true,
+                    minimap: { enabled: false },
+                    wordWrap: 'on',
+                    fontSize: 14,
+                    fontFamily: 'Consolas, "Courier New", monospace',
+                    lineHeight: 22,
+                  }}
+                />
+              ) : (
+                <div style={{ display: 'flex', justifyContent: 'center', alignItems: 'center', height: '100%' }}>
+                  <Text type="secondary">无基线版本可对比（本次新增文档）</Text>
+                </div>
+              )
             ) : (
               <div className="ci-editor-split" style={{ height: '100%' }}>
                 <div className="ci-editor-shell ci-editor-shell-premium" style={{ minHeight: 0 }}>
@@ -1999,6 +2355,16 @@ async function getWorkspaceTreeForTask(taskId: number): Promise<DraftTreeNode[]>
   }
 }
 
+/** v1: 在树数据中按 id 查找 DraftTreeNode 节点 */
+function findNodeInTreeData(nodes: DraftTreeNode[], id: number): DraftTreeNode | null {
+  for (const n of nodes) {
+    if (n.id === id) return n;
+    const found = findNodeInTreeData(n.children || [], id);
+    if (found) return found;
+  }
+  return null;
+}
+
 /** 在 DB 树中按 id 查找草稿节点 */
 function findDraftInTree(nodes: DraftTreeNode[], id: number): KnowledgeDraft | null {
   for (const n of nodes) {
@@ -2014,8 +2380,8 @@ function findDraftInTree(nodes: DraftTreeNode[], id: number): KnowledgeDraft | n
         status: n.status,
         sortOrder: n.sortOrder,
         hash: '',
-        createdAt: '',
-        updatedAt: '',
+        createdDate: '',
+        updatedDate: '',
       };
       return draft;
     }

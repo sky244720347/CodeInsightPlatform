@@ -3,17 +3,18 @@ package com.company.codeinsight.modules.draft.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 /**
  * 草稿关联代码来源引用实体类
  * 对应数据库中的 ci_draft_source_reference 表，用于建立知识模块草稿文档与被解析切片源码文件及行号区间的双向追溯引用链。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_draft_source_reference")
-public class DraftSourceReference {
+public class DraftSourceReference extends BaseEntity {
 
     /**
      * 自增主键 ID
@@ -46,10 +47,4 @@ public class DraftSourceReference {
 
     /** 方法签名 methodName(ParamTypes)，不含返回类型（可选） */
     private String methodSignature;
-
-    /**
-     * 记录创建时间
-     */
-    private LocalDateTime createdAt;
 }
-

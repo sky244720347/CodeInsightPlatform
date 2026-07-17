@@ -8,8 +8,8 @@ export interface UserQuota {
   monthlyTokenLimit: number;
   enabled: number;
   remark?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  createdDate?: string;
+  updatedDate?: string;
 }
 
 export interface UserQuotaRequest {

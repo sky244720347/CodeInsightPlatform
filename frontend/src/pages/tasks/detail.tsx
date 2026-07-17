@@ -13,7 +13,7 @@ import {
   SwapOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useParams } from 'react-router-dom';
-import { getTask, getTaskExecutionLog, getTaskLogSummary, retryTask, startTask, terminateTask } from '../../api/task';
+import { getTask, getTaskExecutionLog, getTaskLogSummary, retryTask, retryBaselineInherit, startTask, terminateTask } from '../../api/task';
 import { getSystem } from '../../api/system';
 import type { PipelineStageStat, System, Task, TaskLogSummary } from '../../types';
 import IncrementalImpactCard from './components/IncrementalImpactCard';
@@ -25,7 +25,7 @@ const buildDraftsHref = (task: Task) => `/drafts/${task.id}`;
 const { Text, Title } = Typography;
 
 // 包含 ENTRYPOINT_REVIEW / MODULE_HIERARCHY_REVIEW：处于人工复核断点时也要轮询状态
-const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'MODULE_HIERARCHY_REVIEW', 'GENERATING_DOC', 'PUSHING'];
+const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'MODULE_HIERARCHY_REVIEW', 'BASELINE_DOC_INHERIT', 'GENERATING_DOC', 'PUSHING'];
 
 /** 执行流程 Steps 固定 8 步（含入口复核）；索引与 statusMeta.step 对齐 */
 const FLOW_STEP_ENTRY_REVIEW = 3;
@@ -40,12 +40,13 @@ const statusMeta: Record<string, { color: string; label: string; step: number }>
   AI_ANALYZING: { color: 'orange', label: 'AI 分析中', step: 4 },
   MODULE_HIERARCHY: { color: 'gold', label: '模块层级提炼', step: 4 },
   MODULE_HIERARCHY_REVIEW: { color: 'geekblue', label: '模块层级复核', step: 5 },
-  GENERATING_DOC: { color: 'gold', label: '生成文档', step: 6 },
-  PENDING_REVIEW: { color: 'magenta', label: '待复核', step: 7 },
-  REVIEWING: { color: 'geekblue', label: '复核中', step: 7 },
-  CONFIRMED: { color: 'green', label: '已确认', step: 7 },
-  PUSHING: { color: 'purple', label: '推送中', step: 7 },
-  PUSHED: { color: 'green', label: '已推送', step: 7 },
+  BASELINE_DOC_INHERIT: { color: 'cyan', label: '基线文档继承', step: 6 },
+  GENERATING_DOC: { color: 'gold', label: '生成文档', step: 7 },
+  PENDING_REVIEW: { color: 'magenta', label: '待复核', step: 8 },
+  REVIEWING: { color: 'geekblue', label: '复核中', step: 8 },
+  CONFIRMED: { color: 'green', label: '已确认', step: 8 },
+  PUSHING: { color: 'purple', label: '推送中', step: 8 },
+  PUSHED: { color: 'green', label: '已推送', step: 8 },
   /** @deprecated 历史任务可能卡在此状态 */
   SPLITTING_TASK: { color: 'purple', label: '任务切片（已废弃）', step: 2 },
   FAILED: { color: 'red', label: '失败', step: -1 },
@@ -284,8 +285,12 @@ const timelineItem = (s: PipelineStageStat) => {
 
   /** undefined 时按后端默认 TRUE：启用入口复核 */
   const entryReviewEnabled = task.requireEntrypointReview !== false;
+  const isIncremental = task.type === 'INCREMENTAL';
   const flowCurrent = meta.step < 0 ? 0 : meta.step;
   const entryReviewSkipped = !entryReviewEnabled && flowCurrent > FLOW_STEP_ENTRY_REVIEW;
+  // 全量任务不展示「基线复制」；statusMeta 里 GENERATING_DOC=7 / 复核=8 含该步占位，需把 current 前移 1
+  const flowCurrentAdjusted =
+    !isIncremental && flowCurrent >= 6 ? flowCurrent - 1 : flowCurrent;
   const flowStepItems = [
     { title: '排队' },
     { title: '拉取代码' },
@@ -297,6 +302,7 @@ const timelineItem = (s: PipelineStageStat) => {
     },
     { title: 'AI 分析' },
     { title: '模块层级复核' },
+    ...(isIncremental ? [{ title: '基线复制' }] : []),
     { title: '生成文档' },
     { title: '复核' },
   ];
@@ -349,6 +355,15 @@ const timelineItem = (s: PipelineStageStat) => {
                 重试
               </Button>
             )}
+            {task.status === 'FAILED' && task.type === 'INCREMENTAL' && (
+              <Button
+                icon={<ReloadOutlined />}
+                loading={actionLoading}
+                onClick={() => runAction(() => retryBaselineInherit(task.id), '基线文档重新继承已启动', true)}
+              >
+                重新继承基线文档
+              </Button>
+            )}
             {['PENDING_REVIEW', 'REVIEWING', 'CONFIRMED'].includes(task.status) && (
               <Button type="primary" icon={<EditOutlined />} onClick={() => navigate(buildDraftsHref(task))}>
                 复核草稿
@@ -365,7 +380,7 @@ const timelineItem = (s: PipelineStageStat) => {
       <Card title="执行流程状态">
         <Steps
           size="small"
-          current={flowCurrent}
+          current={flowCurrentAdjusted}
           status={task.status === 'FAILED' ? 'error' : 'process'}
           items={flowStepItems}
         />

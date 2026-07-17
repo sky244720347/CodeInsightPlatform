@@ -1,19 +1,21 @@
 package com.company.codeinsight.modules.draft.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
+import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 /**
  * 评审工作区实体类
  * 对应数据库中的 ci_draft_workspace 表，对应一次成功的反编译/静态分析任务所启动的待复核协同编辑工作区。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_draft_workspace")
-public class DraftWorkspace {
+public class DraftWorkspace extends BaseEntity {
 
     /**
      * 自增主键 ID
@@ -42,13 +44,8 @@ public class DraftWorkspace {
     private String status;
 
     /**
-     * 创建时间
+     * v1: INCREMENTAL 任务引用的基线 workspace ID（NULL=INITIAL 任务；非空=引用最近 PUSHED 任务的 workspace）
      */
-    private LocalDateTime createdAt;
-
-    /**
-     * 更新时间
-     */
-    private LocalDateTime updatedAt;
+    @TableField("baseline_workspace_id")
+    private Long baselineWorkspaceId;
 }
-

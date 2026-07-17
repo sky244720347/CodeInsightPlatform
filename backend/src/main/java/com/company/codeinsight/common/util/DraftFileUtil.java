@@ -1,7 +1,7 @@
 package com.company.codeinsight.common.util;
 
 import com.company.codeinsight.common.exception.BusinessException;
-import com.company.codeinsight.common.storage.StorageProperties;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
 import org.springframework.util.StringUtils;
 
 import java.net.URI;
@@ -9,12 +9,12 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 
 /**
- * 草稿物理文件路径解析工具：支持三种 content_uri 格式
+ * 草稿/发布产物物理路径解析：支持 URI 格式
  * <ul>
- *   <li>{@code draft:{sysId}:{repoId}:task_{taskId}/name.md} — 草稿（按逻辑 URI 定位）</li>
- *   <li>{@code release:{sysId}:{repoId}:v1.0.0/relPath} — 发布产物（从 releases 目录读）</li>
+ *   <li>{@code draft:{sysId}:{repoId}:task_{taskId}/...} — 草稿（落在 runtimeRoot/drafts）</li>
+ *   <li>{@code release:{sysId}:{repoId}:v1.0.0/relPath} — 发布产物（releasesRoot）</li>
  *   <li>{@code file:///absolute/path} — 绝对路径（兼容旧数据）</li>
- *   <li>{@code storage/drafts/...} — 旧相对路径（兼容旧数据）</li>
+ *   <li>相对路径 — 相对 runtimeRoot（兼容旧数据）</li>
  * </ul>
  */
 public final class DraftFileUtil {
@@ -22,54 +22,30 @@ public final class DraftFileUtil {
     private DraftFileUtil() {
     }
 
-    /**
-     * 兼容旧调用：仅解析相对/绝对文件路径。
-     * @deprecated 请使用 {@link #resolve(String, StorageProperties)}
-     */
-    @Deprecated
-    public static Path resolveDraftPath(String contentUri, String storageLocalPath) {
-        if (!StringUtils.hasText(contentUri)) throw new BusinessException("草稿 content_uri 为空");
-        String t = contentUri.trim();
-        if (t.startsWith("file:") || t.startsWith("FILE:")) return Paths.get(URI.create(t));
-        Path base = Paths.get(storageLocalPath == null ? "./storage" : storageLocalPath)
-                .toAbsolutePath().normalize();
-        return base.resolve(t).normalize();
-    }
-
-    /** 新调用：解析所有格式（draft:/release:/file:/旧相对路径） */
-    public static Path resolve(String contentUri, StorageProperties props) {
+    public static Path resolve(String contentUri, EnvStorageResolver resolver) {
         if (!StringUtils.hasText(contentUri)) throw new BusinessException("草稿 content_uri 为空");
         String t = contentUri.trim();
 
-        if (t.startsWith("draft:")) return resolveDraftUri(t, props);
-        if (t.startsWith("release:")) return resolveReleaseUri(t, props);
+        if (t.startsWith("draft:")) return resolveDraftUri(t, resolver);
+        if (t.startsWith("release:")) return resolveReleaseUri(t, resolver);
         if (t.startsWith("file:") || t.startsWith("FILE:")) return Paths.get(URI.create(t));
 
-        // 旧数据 fallback
-        String root = props.getMode() == com.company.codeinsight.common.storage.StorageMode.SHARED
-                ? props.getBasePath() : props.getLocalPath();
-        return Paths.get(root == null ? "./storage" : root).toAbsolutePath().normalize()
-                .resolve(t).normalize();
+        return resolver.getActiveRuntimeRoot().resolve(t).normalize();
     }
 
-    private static Path resolveDraftUri(String uri, StorageProperties props) {
-        // draft:1:2:task_99/UserModule.md
+    private static Path resolveDraftUri(String uri, EnvStorageResolver resolver) {
+        // draft:1:2:task_99/task_99/Module/x.md 或 draft:1:2:task_99/Module/x.md
         String body = uri.substring("draft:".length());
         String[] parts = body.split(":", 3);
         if (parts.length != 3) throw new BusinessException("无效 draft URI: " + uri);
-        long sysId = Long.parseLong(parts[0]);
-        long repoId = Long.parseLong(parts[1]);
-        String rel = parts[2]; // task_99/name.md → draftDir already resolves taskId
-        // draftDir with taskId extracted from rel
+        String rel = parts[2];
         int slash = rel.indexOf('/');
-        String taskPart = slash > 0 ? rel.substring(0, slash) : rel;
-        long taskId = Long.parseLong(taskPart.replace("task_", ""));
-        String fileName = slash > 0 ? rel.substring(slash + 1) : "";
-        return props.draftFilePath(sysId, repoId, taskId, fileName);
+        String afterTask = slash > 0 ? rel.substring(slash + 1) : "";
+        // 与历史写入一致：物理路径 = drafts/{afterTask}，afterTask 常含 task_{id}/...
+        return resolver.draftFilePath(afterTask);
     }
 
-    private static Path resolveReleaseUri(String uri, StorageProperties props) {
-        // release:1:2:v1.0.0/modules/UserModule.md
+    private static Path resolveReleaseUri(String uri, EnvStorageResolver resolver) {
         String body = uri.substring("release:".length());
         int c1 = body.indexOf(':');
         int c2 = body.indexOf(':', c1 + 1);
@@ -80,7 +56,7 @@ public final class DraftFileUtil {
         int slash = rest.indexOf('/');
         String ver = slash > 0 ? rest.substring(0, slash) : rest;
         String rel = slash > 0 ? rest.substring(slash + 1) : "";
-        return props.releaseDir(sysId, repoId, ver).resolve(rel);
+        return resolver.releaseDir(sysId, repoId, ver).resolve(rel);
     }
 
     public static String buildReleaseUri(Long sysId, Long repoId, String ver, String relPath) {

@@ -35,7 +35,7 @@ public class ReleaseKnowledgeBrowseHelper {
         walkForEntries(releaseDir.resolve("modules"), "INDEX", "modules", out);
         walkForEntries(releaseDir.resolve("index"), "INDEX", "index", out);
         walkForEntries(releaseDir.resolve("meta"), "MANIFEST", "meta", out);
-        out.sort((a, b) -> b.updatedAt().compareTo(a.updatedAt()));
+        out.sort((a, b) -> b.updatedDate().compareTo(a.updatedDate()));
         return out;
     }
 

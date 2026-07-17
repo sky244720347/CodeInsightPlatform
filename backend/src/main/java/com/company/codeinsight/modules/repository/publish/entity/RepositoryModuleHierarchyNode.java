@@ -4,13 +4,14 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_repository_module_hierarchy")
-public class RepositoryModuleHierarchyNode {
+public class RepositoryModuleHierarchyNode extends BaseEntity {
 
     @TableId(type = IdType.AUTO)
     private Long id;
@@ -30,6 +31,4 @@ public class RepositoryModuleHierarchyNode {
     private String methodSignatures;
 
     private Boolean confirmed;
-    private LocalDateTime createdAt;
-    private LocalDateTime updatedAt;
 }

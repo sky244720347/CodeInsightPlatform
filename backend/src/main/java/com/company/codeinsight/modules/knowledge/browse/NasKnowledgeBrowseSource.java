@@ -6,7 +6,6 @@ import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
@@ -20,13 +19,12 @@ import java.util.List;
 import java.util.Optional;
 
 /**
- * NAS releases 目录数据源（shared 模式）。
- * <p>优先读取仓库 {@code last_published_version_id} 对应的 release 目录；否则回退 temp_repos。</p>
+ * NAS releases 目录数据源。
+ * <p>优先读取仓库 {@code last_published_version_id} 对应的 release 目录；否则回退任务工作区 docs。</p>
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
-@ConditionalOnProperty(name = "code-insight.storage.mode", havingValue = "shared")
 public class NasKnowledgeBrowseSource implements KnowledgeBrowseSource {
 
     static final long SIZE_LIMIT_BYTES = ReleaseKnowledgeBrowseHelper.SIZE_LIMIT_BYTES;
@@ -79,7 +77,7 @@ public class NasKnowledgeBrowseSource implements KnowledgeBrowseSource {
         walkForEntries(docsRoot.resolve("index"), "INDEX", "index", out);
         walkForEntries(docsRoot.resolve("modules"), "INDEX", "modules", out);
         walkForEntries(docsRoot.resolve("meta"), "MANIFEST", "meta", out);
-        out.sort((a, b) -> b.updatedAt().compareTo(a.updatedAt()));
+        out.sort((a, b) -> b.updatedDate().compareTo(a.updatedDate()));
         return out;
     }
 

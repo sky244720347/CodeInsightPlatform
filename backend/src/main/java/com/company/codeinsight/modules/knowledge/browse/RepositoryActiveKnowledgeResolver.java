@@ -1,7 +1,7 @@
 package com.company.codeinsight.modules.knowledge.browse;
 
 import com.company.codeinsight.common.exception.BusinessException;
-import com.company.codeinsight.common.storage.StorageProperties;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.modules.knowledge.entity.KnowledgeVersion;
 import com.company.codeinsight.modules.knowledge.mapper.KnowledgeVersionMapper;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
@@ -19,7 +19,7 @@ public class RepositoryActiveKnowledgeResolver {
 
     private final CodeRepositoryMapper repositoryMapper;
     private final KnowledgeVersionMapper versionMapper;
-    private final StorageProperties storageProperties;
+    private final EnvStorageResolver storageResolver;
 
     public Optional<ActiveKnowledgeContext> resolve(Long repositoryId) {
         if (repositoryId == null) {
@@ -33,7 +33,7 @@ public class RepositoryActiveKnowledgeResolver {
         if (version == null || !"PUSHED".equals(version.getStatus())) {
             return Optional.empty();
         }
-        Path releaseDir = storageProperties.releaseDir(
+        Path releaseDir = storageResolver.releaseDir(
                 version.getSystemId(), version.getRepositoryId(), version.getVersionNum());
 
         ActiveKnowledgeContext ctx = new ActiveKnowledgeContext();
@@ -57,7 +57,7 @@ public class RepositoryActiveKnowledgeResolver {
         if (version == null) {
             throw new BusinessException("知识版本不存在");
         }
-        return storageProperties.releaseDir(
+        return storageResolver.releaseDir(
                 version.getSystemId(), version.getRepositoryId(), version.getVersionNum());
     }
 }

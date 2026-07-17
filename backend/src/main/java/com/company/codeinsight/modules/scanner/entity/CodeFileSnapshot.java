@@ -3,17 +3,18 @@ package com.company.codeinsight.modules.scanner.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 /**
  * 代码扫描文件快照实体类
  * 对应数据库中的 ci_file_snapshot 表，记录对目标 Git 仓库拉取后进行扫描产生的所有有效代码文件元数据及路径信息。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_file_snapshot")
-public class CodeFileSnapshot {
+public class CodeFileSnapshot extends BaseEntity {
 
     /**
      * 自增主键 ID
@@ -50,10 +51,4 @@ public class CodeFileSnapshot {
      * 该扫描文件在本地所存储的物理 URI 路径
      */
     private String contentUri;
-
-    /**
-     * 记录创建时间
-     */
-    private LocalDateTime createdAt;
 }
-

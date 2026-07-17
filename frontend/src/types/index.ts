@@ -8,8 +8,8 @@ export interface System {
   /** @deprecated 提示词绑定已迁移到仓库级 ci_repository.modularize_prompt_id */ modularizePromptId?: number | null;
   /** 系统级文档生成提示词 ID（FK → ci_prompt.id） */
   /** @deprecated 提示词绑定已迁移到仓库级 ci_repository.document_prompt_id */ documentPromptId?: number | null;
-  createdAt: string;
-  updatedAt: string;
+  createdDate: string;
+  updatedDate: string;
   // 以下字段由 /systems 聚合接口返回，list 才有
   repositoryCount?: number;
   knowledgeVersionCount?: number;
@@ -34,8 +34,8 @@ export interface Repository {
   modularizePromptId?: number | null;
   /** 仓库级文档生成提示词 ID（FK → ci_prompt.id） */
   documentPromptId?: number | null;
-  createdAt: string;
-  updatedAt: string;
+  createdDate: string;
+  updatedDate: string;
 }
 
 export interface Prompt {
@@ -52,8 +52,8 @@ export interface Prompt {
   category?: 'DEFAULT' | 'USER' | string;
   /** USER 提示词的 scope ID（系统ID）；DEFAULT 为 null */
   scopeId?: number | null;
-  createdAt: string;
-  updatedAt: string;
+  createdDate: string;
+  updatedDate: string;
 }
 
 export interface Task {
@@ -85,8 +85,8 @@ export interface Task {
   scheduleId?: number;
   /** 队列优先级 0-100，越大越优先；TaskQueueDispatcher 按此字段排序调度 */
   priority?: number;
-  createdAt: string;
-  updatedAt: string;
+  createdDate: string;
+  updatedDate: string;
 }
 
 /**
@@ -200,6 +200,10 @@ export interface EntrypointMethodView {
   annotation?: string;
   httpPath?: string;
   httpMethod?: string;
+  /** v1: 方法级 diff（new / modified / unchanged / deleted），仅 INCREMENTAL 任务有值 */
+  diffStatus?: string;
+  /** 方法体内容哈希（同签名内容变更对比） */
+  bodyHash?: string;
 }
 
 /** 知识入口复核视图中的单个入口类（只读展示用） */
@@ -215,6 +219,8 @@ export interface EntrypointReviewItem {
   enabled: boolean;
   sortOrder: number;
   methods: EntrypointMethodView[];
+  /** v1: INCREMENTAL 任务基线继承标识（NULL=本次新增，非空=从该基线任务继承） */
+  baselineTaskId?: number;
 }
 
 export interface ModuleNode {
@@ -224,6 +230,8 @@ export interface ModuleNode {
   /** 人工逐项复核确认标记：true = 已确认，false/undefined = 未确认；JSON 中以 "Y"/"N" 字符串呈现 */
   confirmed?: boolean;
   subModules?: Record<string, SubModuleNode>;
+  /** v1: INCREMENTAL 任务 AI 重提炼标识 */
+  sourceEntryClass?: string;
 }
 
 export interface SubModuleNode {
@@ -242,6 +250,8 @@ export interface FunctionNode {
   classPaths?: string[];
   /** 方法签名 methodName(ParamTypes)，不含返回类型 */
   methodSignatures?: string[];
+  /** v1: INCREMENTAL 任务 AI 重提炼标识（非空=本次 AI 重提炼的入口类全限定名；空=基线继承） */
+  sourceEntryClass?: string;
   /** 人工逐项复核确认标记 */
   confirmed?: boolean;
 }
@@ -258,7 +268,7 @@ export interface PushTask {
   enqueuedAt: string;
   startedAt?: string;
   completedAt?: string;
-  createdAt: string;
+  createdDate: string;
 }
 
 /** 知识查看 - 文件类型枚举（与后端 KnowledgeBrowseServiceImpl 常量对齐） */
@@ -282,7 +292,7 @@ export interface KnowledgeBrowseItem {
   /** DRAFT: DRAFT/EDITING/CONFIRMED/PUSHED/ARCHIVED；INDEX/MANIFEST: GENERATED */
   status: string;
   /** ISO timestamp */
-  updatedAt: string;
+  updatedDate: string;
   /** 数据源标识：DB（draft 行）/ TEMP_REPOS（index/manifest 文件）/ RELEASE（已发布产物） */
   source: 'DB' | 'TEMP_REPOS' | 'RELEASE';
   /** 已发布产物 URI（source=RELEASE 时有值） */
@@ -302,8 +312,8 @@ export interface KnowledgeBrowseQuery {
   taskId?: number;
   versionId?: number;
   status?: string;
-  createdAtStart?: string;
-  createdAtEnd?: string;
+  createdDateStart?: string;
+  createdDateEnd?: string;
   current?: number;
   size?: number;
 }
@@ -344,8 +354,8 @@ export interface KnowledgeDraft {
   contentUri: string;
   status: string;
   hash: string;
-  createdAt: string;
-  updatedAt: string;
+  createdDate: string;
+  updatedDate: string;
 }
 
 export interface TokenUsageAudit {
@@ -361,7 +371,7 @@ export interface TokenUsageAudit {
   cost: number;
   type: string;
   status: number;
-  createdAt: string;
+  createdDate: string;
 }
 
 export interface OperationLog {
@@ -375,7 +385,7 @@ export interface OperationLog {
   ipAddress?: string;
   exceptionMsg?: string;
   isSuccess: number;
-  createdAt: string;
+  createdDate: string;
 }
 
 /** 仓库扫描时间窗口 */
@@ -387,8 +397,8 @@ export interface ScanWindow {
   minute: number;
   enabled: boolean;
   lastFiredAt?: string;
-  createdAt?: string;
-  updatedAt?: string;
+  createdDate?: string;
+  updatedDate?: string;
 }
 
 export interface PageResult<T> {
@@ -431,8 +441,8 @@ export interface AiModel {
   description?: string;
   sortOrder: number;
   status?: number; // 0-停用 1-启用（未返回时按启用处理）
-  createdAt?: string;
-  updatedAt?: string;
+  createdDate?: string;
+  updatedDate?: string;
 }
 
 export interface AiModelPreset {
@@ -445,8 +455,8 @@ export interface AiModelPreset {
   description?: string;
   sortOrder: number;
   status?: number;
-  createdAt?: string;
-  updatedAt?: string;
+  createdDate?: string;
+  updatedDate?: string;
 }
 
 export interface AiModelMetricSummary {
@@ -527,8 +537,8 @@ export interface ScheduleTask {
   totalFailed: number;
   totalSkipped: number;
   createdBy?: number;
-  createdAt: string;
-  updatedAt: string;
+  createdDate: string;
+  updatedDate: string;
 }
 
 /** 定时任务触发记录（对应 ci_schedule_fire_record 表） */
@@ -543,7 +553,7 @@ export interface ScheduleFireRecord {
   skipReason?: string;
   errorMessage?: string;
   durationMs?: number;
-  createdAt: string;
+  createdDate: string;
 }
 
 /** 立即触发接口返回 */

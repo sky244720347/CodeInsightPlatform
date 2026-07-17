@@ -2,7 +2,6 @@ package com.company.codeinsight.modules.auth.entity;
 
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
-import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
@@ -14,7 +13,7 @@ import java.time.LocalDateTime;
  * 用户账号实体（对应 ci_user 表）
  *
  * <p>MVP 阶段仅 admin 一个账号；后续接入真实 UM/SSO 时扩展多账号。
- * 软删除：deleted_at + MyBatis-Plus @TableLogic。</p>
+ * 软删除通过 BaseEntity.isDeleted + MyBatis-Plus @TableLogic。</p>
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
@@ -38,7 +37,4 @@ public class UserAccount extends BaseEntity {
 
     /** 最近一次登录时间 */
     private LocalDateTime lastLoginAt;
-
-    @TableLogic(value = "null", delval = "now()")
-    private LocalDateTime deletedAt;
 }

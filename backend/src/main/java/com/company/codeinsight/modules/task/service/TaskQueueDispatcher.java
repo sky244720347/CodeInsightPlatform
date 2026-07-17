@@ -88,7 +88,7 @@ public class TaskQueueDispatcher {
                 new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<DecompileTask>()
                         .eq(DecompileTask::getStatus, TaskStatus.PENDING.name())
                         .orderByDesc(DecompileTask::getPriority)
-                        .orderByAsc(DecompileTask::getCreatedAt)
+                        .orderByAsc(DecompileTask::getCreatedDate)
                         .last("LIMIT " + limit)
         );
         if (pending.isEmpty()) {

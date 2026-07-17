@@ -48,8 +48,8 @@ public class DraftServiceTest {
         ws.setSystemId(1L);
         ws.setRepositoryId(1L);
         ws.setStatus("ACTIVE");
-        ws.setCreatedAt(LocalDateTime.now());
-        ws.setUpdatedAt(LocalDateTime.now());
+        ws.setCreatedDate(LocalDateTime.now());
+        ws.setUpdatedDate(LocalDateTime.now());
         workspaceMapper.insert(ws);
 
         File tempFile = File.createTempFile("MockDraft", ".md");
@@ -63,8 +63,8 @@ public class DraftServiceTest {
         draft.setContentUri(tempFile.toURI().toString());
         draft.setStatus(DraftStatus.DRAFT.name());
         draft.setHash("hash111");
-        draft.setCreatedAt(LocalDateTime.now());
-        draft.setUpdatedAt(LocalDateTime.now());
+        draft.setCreatedDate(LocalDateTime.now());
+        draft.setUpdatedDate(LocalDateTime.now());
         draftMapper.insert(draft);
 
         // 2. 验证读取原始内容
@@ -118,8 +118,8 @@ public class DraftServiceTest {
         ws.setSystemId(3L);
         ws.setRepositoryId(3L);
         ws.setStatus("ACTIVE");
-        ws.setCreatedAt(LocalDateTime.now());
-        ws.setUpdatedAt(LocalDateTime.now());
+        ws.setCreatedDate(LocalDateTime.now());
+        ws.setUpdatedDate(LocalDateTime.now());
         workspaceMapper.insert(ws);
 
         File tempFile = File.createTempFile("ConfirmedEdit", ".md");
@@ -133,8 +133,8 @@ public class DraftServiceTest {
         draft.setContentUri(tempFile.toURI().toString());
         draft.setStatus(DraftStatus.DRAFT.name());
         draft.setHash("h-init");
-        draft.setCreatedAt(LocalDateTime.now());
-        draft.setUpdatedAt(LocalDateTime.now());
+        draft.setCreatedDate(LocalDateTime.now());
+        draft.setUpdatedDate(LocalDateTime.now());
         draftMapper.insert(draft);
 
         // 2. 确认通过
@@ -160,8 +160,8 @@ public class DraftServiceTest {
         ws.setSystemId(4L);
         ws.setRepositoryId(4L);
         ws.setStatus("COMPLETED");
-        ws.setCreatedAt(LocalDateTime.now());
-        ws.setUpdatedAt(LocalDateTime.now());
+        ws.setCreatedDate(LocalDateTime.now());
+        ws.setUpdatedDate(LocalDateTime.now());
         workspaceMapper.insert(ws);
 
         DecompileTask task = new DecompileTask();
@@ -170,8 +170,8 @@ public class DraftServiceTest {
         task.setStatus(TaskStatus.PUSHED.name());
         task.setType("INITIAL");
         task.setProgress(100);
-        task.setCreatedAt(LocalDateTime.now());
-        task.setUpdatedAt(LocalDateTime.now());
+        task.setCreatedDate(LocalDateTime.now());
+        task.setUpdatedDate(LocalDateTime.now());
         taskMapper.insert(task);
         // 用 sql 直接关联 taskId 到 ws（service 层不维护）
         // 通过反射修正 workspace.taskId 与刚插入的 task.id 同步
@@ -191,8 +191,8 @@ public class DraftServiceTest {
         draft.setContentUri(tempFile.toURI().toString());
         draft.setStatus(DraftStatus.CONFIRMED.name());
         draft.setHash("h-locked");
-        draft.setCreatedAt(LocalDateTime.now());
-        draft.setUpdatedAt(LocalDateTime.now());
+        draft.setCreatedDate(LocalDateTime.now());
+        draft.setUpdatedDate(LocalDateTime.now());
         draftMapper.insert(draft);
 
         // 2. 尝试编辑保存：应该被 BusinessException 拦截
@@ -227,8 +227,8 @@ public class DraftServiceTest {
         task.setStatus(TaskStatus.PENDING_REVIEW.name());
         task.setType("INITIAL");
         task.setProgress(100);
-        task.setCreatedAt(LocalDateTime.now());
-        task.setUpdatedAt(LocalDateTime.now());
+        task.setCreatedDate(LocalDateTime.now());
+        task.setUpdatedDate(LocalDateTime.now());
         taskMapper.insert(task);
 
         // 2. 准备 workspace 关联到 task
@@ -237,8 +237,8 @@ public class DraftServiceTest {
         ws.setSystemId(7L);
         ws.setRepositoryId(7L);
         ws.setStatus("ACTIVE");
-        ws.setCreatedAt(LocalDateTime.now());
-        ws.setUpdatedAt(LocalDateTime.now());
+        ws.setCreatedDate(LocalDateTime.now());
+        ws.setUpdatedDate(LocalDateTime.now());
         workspaceMapper.insert(ws);
 
         // 3. 准备多篇 draft
@@ -290,8 +290,8 @@ public class DraftServiceTest {
         task.setStatus(TaskStatus.REVIEWING.name());
         task.setType("INITIAL");
         task.setProgress(100);
-        task.setCreatedAt(LocalDateTime.now());
-        task.setUpdatedAt(LocalDateTime.now());
+        task.setCreatedDate(LocalDateTime.now());
+        task.setUpdatedDate(LocalDateTime.now());
         taskMapper.insert(task);
 
         DraftWorkspace ws = new DraftWorkspace();
@@ -299,8 +299,8 @@ public class DraftServiceTest {
         ws.setSystemId(8L);
         ws.setRepositoryId(8L);
         ws.setStatus("ACTIVE");
-        ws.setCreatedAt(LocalDateTime.now());
-        ws.setUpdatedAt(LocalDateTime.now());
+        ws.setCreatedDate(LocalDateTime.now());
+        ws.setUpdatedDate(LocalDateTime.now());
         workspaceMapper.insert(ws);
 
         KnowledgeDraft only = newDraft(ws.getId(), "唯一模块", "Only.md");
@@ -329,8 +329,8 @@ public class DraftServiceTest {
         d.setContentUri(f.toURI().toString());
         d.setStatus(DraftStatus.DRAFT.name());
         d.setHash("hash-" + moduleName);
-        d.setCreatedAt(LocalDateTime.now());
-        d.setUpdatedAt(LocalDateTime.now());
+        d.setCreatedDate(LocalDateTime.now());
+        d.setUpdatedDate(LocalDateTime.now());
         return d;
     }
 }

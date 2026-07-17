@@ -5,8 +5,9 @@ import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
 /**
- * 集群模式开关与调度参数。
- * <p>单机开发可保持 {@code enabled=false}；多节点部署必须 {@code enabled=true} 且 Redis 可达。</p>
+ * 集群调度参数。
+ * <p>{@code enabled} <b>不可外部配置</b>，由 {@link ClusterEnvAligner} 按 {@code code-insight.env} 推导：
+ * dev=false，非 dev=true。</p>
  */
 @Data
 @Component
@@ -14,8 +15,7 @@ import org.springframework.stereotype.Component;
 public class ClusterProperties {
 
     /**
-     * false：沿用 JVM 内存 Semaphore + 全节点调度（兼容本地开发）。
-     * true：Redis 分布式并发 + DB 认领任务 + Leader 调度。
+     * 由 {@link ClusterEnvAligner} 写入。false：JVM Semaphore + 本地调度；true：Redis 许可 + Leader + DB 认领。
      */
     private boolean enabled = false;
 

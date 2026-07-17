@@ -2,7 +2,8 @@ package com.company.codeinsight.modules.repository.publish.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.company.codeinsight.common.exception.BusinessException;
-import com.company.codeinsight.common.storage.StorageProperties;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
+import com.company.codeinsight.common.util.DataUriUtil;
 import com.company.codeinsight.modules.knowledge.browse.RepositoryActiveKnowledgeResolver;
 import com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity;
 import com.company.codeinsight.modules.entrypoint.mapper.EntrypointMapper;
@@ -63,8 +64,8 @@ public class RepositoryPublishServiceImpl implements RepositoryPublishService, R
     private final RepositoryPublishSnapshotMapper snapshotMapper;
     private final DecompilePromptMapper promptMapper;
     private final ObjectMapper objectMapper;
-    private final StorageProperties storageProperties;
     private final RepositoryActiveKnowledgeResolver activeKnowledgeResolver;
+    private final EnvStorageResolver storageResolver;
 
     @Override
     @Transactional(rollbackFor = Exception.class)
@@ -127,8 +128,8 @@ public class RepositoryPublishServiceImpl implements RepositoryPublishService, R
             throw new BusinessException("该版本在存储上无发布产物目录，无法回滚: " + releaseDir);
         }
 
-        List<EntrypointEntity> entrypoints = deserializeEntrypoints(snapshot.getEntrypointsJson());
-        List<ModuleHierarchyNode> hierarchy = deserializeHierarchy(snapshot.getModuleHierarchyJson());
+        List<EntrypointEntity> entrypoints = deserializeEntrypoints(loadSnapshotJson(snapshot.getEntrypointsUri()));
+        List<ModuleHierarchyNode> hierarchy = deserializeHierarchy(loadSnapshotJson(snapshot.getModuleHierarchyUri()));
         applySnapshotToRepository(repo, snapshot, entrypoints, hierarchy, operator, version.getSourceCommit());
         log.info("rollbackToVersion ok repoId={} versionId={} baselineCommit={} operator={}",
                 repositoryId, versionId, version.getSourceCommit(), operator);
@@ -184,8 +185,12 @@ public class RepositoryPublishServiceImpl implements RepositoryPublishService, R
             if (StringUtils.hasText(snapshot.getEntryScanConfig())) {
                 Files.writeString(artifactsDir.resolve("entry-scan-config.json"), snapshot.getEntryScanConfig());
             }
-            Files.writeString(artifactsDir.resolve("entrypoints.json"), snapshot.getEntrypointsJson());
-            Files.writeString(artifactsDir.resolve("module-hierarchy.json"), snapshot.getModuleHierarchyJson());
+            String epJson = StringUtils.hasText(snapshot.getEntrypointsJson())
+                    ? snapshot.getEntrypointsJson() : loadSnapshotJson(snapshot.getEntrypointsUri());
+            String hierJson = StringUtils.hasText(snapshot.getModuleHierarchyJson())
+                    ? snapshot.getModuleHierarchyJson() : loadSnapshotJson(snapshot.getModuleHierarchyUri());
+            Files.writeString(artifactsDir.resolve("entrypoints.json"), epJson);
+            Files.writeString(artifactsDir.resolve("module-hierarchy.json"), hierJson);
 
             Map<String, Object> prompts = buildPromptsMeta(snapshot);
             Files.writeString(artifactsDir.resolve("prompts.json"),
@@ -271,11 +276,27 @@ public class RepositoryPublishServiceImpl implements RepositoryPublishService, R
         snapshot.setModularizePromptId(task.getModularizePromptId());
         snapshot.setDocumentPromptId(task.getDocumentPromptId());
         snapshot.setModelName(task.getModelName());
-        snapshot.setEntrypointsJson(serializeEntrypoints(entrypoints));
-        snapshot.setModuleHierarchyJson(serializeHierarchy(hierarchy));
+        String epUri = DataUriUtil.buildSnapshotEntrypointsUri(task.getRepositoryId(), version.getId());
+        String hierUri = DataUriUtil.buildSnapshotModuleHierarchyUri(task.getRepositoryId(), version.getId());
+        String epJson = serializeEntrypoints(entrypoints);
+        String hierJson = serializeHierarchy(hierarchy);
+        DataUriUtil.writeUtf8(epUri, epJson, storageResolver);
+        DataUriUtil.writeUtf8(hierUri, hierJson, storageResolver);
+        snapshot.setEntrypointsUri(epUri);
+        snapshot.setModuleHierarchyUri(hierUri);
+        snapshot.setEntrypointsJson(epJson);
+        snapshot.setModuleHierarchyJson(hierJson);
         snapshot.setPublishedAt(LocalDateTime.now());
         snapshot.setPublishedBy(operator);
         return snapshot;
+    }
+
+    private String loadSnapshotJson(String uri) {
+        if (!StringUtils.hasText(uri)) {
+            return "[]";
+        }
+        String body = DataUriUtil.readUtf8(uri, storageResolver);
+        return StringUtils.hasText(body) ? body : "[]";
     }
 
     private void replaceRepositoryEntrypoints(Long repositoryId, Long systemId, List<EntrypointEntity> entrypoints) {
@@ -295,8 +316,8 @@ public class RepositoryPublishServiceImpl implements RepositoryPublishService, R
             row.setRemark(src.getRemark());
             row.setMethodsJson(src.getMethodsJson());
             row.setSortOrder(src.getSortOrder() != null ? src.getSortOrder() : 0);
-            row.setCreatedAt(now);
-            row.setUpdatedAt(now);
+            row.setCreatedDate(now);
+            row.setUpdatedDate(now);
             repositoryEntrypointMapper.insert(row);
         }
     }
@@ -329,10 +350,14 @@ public class RepositoryPublishServiceImpl implements RepositoryPublishService, R
                 }
                 row.setParentId(mappedParent);
             }
-            row.setCreatedAt(now);
-            row.setUpdatedAt(now);
+            row.setCreatedDate(now);
+            row.setUpdatedDate(now);
             repositoryModuleHierarchyMapper.insert(row);
-            idMap.put(src.getId(), row.getId());
+            Long newId = row.getId();
+            if (newId == null) {
+                throw new BusinessException("模块层级写入后无法解析 id: " + src.getNodeId());
+            }
+            idMap.put(src.getId(), newId);
         }
     }
 

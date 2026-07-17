@@ -197,18 +197,18 @@ DRAFT
 
 ### 集群 / 分布式
 
-集群开关 `code-insight.cluster.enabled`（`CLUSTER_ENABLED`）默认 `false`（本地开发）。集群模式行为变更见 [docs/cluster-readiness.md](./docs/cluster-readiness.md)：
+集群是否开启由 `CODE_INSIGHT_ENV`（`code-insight.env`）推导：`dev` 单机，非 `dev` 一律集群（单节点亦可）。已删除独立开关 `CLUSTER_ENABLED`。行为细节见 [docs/cluster-shared-storage-design.md](./docs/cluster-shared-storage-design.md) 与 [docs/cluster-readiness.md](./docs/cluster-readiness.md)：
 
 - Leader 选举：`ci:leader:task-dispatcher` / `ci:leader:schedule-executor`。
 - 任务认领：`SELECT … FOR UPDATE SKIP LOCKED` + `claimed_by` / `lease_until` 预留 `PENDING` 行。
 - Redis 并发：全局 `ci:permits:task:global` + 每系统 `ci:permits:task:sys:{id}`。
 - AI 并发：JVM `Semaphore` → Redis Set `ci:permits:ai:global`，配置变更通过 Pub/Sub `ci:config:refresh` 广播。
-- 共享存储：所有节点挂载同一 `local-path` / `workspace-root` 卷（`TaskWorkspacePaths` 统一解析 `{workspace-root}/task_{id}`）。
+- 共享存储：所有节点挂载同一 `runtimeRoot`（含 data/ 与 workspaces/）与 `releasesRoot`（`EnvStorageResolver` 统一解析；详见 [docs/cluster-storage-runtime-root-plan.md](./docs/cluster-storage-runtime-root-plan.md)）。
 
 ### 存储边界（不要把正文塞进数据库）
 
 - **PostgreSQL** 只存元数据：`ci_draft_workspace`、`ci_knowledge_draft`、`ci_knowledge_version` 等表的正文字段是 URI/Hash，不是 Markdown 文本本身。
-- **文件系统**（默认 `STORAGE_LOCAL_PATH=./storage`）存草稿和知识的正文。
+- **文件系统**（dev 写死 `./storage`；非 dev 由 `STORAGE_RUNTIME_ROOT` + `STORAGE_RELEASES_ROOT` 配置）存草稿和知识的正文。
 - **Redis** 存草稿的实时编辑（自动保存）和编辑锁。
 - **Git** 存已确认的知识。推送时写到目标仓库的 `/docs/code-insight/` 目录，附带 `knowledge-version.json`、`module-map.yaml`、`prompt-used.json`。
 

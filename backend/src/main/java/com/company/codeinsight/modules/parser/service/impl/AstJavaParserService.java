@@ -38,9 +38,11 @@ import org.springframework.util.StringUtils;
 
 import java.io.File;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.security.MessageDigest;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -301,6 +303,7 @@ public class AstJavaParserService implements JavaParserService {
                                  Map<String, List<String>> subtypeIndex) {
         if (md.getBody().isEmpty()) return;
         BlockStmt body = md.getBody().get();
+        mi.setBodyHash(hashMethodBody(body.toString()));
         for (MethodCallExpr call : body.findAll(MethodCallExpr.class)) {
             MethodCallInfo ci = new MethodCallInfo();
             ci.setCallerMethod(mi.getName());
@@ -763,6 +766,25 @@ public class AstJavaParserService implements JavaParserService {
             return null;
         } catch (Exception ex) {
             // 解不到（如 lambda 内部 / 复杂表达式 / 跨 JAR 类型），安静回退
+            return null;
+        }
+    }
+
+    /** 方法体归一化空白后取 SHA-256 前 16 位十六进制，供入口 DIFF 内容变更比较 */
+    private static String hashMethodBody(String bodySource) {
+        if (bodySource == null || bodySource.isEmpty()) {
+            return null;
+        }
+        try {
+            String normalized = bodySource.replaceAll("\\s+", " ").trim();
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] dig = md.digest(normalized.getBytes(StandardCharsets.UTF_8));
+            StringBuilder sb = new StringBuilder(16);
+            for (int i = 0; i < 8; i++) {
+                sb.append(String.format("%02x", dig[i]));
+            }
+            return sb.toString();
+        } catch (Exception e) {
             return null;
         }
     }

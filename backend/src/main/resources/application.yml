@@ -9,15 +9,17 @@ mybatis-plus:
 
 # 全局默认值（各 profile 可通过 application-{profile}.yml 覆盖）
 code-insight:
+  env: ${CODE_INSIGHT_ENV:dev}
   cluster:
-    enabled: false
+    # enabled 不可配：由 ClusterEnvAligner 按 env 推导（dev=false，非 dev=true）
     leader-lock-ttl-seconds: 15
     task-lease-hours: 2
     draft-edit-lock-ttl-seconds: 120
     draft-edit-lock-renew-seconds: 60
   storage:
-    local-path: ./storage
-    workspace-root: ./temp_repos
+    # 非 dev 必填绝对路径；dev 写死 ./storage 并派生 ./storage/workspaces、./storage/releases，忽略下列配置
+    runtime-root: ${STORAGE_RUNTIME_ROOT:}
+    releases-root: ${STORAGE_RELEASES_ROOT:}
   parser:
     # 解析引擎选择。可选：
     #   ast-fallback-regex（默认）：先 AST，失败无感降级到 REGEX

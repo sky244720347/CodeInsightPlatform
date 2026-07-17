@@ -77,6 +77,27 @@ public class DraftController {
     }
 
     /**
+     * v1: 草稿 diff 视图（前端 Phase 4 UI 用）
+     * <p>返回 newRows / inheritedRows / deletedRows 3 类。INITIAL 任务返回 3 个空 list。</p>
+     */
+    @GetMapping("/workspace/{workspaceId}/tree/diff")
+    public ApiResponse<com.company.codeinsight.modules.draft.dto.DraftTreeDiffDto> getWorkspaceTreeDiff(
+            @PathVariable Long workspaceId) {
+        return ApiResponse.success(draftService.getWorkspaceTreeDiff(workspaceId));
+    }
+
+    /**
+     * 单篇知识文档的正文 DIFF：返回基线 + 本次两份正文的 contentUri，
+     * 前端用 Monaco DiffEditor 自行计算 diff 并左右对比展示。
+     */
+    @Operation(summary = "单篇文档正文DIFF")
+    @GetMapping("/{id}/content-diff")
+    public ApiResponse<com.company.codeinsight.modules.draft.dto.DocumentDiffDto> getDocumentDiff(
+            @PathVariable Long id) {
+        return ApiResponse.success(draftService.getDocumentDiff(id));
+    }
+
+    /**
      * 读取指定草稿的 Markdown 正文全文内容
      */
     @Operation(summary = "读取草稿正文内容")

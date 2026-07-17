@@ -57,4 +57,11 @@ public interface ModuleHierarchyService {
      * 不修改 AI 生成的入口归属（classPaths 由前端编辑后传入），其它 DTO 字段（taskId / systemId）由后端补齐。
      */
     ModuleHierarchy replaceHierarchy(Long taskId, ModuleHierarchy replacement);
+
+    /**
+     * 模块层级 diff 视图（前端 Phase 4 UI 用）。
+     * <p>INITIAL 任务或无基线时各组为空；INCREMENTAL 任务返回 new / modified / inherited / deleted。</p>
+     * <p>每次请求按 moduleId + FUNCTION classPaths 并集现场重算，不依赖未落库的 diffStatus。</p>
+     */
+    com.company.codeinsight.modules.hierarchy.dto.ModuleHierarchyDiffDto getHierarchyDiff(Long taskId);
 }

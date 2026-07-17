@@ -86,8 +86,8 @@ public class TaskArtifactCloneService {
             dst.setRemark(src.getRemark());
             dst.setMethodsJson(src.getMethodsJson());
             dst.setSortOrder(src.getSortOrder() != null ? src.getSortOrder() : 0);
-            dst.setCreatedAt(now);
-            dst.setUpdatedAt(now);
+            dst.setCreatedDate(now);
+            dst.setUpdatedDate(now);
             entrypointMapper.insert(dst);
         }
     }
@@ -105,7 +105,7 @@ public class TaskArtifactCloneService {
             dst.setLineCount(src.getLineCount());
             dst.setFileHash(src.getFileHash());
             dst.setContentUri(src.getContentUri());
-            dst.setCreatedAt(now);
+            dst.setCreatedDate(now);
             snapshotMapper.insert(dst);
         }
     }
@@ -127,7 +127,7 @@ public class TaskArtifactCloneService {
             dst.setLineNumber(src.getLineNumber());
             dst.setCallerSignature(src.getCallerSignature());
             dst.setTargetSignature(src.getTargetSignature());
-            dst.setCreatedAt(now);
+            dst.setCreatedDate(now);
             methodCallMapper.insert(dst);
         }
     }

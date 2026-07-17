@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>星云棱镜产业信息订阅实现方案</title>
+<style>
+  :root {
+    /* 品牌色：星云棱镜深蓝/青色调，融合 CodeInsight 版式与产业情报智能体方案模板 */
+    --bg: #f8fafc;
+    --primary-50: #eff6ff;
+    --primary-100: #dbeafe;
+    --primary-200: #bfdbfe;
+    --primary-300: #93c5fd;
+    --primary-400: #60a5fa;
+    --primary-500: #1d4ed8;
+    --primary-600: #1e40af;
+    --primary-700: #1d3557;
+    --primary-800: #0f172a;
+    
+    --cyan-50: #ecfeff;
+    --cyan-100: #cffafe;
+    --cyan-500: #06b6d4;
+    --cyan-600: #0891b2;
+    --cyan-700: #0e7490;
+    
+    --amber-50: #fffbeb;
+    --amber-100: #fef3c7;
+    --amber-600: #d97706;
+    
+    --green-50: #f0fdf4;
+    --green-100: #dcfce7;
+    --green-600: #16a34a;
+    
+    --red-50: #fef2f2;
+    --red-100: #fee2e2;
+    --red-600: #dc2626;
+    
+    --gray-50: #fafafa;
+    --gray-100: #f5f5f5;
+    --gray-200: #e5e5e5;
+    --gray-300: #d4d4d4;
+    --gray-400: #a3a3a3;
+    --gray-500: #737373;
+    --gray-600: #525252;
+    --gray-700: #404040;
+    --gray-800: #262626;
+    --gray-900: #0f172a;
+    
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, .05);
+    --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, .08), 0 2px 4px -2px rgba(15, 23, 42, .08);
+    --shadow-lg: 0 10px 15px -3px rgba(15, 23, 42, .08), 0 4px 6px -4px rgba(15, 23, 42, .08);
+    --shadow-xl: 0 20px 25px -5px rgba(15, 23, 42, .08), 0 8px 10px -6px rgba(15, 23, 42, .08);
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    background: var(--bg);
+    color: var(--gray-900);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.65;
+    padding: 40px 24px;
+    font-size: 15px;
+  }
+
+  .container { max-width: 1420px; margin: 0 auto; }
+
+  .header {
+    text-align: center;
+    margin-bottom: 44px;
+    padding: 40px 28px 34px;
+    border-bottom: 3px solid var(--primary-200);
+    background: linear-gradient(135deg, var(--primary-700) 0%, var(--primary-800) 100%);
+    color: #fff;
+    border-radius: 18px;
+    box-shadow: var(--shadow-lg);
+    position: relative;
+    overflow: hidden;
+  }
+  .header::before {
+    content: "";
+    position: absolute;
+    top: -80px; left: -80px;
+    width: 220px; height: 220px;
+    background: rgba(6, 182, 212, .15);
+    border-radius: 50%;
+  }
+  .header::after {
+    content: "";
+    position: absolute;
+    right: -100px; bottom: -100px;
+    width: 260px; height: 260px;
+    background: rgba(29, 78, 216, .15);
+    border-radius: 50%;
+  }
+  .header h1 {
+    position: relative; z-index: 1;
+    font-size: 34px;
+    font-weight: 900;
+    color: #fff;
+    letter-spacing: .4px;
+  }
+  .header .subtitle {
+    position: relative; z-index: 1;
+    font-size: 15px;
+    color: var(--primary-200);
+    margin-top: 10px;
+    font-weight: 500;
+  }
+  .header .badge-row {
+    position: relative; z-index: 1;
+    display: flex; justify-content: center; gap: 12px;
+    margin-top: 16px; flex-wrap: wrap;
+  }
+  .badge {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 7px 15px; border-radius: 999px;
+    font-size: 12px; font-weight: 700;
+    background: rgba(255, 255, 255, .1); color: var(--cyan-100);
+    border: 1px solid rgba(255, 255, 255, .15);
+    box-shadow: var(--shadow-sm);
+    backdrop-filter: blur(4px);
+  }
+  .badge::before {
+    content: ""; width: 7px; height: 7px;
+    border-radius: 50%; background: var(--cyan-500);
+  }
+
+  .section-title {
+    display: flex; align-items: center; gap: 12px;
+    margin: 48px 0 22px;
+  }
+  .section-title .num {
+    width: 38px; height: 38px;
+    display: flex; align-items: center; justify-content: center;
+    background: var(--primary-600); color: #fff;
+    border-radius: 10px; font-weight: 900; font-size: 16px;
+    box-shadow: var(--shadow-md); flex-shrink: 0;
+  }
+  .section-title h2 {
+    font-size: 23px; font-weight: 800; color: var(--gray-900);
+  }
+  .section-title .line {
+    flex: 1; height: 2px;
+    background: var(--primary-100); border-radius: 1px;
+  }
+
+  .sub-title {
+    font-size: 17px; font-weight: 800;
+    color: var(--primary-700); margin: 22px 0 12px;
+  }
+  .text-muted { color: var(--gray-600); font-size: 14px; }
+  .text-sub { color: var(--gray-500); font-size: 12px; }
+
+  .summary-grid {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 20px;
+    align-items: stretch;
+    margin-bottom: 24px;
+  }
+  .summary-card {
+    border-radius: 16px; background: #fff;
+    border: 1px solid var(--gray-200);
+    box-shadow: var(--shadow-md); padding: 24px;
+    height: 100%;
+    display: flex; flex-direction: column;
+  }
+  .summary-card h3 {
+    font-size: 20px; color: var(--primary-700);
+    margin-bottom: 12px; font-weight: 800;
+    display: flex; gap: 8px; align-items: center;
+  }
+  .summary-card p, .summary-card li {
+    color: var(--gray-700); font-size: 14px;
+  }
+  .quote-box {
+    margin-top: 14px;
+    padding: 14px 16px;
+    background: var(--primary-50);
+    border-left: 4px solid var(--primary-500);
+    border-radius: 10px;
+    color: var(--primary-800);
+    font-size: 14px;
+    font-weight: 700;
+  }
+  
+  .check-list { list-style: none; display: grid; gap: 10px; }
+  .check-list li {
+    position: relative;
+    padding: 11px 12px 11px 34px;
+    border: 1px solid var(--gray-200);
+    border-radius: 10px;
+    background: var(--gray-50);
+  }
+  .check-list li::before {
+    content: "";
+    position: absolute;
+    left: 14px;
+    top: 17px;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--cyan-500);
+  }
+
+  .biz-highlight {
+    display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px;
+    margin-bottom: 24px;
+  }
+  .biz-highlight .item {
+    background: #fff; border: 1px solid var(--gray-200);
+    border-radius: 15px; padding: 20px; box-shadow: var(--shadow-md);
+  }
+  .biz-highlight .icon { font-size: 28px; margin-bottom: 10px; }
+  .biz-highlight h4 { font-size: 16px; color: var(--primary-700); margin-bottom: 6px; font-weight: 800; }
+  .biz-highlight p { font-size: 13px; color: var(--gray-600); }
+  .role-scope { font-size: 11px; color: var(--gray-400); margin-bottom: 8px; }
+  .role-scope-k { font-weight: 700; color: var(--primary-500); }
+
+  .workflow {
+    display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px;
+    margin-bottom: 24px;
+  }
+  .step-card {
+    border: 1px solid var(--gray-200); border-radius: 15px;
+    background: #fff; box-shadow: var(--shadow-md);
+    padding: 18px 15px; position: relative;
+    min-height: 152px;
+  }
+  .step-card::after {
+    content: "→"; position: absolute;
+    right: -12px; top: 50%; transform: translateY(-50%);
+    color: var(--cyan-500); font-size: 22px; font-weight: 900;
+    z-index: 10;
+  }
+  .step-card:last-child::after { display: none; }
+  .step-card small {
+    display: block; margin-bottom: 8px;
+    color: var(--cyan-600); font-size: 11px; font-weight: 900;
+    letter-spacing: .8px;
+  }
+  .step-card h3 { font-size: 15px; margin-bottom: 8px; color: var(--gray-900); font-weight: 800; }
+  .step-card p { color: var(--gray-600); font-size: 12px; }
+
+  .md-table {
+    width: 100%; border-collapse: collapse; margin: 16px 0;
+    box-shadow: var(--shadow-sm); border: 1px solid var(--gray-200);
+    border-radius: 8px; overflow: hidden; background: #fff;
+  }
+  .md-table th {
+    background: var(--primary-700); color: #fff;
+    padding: 12px 14px; font-size: 13px; text-align: left;
+    font-weight: 700;
+  }
+  .md-table td {
+    padding: 12px 14px; font-size: 13px;
+    border-bottom: 1px solid var(--gray-100);
+    color: var(--gray-700); vertical-align: top;
+  }
+  .md-table tr:last-child td { border-bottom: none; }
+  .md-table tr:hover td { background: var(--primary-50); }
+
+  .md-quote {
+    margin: 16px 0; padding: 14px 16px;
+    background: var(--cyan-50); border-left: 4px solid var(--cyan-500);
+    border-radius: 0 10px 10px 0; color: var(--cyan-700);
+    font-size: 14px;
+  }
+
+  .code-box {
+    margin: 16px 0; padding: 16px;
+    background: var(--gray-900); color: #e2e8f0;
+    border-radius: 12px; overflow-x: auto;
+    font-family: Consolas, Monaco, "Andale Mono", monospace;
+    font-size: 12.5px; line-height: 1.5;
+    box-shadow: var(--shadow-lg);
+  }
+  .code-box code { font-family: inherit; }
+
+  .pill {
+    display: inline-flex; align-items: center;
+    padding: 3px 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 800;
+    margin: 2px 4px 2px 0; white-space: nowrap;
+  }
+  .pill-blue { background: var(--primary-50); color: var(--primary-600); border: 1px solid var(--primary-100); }
+  .pill-cyan { background: var(--cyan-50); color: var(--cyan-600); border: 1px solid var(--cyan-100); }
+  .pill-amber { background: var(--amber-50); color: var(--amber-600); border: 1px solid var(--amber-100); }
+  .pill-green { background: var(--green-50); color: var(--green-600); border: 1px solid var(--green-100); }
+  .pill-red { background: var(--red-50); color: var(--red-600); border: 1px solid var(--red-100); }
+
+  /* 双栏交互效果布局 */
+  .knowledge-layout {
+    display: grid; grid-template-columns: 460px 1fr; gap: 20px;
+    align-items: stretch; margin-top: 24px;
+  }
+  .ui-side-card {
+    background: #fff; border: 1px solid var(--gray-200);
+    border-radius: 16px; box-shadow: var(--shadow-xl);
+    padding: 24px; display: flex; flex-direction: column;
+  }
+  .ui-mock-page {
+    border: 1px solid var(--gray-200); border-radius: 12px;
+    background: var(--gray-50); overflow: hidden;
+    flex: 1; display: flex; flex-direction: column;
+  }
+  .ui-mock-card {
+    background: #fff; padding: 12px 14px;
+    border-bottom: 1px solid var(--gray-200);
+  }
+  .ui-mock-toolbar {
+    display: flex; justify-content: space-between; align-items: center; gap: 8px;
+  }
+  .ui-segmented {
+    display: inline-flex; background: var(--gray-100);
+    padding: 2px; border-radius: 8px;
+  }
+  .ui-seg {
+    padding: 4px 10px; font-size: 11px; font-weight: 700;
+    color: var(--gray-600); border-radius: 6px; cursor: pointer;
+  }
+  .ui-seg.active {
+    background: #fff; color: var(--primary-700);
+    box-shadow: var(--shadow-sm);
+  }
+  .ui-search {
+    flex: 1; border: 1px solid var(--gray-200);
+    border-radius: 6px; font-size: 11px; padding: 4px 8px;
+    color: var(--gray-400); background: #fff;
+  }
+  .tree-body { padding: 14px; background: var(--gray-50); }
+  .ui-mock-alert {
+    padding: 10px; border-radius: 8px; background: var(--primary-50);
+    border: 1px solid var(--primary-100); font-size: 11px;
+    margin-bottom: 12px; color: var(--primary-700);
+  }
+  .ui-mock-tree-actions {
+    display: flex; justify-content: space-between; font-size: 11px;
+    color: var(--primary-500); font-weight: 700; margin-bottom: 10px;
+    cursor: pointer;
+  }
+  .ui-mock-tree-panel {
+    background: #fff; border: 1px solid var(--gray-200);
+    border-radius: 8px; padding: 12px;
+  }
+  .ui-tree-root { display: flex; flex-direction: column; gap: 6px; }
+  .ui-tree-node { display: flex; flex-direction: column; gap: 4px; }
+  .ui-tree-row {
+    display: flex; align-items: center; gap: 6px; font-size: 12.5px;
+    padding: 5px 6px; border-radius: 6px; color: var(--gray-700);
+  }
+  .ui-tree-row.active {
+    background: var(--primary-50); color: var(--primary-700);
+    font-weight: 700; border: 1px dashed var(--primary-200);
+  }
+  .ui-tree-toggle { width: 14px; text-align: center; color: var(--gray-400); font-size: 10px; }
+  .ui-tree-children { padding-left: 18px; display: flex; flex-direction: column; gap: 4px; }
+  
+  .ui-tag {
+    display: inline-block; padding: 2px 6px; border-radius: 4px;
+    font-size: 10px; font-weight: 800;
+  }
+  .ui-tag.mod { background: var(--primary-100); color: var(--primary-700); }
+  .ui-tag.sub { background: var(--cyan-100); color: var(--cyan-700); }
+  .ui-tag.fn { background: var(--gray-200); color: var(--gray-700); }
+  .ui-tag.gold { background: #fef3c7; color: #b45309; }
+  .ui-tag.draft { background: #f3f4f6; color: #374151; }
+  .ui-tag.task { background: #ede9fe; color: #6d28d9; }
+  .ui-tag.release { background: #dcfce7; color: #15803d; }
+  
+  .ui-link { margin-left: auto; color: var(--primary-500); font-size: 11px; text-decoration: none; cursor: pointer; }
+  .ui-link:hover { text-decoration: underline; }
+
+  /* 预览区域样式 */
+  .ui-preview-panel {
+    background: #fff; border: 1px solid var(--gray-200);
+    border-radius: 16px; box-shadow: var(--shadow-xl);
+    display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .ui-preview-header {
+    background: var(--gray-900); padding: 14px 20px;
+    display: flex; align-items: center; gap: 10px;
+    border-bottom: 1px solid var(--gray-800);
+  }
+  .ui-preview-title { color: #fff; font-size: 14px; font-weight: 700; flex: 1; }
+  .ui-preview-meta {
+    background: var(--gray-100); padding: 10px 20px;
+    font-size: 11.5px; color: var(--gray-500);
+    border-bottom: 1px solid var(--gray-200);
+    display: flex; align-items: center; justify-content: space-between;
+  }
+  .ui-preview-body {
+    padding: 30px; overflow-y: auto; flex: 1;
+  }
+
+  .ui-preview-body h1 {
+    font-size: 24px; font-weight: 900; color: var(--primary-800);
+    margin-bottom: 20px; border-bottom: 1px solid var(--gray-200);
+    padding-bottom: 10px;
+  }
+  .ui-preview-body h2 {
+    font-size: 18px; font-weight: 800; color: var(--primary-700);
+    margin: 28px 0 14px; border-left: 4px solid var(--primary-500);
+    padding-left: 10px;
+  }
+  .ui-preview-body h3 {
+    font-size: 15px; font-weight: 700; color: var(--gray-800);
+    margin: 18px 0 10px;
+  }
+  .ui-preview-body p, .ui-preview-body li {
+    font-size: 13.5px; color: var(--gray-700); margin-bottom: 10px;
+  }
+  .ui-preview-body ul, .ui-preview-body ol {
+    padding-left: 20px; margin-bottom: 12px;
+  }
+  .ui-preview-body li { margin-bottom: 6px; }
+
+  /* 流程图样式 */
+  .flowchart-wrap {
+    background: var(--gray-50); border: 1px solid var(--gray-200);
+    border-radius: 12px; padding: 20px; margin: 16px 0;
+  }
+  .flowchart {
+    display: flex; flex-direction: column; gap: 14px;
+    align-items: center;
+  }
+  .flow-node {
+    background: #fff; border: 1.5px solid var(--primary-200);
+    border-radius: 8px; padding: 10px 14px; width: 100%;
+    max-width: 440px; text-align: center; box-shadow: var(--shadow-sm);
+  }
+  .flow-node strong { color: var(--primary-700); font-size: 13px; display: block; margin-bottom: 2px; }
+  .flow-node span { color: var(--gray-500); font-size: 11px; }
+  .flow-node.highlight {
+    border-color: var(--cyan-500); background: var(--cyan-50);
+  }
+  .flow-node.highlight strong { color: var(--cyan-700); }
+  .flow-arrow {
+    color: var(--primary-400); font-size: 14px; font-weight: 900;
+  }
+
+  .footer {
+    margin-top: 56px;
+    padding-top: 24px;
+    border-top: 1px solid var(--gray-200);
+    color: var(--gray-400);
+    font-size: 12px;
+    text-align: center;
+  }
+
+  @media (max-width: 1200px) {
+    .knowledge-layout { grid-template-columns: 1fr; }
+    .ui-side-card { height: auto; }
+    .workflow { grid-template-columns: 1fr; }
+    .step-card::after { display: none; }
+    .biz-highlight { grid-template-columns: repeat(2, 1fr); }
+  }
+  
+  @media print {
+    body { background: #fff; padding: 18px; }
+    .header, .summary-card, .step-card, .md-table, .ui-side-card, .ui-preview-panel { box-shadow: none; }
+    .section-title { break-after: avoid; }
+    .knowledge-layout { grid-template-columns: 1fr; }
+    .ui-side-card { display: none; } /* 打印时隐藏左侧模拟交互栏 */
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header Area -->
+  <header class="header">
+    <span class="eyebrow" style="font-weight: 700; font-size: 12px; letter-spacing: 1px;">📡 NEBULA PRISM · 星云棱镜</span>
+    <h1 style="margin-top: 10px;">星云棱镜产业信息订阅实现方案</h1>
+    <p class="lead" style="margin-top: 10px; font-size: 15px; opacity: .88;">
+      产业信息订阅引擎 · 构建从数据源智能发现、沙箱脚本生成到风险报告沉淀的产业情报底座智能体
+    </p>
+    <div class="badge-row">
+      <span class="badge">智能找源</span>
+      <span class="badge">沙箱隔离</span>
+      <span class="badge">事件归并</span>
+      <span class="badge">报告沉淀</span>
+      <span class="badge">情报底座</span>
+      <span class="badge">星云生态</span>
+    </div>
+  </header>
+
+  <!-- 0 方案建设背景 -->
+  <section>
+    <div class="section-title">
+      <span class="num">0</span>
+      <h2>方案建设背景</h2>
+      <span class="line"></span>
+    </div>
+    <div class="summary-grid" style="grid-template-columns: 1fr;">
+      <div class="summary-card">
+        <h3>📋 业务背景与智能体感知诉求</h3>
+        <p>
+          随着产业金融、产业研究、区域经济研判及重点客户管理需求不断提升，产业动态信息对业务决策和风险管理的影响越来越明显。当前，产业相关信息广泛分布在政府网站、行业协会、主流媒体、微信公众号、短视频平台以及第三方舆情平台中，信息来源多、更新快、结构不统一，人工跟踪存在较高成本。例如，一是政策变化可能直接影响某一产业的发展方向；二是安全事故、环保处罚、停工停产等事件可能提前反映企业或区域产业风险；三是行业景气度变化、项目扩产、产业链波动等信息可能对客户经营状态产生间接影响；四是短视频、公众号等新媒体信息往往具有传播速度快、发酵不确定性强的特点，容易形成突发舆情。目前，公司已具备一定数据采集和智能分析基础，但各类信息尚未形成统一的产业情报视角，也尚未与星云平台现有风控策略能力形成有效协同。因此，有必要在星云平台基础上建设产业情报智能体，作为产业动态感知和产业风险识别的前置能力。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1 一句话定位 -->
+  <section>
+    <div class="section-title">
+      <span class="num">1</span>
+      <h2>平台定位：解决什么问题</h2>
+      <span class="line"></span>
+    </div>
+    <div class="summary-grid">
+      <div class="summary-card">
+        <h3>🎯 项目定位与目标</h3>
+        <p>
+          星云棱镜产业信息订阅引擎是整个“产业情报智能体”的<b>数据底座与订阅入口</b>。
+          它将传统零散的、一次性的人工网络检索，升级为<b>可配置、可追踪、可沉淀</b>的智能订阅引擎。
+          平台通过大模型自主发现优质数据源，沙箱自动生成并验证采集脚本，持续抓取数据流并匹配产业风险语义，最终围绕监控主体形成结构化事件和分析报告。
+        </p>
+        <div class="quote-box">
+          核心价值：通过“自动化找源-沙箱脚本生成-定时去重监控-大模型分析报告”的闭环，为后续星云平台风险因子的沉淀与风控策略的发布提供长效 of 工程底座。
+        </div>
+      </div>
+      <div class="summary-card">
+        <h3>⚠️ 核心解决的痛点</h3>
+        <ul class="check-list">
+          <li><strong>信息渠道分散</strong>：产业数据广泛分布于政府官网、行业协会、主流媒体与社交舆情，难以集中感知。</li>
+          <li><strong>手工跟踪成本高</strong>：业务部门缺乏自动化抓取逻辑与工具，每日人工筛选效率低、搜集负担重。</li>
+          <li><strong>事件演化不清晰</strong>：抓取的信息多为孤立的新闻推送，缺乏持续性的时间轴跟进与演化逻辑。</li>
+          <li><strong>决策获取不及时</strong>：管理层难以及时掌握产业的宏观与微观异常动态，容易导致风控策略调整滞后。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 系统架构与核心数据流 -->
+  <section>
+    <div class="section-title">
+      <span class="num">2</span>
+      <h2>整体架构与核心数据流</h2>
+      <span class="line"></span>
+    </div>
+    <div class="summary-grid" style="grid-template-columns: 1.1fr .9fr;">
+      <div class="summary-card">
+        <h3>🔌 系统技术栈定义</h3>
+        <table class="md-table" style="margin-top: 0;">
+          <thead>
+            <tr><th>技术层次</th><th>具体技术方案</th><th>业务作用</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>应用框架</strong></td>
+              <td>Next.js 14+ (App Router) + TypeScript</td>
+              <td>统一前后端入口，实现高效的 API Routes 与首屏 SSR 渲染</td>
+            </tr>
+            <tr>
+              <td><strong>数据持久层</strong></td>
+              <td>SQLite + Drizzle ORM</td>
+              <td>轻量级开发部署，利用 Drizzle 强类型控制提升开发安全和可维护性</td>
+            </tr>
+            <tr>
+              <td><strong>AI 协同与智能体</strong></td>
+              <td>自定义 AI Agents (找源、脚本生成、修复、分析)</td>
+              <td>利用 LLM (OpenAI / Claude API) 进行自主数据检索与脚本代码构建</td>
+            </tr>
+            <tr>
+              <td><strong>沙箱执行环境</strong></td>
+              <td><code>isolated-vm</code> V8 隔离容器</td>
+              <td>安全隔离运行 AI 动态生成的爬虫脚本，杜绝恶意执行或沙箱逃逸</td>
+            </tr>
+            <tr>
+              <td><strong>调度与通知</strong></td>
+              <td>基于 Node 进程的 Cron 定时器 + WebSocket</td>
+              <td>实现多源分布式定时采集，并通过 WebSocket 实时反馈进度日志</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="summary-card">
+        <h3>🔄 核心订阅构建步骤</h3>
+        <div class="workflow" style="grid-template-columns: 1fr; gap: 8px;">
+          <div class="step-card" style="min-height: auto; padding: 10px 14px;">
+            <small>STEP 01</small>
+            <h3 style="margin-bottom: 2px;">用户配置订阅主题</h3>
+            <p style="font-size: 11px;">用户输入 topic 并绑定产业配置快照，定义监控关键词与风险区域。</p>
+          </div>
+          <div class="step-card" style="min-height: auto; padding: 10px 14px;">
+            <small>STEP 02</small>
+            <h3 style="margin-bottom: 2px;">AI 智能找源 (findSourcesAgent)</h3>
+            <p style="font-size: 11px;">LLM 自动调用联网搜索接口，基于 Topic 和监控条件检索并推荐 5-10 个可用目标源。</p>
+          </div>
+          <div class="step-card" style="min-height: auto; padding: 10px 14px;">
+            <small>STEP 03</small>
+            <h3 style="margin-bottom: 2px;">AI 脚本生成与验证 (generateScriptAgent)</h3>
+            <p style="font-size: 11px;">AI 根据网页结构自动编写 Scraping 脚本，并在隔离沙箱中预跑，校验数据格式。</p>
+          </div>
+          <div class="step-card" style="min-height: auto; padding: 10px 14px;">
+            <small>STEP 04</small>
+            <h3 style="margin-bottom: 2px;">定时调度采集与去重入库</h3>
+            <p style="font-size: 11px;">系统按 cron 定时拉取，哈希校验去重，存入 <code>message_cards</code> 表，触发阈值发送通知。</p>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 数据源分层方案 -->
+  <section>
+    <div class="section-title">
+      <span class="num">3</span>
+      <h2>数据源分层方案：确保信息准确与时效</h2>
+      <span class="line"></span>
+    </div>
+    <div class="biz-highlight">
+      <div class="item">
+        <div class="icon">🏛️</div>
+        <h4>第一层：权威事实层</h4>
+        <div class="role-scope"><span class="role-scope-k">源库 ·</span>官方白名单</div>
+        <p>重点跟踪政府官网、行业协会、地方官媒及官方通报，用于确认事实和补充事件时间轴的官方关键节点。可信度极高，作为系统评估和风险提示的基石。</p>
+      </div>
+      <div class="item">
+        <div class="icon">🔍</div>
+        <h4>第二层：增量发现层</h4>
+        <div class="role-scope"><span class="role-scope-k">源库 ·</span>联网/新闻搜索 API</div>
+        <p>按“产业 + 地区 + 风险词”自动化组装，通过联网 API 定时检索未被监控的突发事件，充当增量雷达，提醒运营人员进行定向订阅扩张。</p>
+      </div>
+      <div class="item">
+        <div class="icon">📱</div>
+        <h4>第三层：舆情线索层</h4>
+        <div class="role-scope"><span class="role-scope-k">源库 ·</span>社媒舆情源 API</div>
+        <p>集成第三方舆情接口，捕捉短视频平台、社交媒体的早期异常言论（如污染投诉、大批离职、火灾隐患）。该层只定位为“风险线索”，必须经过交叉验证。</p>
+      </div>
+      <div class="item">
+        <div class="icon">🔌</div>
+        <h4>第四层：自有补充层</h4>
+        <div class="role-scope"><span class="role-scope-k">源库 ·</span>公众号/特定站采集</div>
+        <p>保留并升级消金、黑产等既有采集爬虫，改造成结构化解析模块；控制手机 RPA 规模以降低维护成本，定向跟踪重点行业公号。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 数据库设计与核心 Schema -->
+  <section>
+    <div class="section-title">
+      <span class="num">4</span>
+      <h2>数据库设计与核心 Schema</h2>
+      <span class="line"></span>
+    </div>
+    <p class="text-muted" style="margin-bottom:12px;">
+      平台数据库采用 SQLite 构建，使用 Drizzle ORM 进行数据关系抽象。以下是承载平台业务闭环的关键表结构：
+    </p>
+    <div class="summary-grid" style="grid-template-columns: 1fr; gap: 0;">
+      <div class="summary-card" style="padding: 18px 24px;">
+        <table class="md-table" style="margin: 0;">
+          <thead>
+            <tr><th>表名 (Table Name)</th><th>核心字段 (Key Columns)</th><th>核心业务含义与关联说明</th></tr>
+          </thead>
+          <tbody>
+            <tr>
+              <td><strong>users</strong></td>
+              <td><code>id, email, passwordHash, isAdmin, isGuest</code></td>
+              <td>系统用户表，区分超级管理员与普通业务运营人员</td>
+            </tr>
+            <tr>
+              <td><strong>llm_providers</strong></td>
+              <td><code>id, name, baseUrl, apiKey, modelId, isActive</code></td>
+              <td>大模型供应商配置表，支持动态切换多模型与 Token 使用审计</td>
+            </tr>
+            <tr>
+              <td><strong>industry_configs</strong></td>
+              <td><code>id, name, category, keywordsJson, riskTermsJson, regionsJson</code></td>
+              <td>产业大类基础配置表，存储不同产业的关键词、风险词、推荐区域和规则字典</td>
+            </tr>
+            <tr>
+              <td><strong>subscriptions</strong></td>
+              <td><code>id, topic, criteria, industryConfigId, industryConfigSnapshot, managedStatus</code></td>
+              <td><b>订阅主表</b>，存储用户关注的主题和规则，同时<b>强制保存创建时的产业配置快照</b>，确保历史数据审计的一致性</td>
+            </tr>
+            <tr>
+              <td><strong>sources</strong></td>
+              <td><code>id, subscriptionId, title, url, script, cronExpression, status</code></td>
+              <td><b>订阅源明细表</b>，一个订阅对应多个采集数据源，存储 AI 生成的爬虫脚本、cron 执行频率以及采集健康度状态</td>
+            </tr>
+            <tr>
+              <td><strong>message_cards</strong></td>
+              <td><code>id, subscriptionId, sourceId, contentHash, title, summary, meetsCriteriaFlag</code></td>
+              <td><b>消息卡片表</b>，采集的元数据实体，存储正文摘要、情感属性、原文链接以及是否命中监控标准标志</td>
+            </tr>
+            <tr>
+              <td><strong>analysis_reports</strong></td>
+              <td><code>id, subscriptionId, userId, title, htmlContent, cardCount</code></td>
+              <td><b>智能分析报告表</b>，围绕某一周期内 message_cards 产生的高价值事件，由 LLM 整理出的行业舆情周报或日报</td>
+            </tr>
+            <tr>
+              <td><strong>managed_build_logs</strong></td>
+              <td><code>id, subscriptionId, step, level, message, payload</code></td>
+              <td><b>管道运行日志表</b>，存储 AI 找源和脚本生成各步骤的执行明细，前端通过 Polling 或 WebSocket 获取构建进度</td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 订阅向导与情报预览交互布局 -->
+  <section>
+    <div class="section-title">
+      <span class="num">5</span>
+      <h2>订阅向导与情报预览：长什么样、交付什么</h2>
+      <span class="line"></span>
+    </div>
+    <p class="text-muted" style="margin-bottom:12px;">
+      左侧展示订阅创建向导（Step 1 到 Step 4）的交互式配置面板；右侧展示点击查看后的<b>实现方案详细技术文档</b>（按 CodeInsight 技术白皮书标准呈现）。
+    </p>
+
+    <!-- UI Mockup & Spec Dual Panel -->
+    <div class="knowledge-layout">
+      
+      <!-- Left Column: Interactive Mockup -->
+      <div class="ui-side-card">
+        <h4 style="margin-bottom: 12px; font-weight: 800; font-size: 15px; color: var(--primary-800);">📋 通用订阅向导 · 实时构建面板</h4>
+        <div class="ui-mock-page">
+          <!-- Wizard Progress Bar -->
+          <div class="ui-mock-card" style="background: #fff; padding: 14px 10px;">
+            <div style="display: flex; justify-content: space-between; font-size: 11px; font-weight: 700; color: var(--gray-400);">
+              <span style="color: var(--primary-500);">1. 主题输入</span>
+              <span style="color: var(--primary-500);">2. 找源发现</span>
+              <span style="color: var(--primary-500);">3. 脚本生成</span>
+              <span style="color: var(--gray-600);">4. 部署确认</span>
+            </div>
+            <div style="height: 4px; background: var(--gray-200); border-radius: 2px; margin-top: 6px; position: relative;">
+              <div style="position: absolute; left: 0; top: 0; bottom: 0; width: 75%; background: var(--primary-500); border-radius: 2px;"></div>
+            </div>
+          </div>
+          
+          <!-- Wizard Dynamic Step Container -->
+          <div class="ui-mock-card tree-body" style="flex: 1; overflow-y: auto;">
+            <!-- Active Step Info -->
+            <div class="ui-mock-alert">
+              <strong>当前步骤：Step 3 · 脚本沙箱生成与验证</strong>
+              <div style="font-size: 10px; margin-top: 4px;">主题：<code>海参养殖赤潮监测</code> · 已选源：3 个</div>
+            </div>
+
+            <!-- Build Logs Streaming Panel -->
+            <div style="background: #1e293b; border-radius: 8px; padding: 10px; font-family: monospace; font-size: 11px; color: #38bdf8; margin-bottom: 10px; box-shadow: var(--shadow-sm); max-height: 180px; overflow-y: auto;">
+              <div style="color: #64748b;">[15:20:01] ⚡ 托管流水线发起， subscription: sub_09x1e...</div>
+              <div style="color: #34d399;">[15:20:05] [SUCCESS] 发现 5 个候选数据源</div>
+              <div style="color: #a78bfa;">[15:20:08] [INFO] 开始并行生成采集脚本 (限制并发 = 5)</div>
+              <div>[15:20:12] [PROGRESS] 正在解析 [大连海洋环境监测网] 结构...</div>
+              <div style="color: #34d399;">[15:20:18] [SUCCESS] 脚本验证成功！拉取到 4 条最新赤潮数据</div>
+              <div style="color: #fb7185;">[15:20:20] [WARNING] [山东沿海信息网] 访问超时，正在启动 repairAgent 修复...</div>
+            </div>
+
+            <!-- Selected Sources List -->
+            <div class="ui-mock-tree-panel">
+              <div class="ui-tree-root">
+                <div class="ui-tree-node">
+                  <div class="ui-tree-row active" style="background: #f0f9ff; font-weight: 700;">
+                    <span class="ui-tree-toggle">▼</span>
+                    <span class="ui-tag mod">白名单</span> 大连海洋监测网
+                    <span class="pill pill-green" style="margin-left: auto;">采集成功</span>
+                  </div>
+                  <div class="ui-tree-children">
+                    <div class="ui-tree-node" style="font-size: 11px; padding: 4px; background: #fafafa; border-radius: 4px; color: var(--gray-600);">
+                      <code>cron: "0 */2 * * *"</code><br>
+                      <code>collected: 4 items</code>
+                    </div>
+                  </div>
+                </div>
+                <div class="ui-tree-node">
+                  <div class="ui-tree-row">
+                    <span class="ui-tree-toggle">▼</span>
+                    <span class="ui-tag sub">舆情源</span> 抖音海参赤潮评论
+                    <span class="pill pill-amber" style="margin-left: auto;">验证中</span>
+                  </div>
+                </div>
+                <div class="ui-tree-node">
+                  <div class="ui-tree-row">
+                    <span class="ui-tree-toggle">▶</span>
+                    <span class="ui-tag fn">公号</span> 胶东半岛水产发布
+                    <span class="pill pill-red" style="margin-left: auto;">错误已自动调度修复</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+          </div>
+
+          <!-- Wizard Actions -->
+          <div class="ui-mock-card" style="background: #fff; display: flex; justify-content: space-between; align-items: center; border-top: 1px solid var(--gray-200); padding: 10px;">
+            <button style="border: 1px solid var(--gray-300); background: #fff; font-size: 11px; padding: 5px 12px; border-radius: 6px; cursor: pointer;">上一步</button>
+            <button style="border: none; background: var(--primary-500); color: #fff; font-size: 11px; padding: 5px 14px; border-radius: 6px; font-weight: 700; cursor: pointer;">继续推进 (自动托管)</button>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Right Column: Detail Spec Panel -->
+      <div class="ui-preview-panel">
+        <div class="ui-preview-header">
+          <span class="ui-preview-title">星云棱镜产业信息订阅实现方案 · 核心技术白皮书</span>
+          <span class="ui-tag release">RELEASE</span>
+          <span class="ui-tag task">v1.2.0</span>
+        </div>
+        <div class="ui-preview-meta">
+          <span>存储路径：docs/superpowers/nebula_prism_specification.md</span>
+          <span>更新时间：2026.07.08</span>
+        </div>
+        
+        <!-- Document Content -->
+        <div class="ui-preview-body">
+          <h1>星云棱镜平台核心设计与技术实现说明书</h1>
+
+          <h2>一、概述</h2>
+          <ul>
+            <li><strong>系统名称</strong>：星云棱镜产业信息订阅引擎（Nebula Prism）</li>
+            <li><strong>核心作用</strong>：作为星云底座的情报抓取子系统，面向信贷风控、产业研究和投资决策。支持以向导式/托管式任务为核心，依托大模型自动配置海量采集源与编写抓取逻辑，并输出去重与分类的消息流卡片。</li>
+            <li><strong>建设背景</strong>：传统采集依赖逆向工程或繁琐的 RPA 配置，面对海量地方网站、垂直公号与瞬息万变的页面结构，技术维护成本高昂。本项目通过 LLM 的生成与自动修复能力（Agent 闭环）实现零代码、全托管的动态找源和抓取调度。</li>
+            <li><strong>业务目标</strong>：提供多租户隔离的订阅机制，使用大模型从海量碎片信息中提炼产业事件时间轴，实现 T+0/T+1 的预警通知，为星云因子的计算准备第一手结构化数据。</li>
+          </ul>
+
+          <h2>二、涉及类与模块清单</h2>
+          <p>平台采用 Next.js 前后端一体化架构，核心逻辑服务类均放在 <code>src/lib</code> 目录下：</p>
+          <table class="md-table">
+            <thead>
+              <tr><th>序号</th><th>模块</th><th>涉及文件/类路径</th><th>技术与业务说明</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td>1</td>
+                <td><b>订阅构建管道</b></td>
+                <td><code>src/lib/managed/pipeline.ts</code></td>
+                <td>多阶段构建核心类，编排 FindSources、GenerateScripts 等异步任务</td>
+              </tr>
+              <tr>
+                <td>2</td>
+                <td><b>沙箱采集运行器</b></td>
+                <td><code>src/lib/sandbox/runner.ts</code></td>
+                <td>基于 <code>isolated-vm</code> 的隔离容器，安全执行脚本并捕获采集数据</td>
+              </tr>
+              <tr>
+                <td>3</td>
+                <td><b>后台数据采集器</b></td>
+                <td><code>src/lib/scheduler/collector.ts</code></td>
+                <td>统筹爬虫调用、正文去重、匹配订阅指标与写入 <code>message_cards</code></td>
+              </tr>
+              <tr>
+                <td>4</td>
+                <td><b>数据源发现智能体</b></td>
+                <td><code>src/lib/ai/agents/findSourcesAgent.ts</code></td>
+                <td>结合联网搜索 API 查找对应 Topic 的潜在网页、公号、RSS</td>
+              </tr>
+              <tr>
+                <td>5</td>
+                <td><b>代码生成智能体</b></td>
+                <td><code>src/lib/ai/agents/generateScriptAgent.ts</code></td>
+                <td>根据数据源特征与反爬类型，利用大模型编写网页 DOM 解析脚本</td>
+              </tr>
+              <tr>
+                <td>6</td>
+                <td><b>持久化数据库映射</b></td>
+                <td><code>src/lib/db/schema.ts</code></td>
+                <td>定义 Drizzle 数据库模式，管理订阅、采集卡片及配置快照</td>
+              </tr>
+            </tbody>
+          </table>
+
+          <h2>三、输入输出</h2>
+          <p>以下为平台订阅向导和数据流转中核心 TypeScript 数据契约（Types）：</p>
+          
+          <h3>1. 发现数据源接口（FoundSource）</h3>
+          <div class="code-box">
+            <pre><code>export interface FoundSource {
+  title: string;
+  url: string;
+  description: string;
+  recommended?: boolean;
+  /** 若为 true，代表该数据源能直接提供满足监控标准的核心指标数据 */
+  canProvideCriteria?: boolean;
+}</code></pre>
+          </div>
+
+          <h3>2. 生成的订阅源接口（GeneratedSource）</h3>
+          <div class="code-box">
+            <pre><code>export interface GeneratedSource {
+  title: string;
+  url: string;
+  description: string;
+  script: string; // 由 AI 编写生成的 JavaScript 抓取脚本
+  cronExpression: string; // 采集周期表达式，例如：'0 */2 * * *'
+  initialItems: CollectedItem[]; // 初始验证中拉取到的样本数据
+  isEnabled: boolean;
+  failedReason?: string; // 失败原因（若脚本生成失败或验证未通过）
+}</code></pre>
+          </div>
+
+          <h3>3. 数据抓取样本项接口（CollectedItem）</h3>
+          <div class="code-box">
+            <pre><code>export interface CollectedItem {
+  title: string;
+  url: string;
+  summary?: string;
+  thumbnailUrl?: string;
+  publishedAt?: string | number; // 原始发布时间
+  /** 脚本解析出的匹配状态: 'matched' | 'unmatched' */
+  criteriaResult?: 'matched' | 'unmatched';
+  metricValue?: number; // 监测数值（如：污染指数，产品单价）
+}</code></pre>
+          </div>
+
+          <h2>四、核心业务流程图</h2>
+          <p>展示平台订阅源创建与消息卡片采集的核心流转：</p>
+          <div class="flowchart-wrap">
+            <div class="flowchart">
+              <div class="flow-node">
+                <strong>[用户端] 配置关注对象</strong>
+                <span>输入订阅主题（Topic） & 确定监控阈值（Criteria）</span>
+              </div>
+              <div class="flow-arrow">▼</div>
+              <div class="flow-node highlight">
+                <strong>[AI Agent] 找源发现任务 (findSourcesAgent)</strong>
+                <span>调用 Search API 搜集白名单和新闻源 → 生成 FoundSource[]</span>
+              </div>
+              <div class="flow-arrow">▼</div>
+              <div class="flow-node highlight">
+                <strong>[AI Agent] 脚本构建任务 (generateScriptAgent)</strong>
+                <span>大模型抓取 DOM 骨架 → 生成运行脚本 Code → 沙箱首次验证</span>
+              </div>
+              <div class="flow-arrow">▼</div>
+              <div class="flow-node">
+                <strong>[调度器] Cron 定时调度 (collector.ts)</strong>
+                <span>按周期执行 Script ➔ 沙箱环境 ➔ 得到 CollectedItem[]</span>
+              </div>
+              <div class="flow-arrow">▼</div>
+              <div class="flow-node">
+                <strong>[底座] 消息流处理与事件归纳</strong>
+                <span>计算 ContentHash 去重 ➔ 存入 message_cards ➔ 自动触发日报</span>
+              </div>
+            </div>
+          </div>
+
+          <h2>五、核心业务逻辑实现细节</h2>
+          
+          <h3>1. 爬虫脚本沙箱隔离运行机制（runner.ts）</h3>
+          <p>
+            由于采集脚本由 AI 自动编写并动态生成，为防止其执行潜在的恶意代码（例如：访问本地文件系统、执行系统指令、发起非白名单网络连接），系统强制所有脚本在 <b>isolated-vm</b> 独立沙箱中执行。
+          </p>
+          <div class="code-box">
+            <pre><code>// 核心沙箱执行代码摘要
+import ivm from 'isolated-vm';
+
+export async function runScriptInSandbox(scriptCode: string, htmlContent: string) {
+  const isolate = new ivm.Isolate({ memoryLimit: 128 }); // 严格限制内存 128MB
+  const context = await isolate.createContext();
+  const jail = context.global;
+
+  // 注入受限的基础函数，拒绝 Node.js require / process 等敏感 API
+  await jail.set('log', new ivm.Reference((...args) => console.log('[Sandbox]', ...args)));
+  
+  // 注入抓取 HTML 文本，使其作为纯字符串在沙箱内解析，阻断沙箱内主动发起 HTTP 请求
+  await jail.set('rawHtml', htmlContent);
+
+  const compiledScript = await isolate.compileScript(`
+    // 在沙箱内使用解析器解析 rawHtml 并执行 DOM 选择器抽取
+    function collect() {
+      ${scriptCode}
+    }
+    JSON.stringify(collect());
+  `);
+
+  // 设置执行超时限制为 5000ms
+  const resultJson = await compiledScript.run(context, { timeout: 5000 });
+  return JSON.parse(resultJson);
+}</code></pre>
+          </div>
+
+          <h3>2. 消息去重入库与指标校验逻辑（collector.ts）</h3>
+          <p>
+            在 collector 采集脚本运行成功后，系统执行排重和订阅指标校验。
+            我们通过 MD5/SHA-256 对 <code>title + url</code> 计算 <b>contentHash</b> 保证同一数据源的唯一性，并通过配置关键词或者大模型判定，生成 meetsCriteriaFlag：
+          </p>
+          <div class="code-box">
+            <pre><code>// collector.ts 排重与校验机制
+const contentHash = hash(item.title + item.url);
+
+// 1. 数据库预检，避免写入冲突
+const existing = db.select()
+  .from(messageCards)
+  .where(and(eq(messageCards.contentHash, contentHash), eq(messageCards.sourceId, sourceId)))
+  .get();
+
+if (!existing) {
+  let meetsCriteria = false;
+  
+  // 2. 指标校验：若脚本未自动判定，则在 collector 中执行关键词规则过滤
+  if (item.criteriaResult !== undefined) {
+    meetsCriteria = item.criteriaResult === 'matched';
+  } else if (criteriaText) {
+    const itemText = `${item.title} ${item.summary ?? ''}`.toLowerCase();
+    meetsCriteria = criteriaText.split(/[\s,，、]+/)
+      .filter(Boolean)
+      .some((kw) => itemText.includes(kw));
+  }
+
+  // 3. 事务性入库
+  db.insert(messageCards).values({
+    subscriptionId,
+    sourceId,
+    contentHash,
+    title: item.title,
+    summary: item.summary,
+    sourceUrl: item.url,
+    meetsCriteriaFlag: meetsCriteria,
+    createdAt: new Date()
+  }).run();
+}</code></pre>
+          </div>
+
+          <h2>六、调用链路说明</h2>
+          <table class="md-table">
+            <thead>
+              <tr><th>交互协议/机制</th><th>发送端</th><th>接收端/服务</th><th>交互内容与业务说明</th></tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><b>HTTP POST</b></td>
+                <td>订阅创建向导</td>
+                <td><code>/api/subscriptions</code></td>
+                <td>提交订阅 Topic、Criteria 以及行业配置快照</td>
+              </tr>
+              <tr>
+                <td><b>Server-Sent Events / WS</b></td>
+                <td><code>managed/pipeline.ts</code></td>
+                <td>向导前端面板</td>
+                <td>推送 AI 找源日志和爬虫脚本生成测试进度数据</td>
+              </tr>
+              <tr>
+                <td><b>LLM API Call</b></td>
+                <td><code>findSourcesAgent</code></td>
+                <td>OpenAI/Anthropic 服务端</td>
+                <td>传入订阅主题，自主编排网络搜索结果，提取数据源列表</td>
+              </tr>
+              <tr>
+                <td><b>SQLite Query</b></td>
+                <td><code>collector.ts</code></td>
+                <td>本地数据库 (Drizzle ORM)</td>
+                <td>拉取符合 cron 频率的 sources 表并进行采集后去重更新</td>
+              </tr>
+            </tbody>
+          </table>
+
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <!-- 6 不同角色的使用边界 -->
+  <section>
+    <div class="section-title">
+      <span class="num">6</span>
+      <h2>谁在用：系统角色与使用边界</h2>
+      <span class="line"></span>
+    </div>
+    <div class="biz-highlight" style="grid-template-columns: repeat(4, 1fr);">
+      <div class="item">
+        <div class="icon">💻</div>
+        <h4>系统管理员</h4>
+        <div class="role-scope"><span class="role-scope-k">范围 ·</span>平台底座/API/SMTP</div>
+        <p>配置大模型 API Key 权重，管理系统调度任务与邮件发送网关。监控采集任务健康度，进行基础的安全策略拦截与沙箱参数调整。</p>
+      </div>
+      <div class="item">
+        <div class="icon">👩‍💼</div>
+        <h4>业务分析师</h4>
+        <div class="role-scope"><span class="role-scope-k">范围 ·</span>订阅配置/报告预览</div>
+        <p>创建个性化监测主题（如重点企业动向），阅读聚合的消息卡片，收藏风险事件，导出 LLM 自动沉淀的产业月报与日报。</p>
+      </div>
+      <div class="item">
+        <div class="icon">🔬</div>
+        <h4>产业研究运营专家</h4>
+        <div class="role-scope"><span class="role-scope-k">范围 ·</span>细分产业字典/快照维护</div>
+        <p>维护“化工原料”“煤炭”“养殖”等试点行业底层关键词词包、敏感度字典。复核系统抓取的异常卡片，标记误报，调整产业配置阈值。</p>
+      </div>
+      <div class="item">
+        <div class="icon">📈</div>
+        <h4>策略/管理层</h4>
+        <div class="role-scope"><span class="role-scope-k">范围 ·</span>决策支持/策略看板</div>
+        <p>通过“产业情报中心”看板一目了然把握产业负面事件的分布、传播热度以及各省份舆情发展状态，借时间轴决策风控策略发布。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 建议演进路径 -->
+  <section>
+    <div class="section-title">
+      <span class="num">7</span>
+      <h2>系统三阶段建议演进路径</h2>
+      <span class="line"></span>
+    </div>
+    <div class="summary-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 0;">
+      <div class="summary-card" style="border-top: 4px solid var(--primary-400);">
+        <small style="color: var(--gray-400); font-weight: 700;">PHASE 1 · MVP 验证期</small>
+        <h3 style="margin-top: 4px;">情报底座与采集闭环</h3>
+        <ul class="check-list" style="margin-top: 10px; gap: 6px;">
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">内置 5 个试点产业基础模板配置。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">跑通“向导创建-AI找源-代码沙箱生成”全托管模式。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">实现卡片流去重、收藏、未读提醒与报告生成基本流程。</li>
+        </ul>
+      </div>
+      <div class="summary-card" style="border-top: 4px solid var(--primary-600);">
+        <small style="color: var(--gray-400); font-weight: 700;">PHASE 2 · 深度运营期</small>
+        <h3 style="margin-top: 4px;">多源情报与事件时间轴</h3>
+        <ul class="check-list" style="margin-top: 10px; gap: 6px;">
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">沉淀官方权威白名单源库（主流官方媒体与监管机构）。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">大模型实现多卡片聚类，把相似舆情提炼为一个“产业事件”。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">上线事件的发展阶段跟踪与精细化时间轴，支持人工复核。</li>
+        </ul>
+      </div>
+      <div class="summary-card" style="border-top: 4px solid var(--primary-800);">
+        <small style="color: var(--gray-400); font-weight: 700;">PHASE 3 · 智能策略联动</small>
+        <h3 style="margin-top: 4px;">从情报流走向风控因子</h3>
+        <ul class="check-list" style="margin-top: 10px; gap: 6px;">
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">将定性的舆情卡片、情感分级转化为定量行业健康度指数。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">构建候选风险因子，接入星云平台量化策略验证框架。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">实现“发现情报 -> 校验因子 -> 调整授信策略”的最终闭环。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- Footer Area -->
+  <footer class="footer">
+    星云棱镜产业信息订阅引擎 · 核心开发与设计实现方案书 · 2026.07 · 内部保密技术文档
+  </footer>
+
+</div>
+</body>
+</html>

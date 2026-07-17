@@ -5,7 +5,10 @@ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.response.PageResult;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
+import com.company.codeinsight.common.util.DataUriUtil;
+import com.company.codeinsight.common.util.DbStringLimits;
 import com.company.codeinsight.modules.entrypoint.model.DiscoveredEntrypoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfigCodec;
@@ -25,7 +28,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.transaction.support.TransactionSynchronization;
 import org.springframework.transaction.support.TransactionSynchronizationManager;
-
 import java.io.File;
 import java.time.Duration;
 import java.time.LocalDateTime;
@@ -54,6 +56,7 @@ public class TrialRunServiceImpl implements TrialRunService {
 
     private final EntryScanTrialMapper trialMapper;
     private final StringRedisTemplate stringRedisTemplate;
+    private final EnvStorageResolver storageResolver;
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     @Autowired
@@ -105,8 +108,8 @@ public class TrialRunServiceImpl implements TrialRunService {
             trial.setStatus(EntryScanTrialEntity.STATUS_PENDING);
             trial.setConfigSnapshot(EntryPointConfigCodec.encode(config));
             trial.setStartedAt(LocalDateTime.now());
-            trial.setCreatedAt(LocalDateTime.now());
-            trial.setUpdatedAt(LocalDateTime.now());
+            trial.setCreatedDate(LocalDateTime.now());
+            trial.setUpdatedDate(LocalDateTime.now());
             trialMapper.insert(trial);
 
             final Long trialId = trial.getId();
@@ -175,7 +178,9 @@ public class TrialRunServiceImpl implements TrialRunService {
 
             String resultJson = objectMapper.writeValueAsString(discovered);
             if (canUpdateRunningTrial(trialId)) {
-                updateStatus(trialId, EntryScanTrialEntity.STATUS_SUCCESS, LocalDateTime.now(), resultJson, null);
+                String resultUri = DataUriUtil.buildTrialUri(trialId);
+                DataUriUtil.writeUtf8(resultUri, resultJson, storageResolver);
+                updateStatus(trialId, EntryScanTrialEntity.STATUS_SUCCESS, LocalDateTime.now(), resultUri, null);
                 log.info("trial run success: trialId={} entryCount={}", trialId, discovered.size());
             } else {
                 log.info("trial run finished but skipped status update (cancelled/stale): trialId={}", trialId);
@@ -184,7 +189,7 @@ public class TrialRunServiceImpl implements TrialRunService {
             log.error("trial run failed: trialId={}", trialId, e);
             if (canUpdateRunningTrial(trialId)) {
                 String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
-                if (msg.length() > 1000) msg = msg.substring(0, 1000);
+                msg = DbStringLimits.truncate(msg, DbStringLimits.ERROR_REASON);
                 updateStatus(trialId, EntryScanTrialEntity.STATUS_FAILED, LocalDateTime.now(), null, msg);
             }
         } finally {
@@ -212,7 +217,9 @@ public class TrialRunServiceImpl implements TrialRunService {
 
     @Override
     public EntryScanTrialEntity get(Long trialId) {
-        return trialMapper.selectById(trialId);
+        EntryScanTrialEntity trial = trialMapper.selectById(trialId);
+        hydrateResult(trial);
+        return trial;
     }
 
     @Override
@@ -259,7 +266,8 @@ public class TrialRunServiceImpl implements TrialRunService {
         if (isTerminal(trial.getStatus())) return false;
 
         updateStatus(trialId, EntryScanTrialEntity.STATUS_CANCELLED, LocalDateTime.now(), null,
-                "用户(" + (operator == null ? "?" : operator) + ")取消");
+                DbStringLimits.truncate("用户(" + (operator == null ? "?" : operator) + ")取消",
+                        DbStringLimits.ERROR_REASON));
         safeUnlock(LOCK_KEY_PREFIX + trial.getRepositoryId(), null);
         cleanupWorkspace(trialId);
         return true;
@@ -290,7 +298,7 @@ public class TrialRunServiceImpl implements TrialRunService {
                         .in(EntryScanTrialEntity::getStatus,
                                 EntryScanTrialEntity.STATUS_PENDING,
                                 EntryScanTrialEntity.STATUS_RUNNING)
-                        .lt(EntryScanTrialEntity::getUpdatedAt, cutoff));
+                        .lt(EntryScanTrialEntity::getUpdatedDate, cutoff));
         for (EntryScanTrialEntity trial : stale) {
             markStaleFailed(trial);
         }
@@ -307,7 +315,7 @@ public class TrialRunServiceImpl implements TrialRunService {
                         .in(EntryScanTrialEntity::getStatus,
                                 EntryScanTrialEntity.STATUS_PENDING,
                                 EntryScanTrialEntity.STATUS_RUNNING)
-                        .lt(EntryScanTrialEntity::getUpdatedAt, cutoff));
+                        .lt(EntryScanTrialEntity::getUpdatedDate, cutoff));
         stale.forEach(this::markStaleFailed);
     }
 
@@ -373,6 +381,7 @@ public class TrialRunServiceImpl implements TrialRunService {
         s.setFinishedAt(trial.getFinishedAt());
         s.setErrorMessage(trial.getErrorMessage());
         if (EntryScanTrialEntity.STATUS_SUCCESS.equals(trial.getStatus())) {
+            hydrateResult(trial);
             s.setEntryCount(countEntries(trial.getResultJson()));
         }
         return s;
@@ -380,6 +389,20 @@ public class TrialRunServiceImpl implements TrialRunService {
 
     private int countEntries(String resultJson) {
         return parseResultEntries(resultJson).size();
+    }
+
+    private void hydrateResult(EntryScanTrialEntity trial) {
+        if (trial == null) {
+            return;
+        }
+        if (trial.getResultJson() != null) {
+            return;
+        }
+        if (trial.getResultUri() == null || trial.getResultUri().isBlank()) {
+            trial.setResultJson(null);
+            return;
+        }
+        trial.setResultJson(DataUriUtil.readUtf8(trial.getResultUri(), storageResolver));
     }
 
     private boolean canUpdateRunningTrial(Long trialId) {
@@ -396,18 +419,23 @@ public class TrialRunServiceImpl implements TrialRunService {
     }
 
     private void updateStatus(Long trialId, String status, LocalDateTime finishedAt,
-                              String resultJson, String errorMessage) {
+                              String resultUri, String errorMessage) {
         LambdaUpdateWrapper<EntryScanTrialEntity> uw = new LambdaUpdateWrapper<>();
         uw.eq(EntryScanTrialEntity::getId, trialId)
                 .set(EntryScanTrialEntity::getStatus, status)
-                .set(EntryScanTrialEntity::getUpdatedAt, LocalDateTime.now());
+                .set(EntryScanTrialEntity::getUpdatedDate, LocalDateTime.now());
         if (finishedAt != null) {
             uw.set(EntryScanTrialEntity::getFinishedAt, finishedAt);
         } else if (isTerminal(status)) {
             uw.set(EntryScanTrialEntity::getFinishedAt, LocalDateTime.now());
         }
-        if (resultJson != null) uw.set(EntryScanTrialEntity::getResultJson, resultJson);
-        if (errorMessage != null) uw.set(EntryScanTrialEntity::getErrorMessage, errorMessage);
+        if (resultUri != null) {
+            uw.set(EntryScanTrialEntity::getResultUri, resultUri);
+        }
+        if (errorMessage != null) {
+            uw.set(EntryScanTrialEntity::getErrorMessage,
+                    DbStringLimits.truncate(errorMessage, DbStringLimits.ERROR_REASON));
+        }
         trialMapper.update(null, uw);
     }
 

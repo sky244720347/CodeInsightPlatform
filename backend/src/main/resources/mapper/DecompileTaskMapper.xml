@@ -11,8 +11,9 @@
         SELECT id
         FROM ci_task
         WHERE status = 'PENDING'
+          AND is_deleted = 0
           AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until &lt; NOW())
-        ORDER BY priority DESC, created_at ASC
+        ORDER BY priority DESC, created_date ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED
     </select>

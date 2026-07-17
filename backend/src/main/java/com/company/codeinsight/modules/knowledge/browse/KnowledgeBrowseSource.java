@@ -32,5 +32,5 @@ public interface KnowledgeBrowseSource {
     /**
      * 单个索引 / 清单文件条目。
      */
-    record IndexFileEntry(String relativePath, String type, long size, java.time.LocalDateTime updatedAt) {}
+    record IndexFileEntry(String relativePath, String type, long size, java.time.LocalDateTime updatedDate) {}
 }

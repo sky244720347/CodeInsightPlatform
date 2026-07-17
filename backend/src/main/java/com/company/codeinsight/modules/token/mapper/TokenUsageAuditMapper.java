@@ -25,22 +25,24 @@ public interface TokenUsageAuditMapper extends BaseMapper<TokenUsageAudit> {
             COALESCE(SUM(total_tokens), 0) AS totalTokens,
             COALESCE(SUM(cost), 0) AS totalCost
         FROM ci_token_usage_audit
+        WHERE is_deleted = 0
         GROUP BY model_name
         """)
     List<AiModelMetricSummary> selectModelMetricSummaries();
 
     @Select("""
         SELECT
-            TO_CHAR(created_at::date, 'YYYY-MM-DD') AS date,
+            TO_CHAR(created_date::date, 'YYYY-MM-DD') AS date,
             COUNT(*) AS calls,
             COALESCE(SUM(total_tokens), 0) AS tokens,
             COALESCE(SUM(cost), 0) AS cost
         FROM ci_token_usage_audit
         WHERE model_name = #{modelName}
-          AND created_at >= #{startAt}
-          AND created_at < #{endAt}
-        GROUP BY created_at::date
-        ORDER BY created_at::date ASC
+          AND is_deleted = 0
+          AND created_date >= #{startAt}
+          AND created_date < #{endAt}
+        GROUP BY created_date::date
+        ORDER BY created_date::date ASC
         """)
     List<AiModelMetricTrendPoint> selectModelMetricTrend(
         @Param("modelName") String modelName,

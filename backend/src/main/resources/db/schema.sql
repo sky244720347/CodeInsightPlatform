@@ -1,6 +1,10 @@
 -- =====================================================================
--- CodeInsight Platform — 数据库初始化脚本
+-- CodeInsight Platform — 数据库初始化脚本（旧库幂等升级）
 -- 兼容 PostgreSQL 11+，幂等执行
+--
+-- 新库请改用同目录 schema-fresh.sql（纯净 CREATE，无历史 ALTER/迁移）：
+--   spring.sql.init.schema-locations: classpath:db/schema-fresh.sql
+--   生成脚本：backend/scripts/generate_schema_fresh.py
 --
 -- 结构约定：
 --   * 每张表一个独立段落，段落内按以下顺序：
@@ -9,11 +13,13 @@
 --     3) CREATE INDEX / CREATE UNIQUE INDEX
 --     4) COMMENT ON TABLE / COMMENT ON COLUMN
 --     5) DML（仅 ci_prompt / ci_model / ci_model_preset / ci_user 四张系统关键配置表允许保留）
---   * 所有 DROP COLUMN IF EXISTS / 历史数据迁移 UPDATE 已在 v0.x 历史版本运行完毕，本文件不再保留
 --   * 调度相关表（ci_schedule_task / ci_schedule_fire_record）已下线（任务调度改由
 --     ScanWindowScheduler + TaskQueueDispatcher 内存调度），从 schema 中移除
 -- =====================================================================
 
+-- 审计字段：全表统一 is_deleted / created_by / updated_by / created_date / updated_date；
+--           旧列 created_at/updated_at 保留不删；deleted_at 已废弃并 DROP。
+--           详见 docs/schema-audit-fields-rename-plan.md
 
 -- ============================================================
 -- 1. ci_system — 业务系统管理表
@@ -27,12 +33,10 @@ CREATE TABLE IF NOT EXISTS ci_system (
     description VARCHAR(500),
     owner VARCHAR(50) NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted_at TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 -- 兼容旧库列扩展
-ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;
 ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS name_cn VARCHAR(200);
 ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS modularize_prompt_id BIGINT;
 ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS document_prompt_id BIGINT;
@@ -40,12 +44,28 @@ ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS max_concurrent_tasks INT DEFAULT 
 ALTER TABLE ci_system DROP COLUMN IF EXISTS state;
 ALTER TABLE ci_system DROP COLUMN IF EXISTS status;
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_system
+ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_system SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_system SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+-- Spring ScriptUtils 不支持 DO $$；旧 deleted_at 直接幂等删除
+ALTER TABLE ci_system DROP COLUMN IF EXISTS deleted_at;
+COMMENT ON COLUMN ci_system.created_date IS '创建时间';
+COMMENT ON COLUMN ci_system.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_system.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_system.created_by   IS '创建人';
+COMMENT ON COLUMN ci_system.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_system
 COMMENT ON TABLE ci_system IS '业务系统管理表（多业务系统隔离的根）';
 COMMENT ON COLUMN ci_system.name IS '系统名称';
 COMMENT ON COLUMN ci_system.name_cn IS '系统中文名称';
 COMMENT ON COLUMN ci_system.description IS '系统描述';
 COMMENT ON COLUMN ci_system.owner IS '系统负责人';
-COMMENT ON COLUMN ci_system.deleted_at IS '逻辑删除时间，NULL=未删除';
 COMMENT ON COLUMN ci_system.modularize_prompt_id IS '已废弃：模块提取提示词 ID（运行时未设置则回退到 ci_prompt.is_default=1）';
 COMMENT ON COLUMN ci_system.document_prompt_id IS '已废弃：文档生成提示词 ID（运行时未设置则回退到 ci_prompt.is_default=1）';
 COMMENT ON COLUMN ci_system.max_concurrent_tasks IS '同时在跑任务上限（系统级并发闸门），默认 1';
@@ -68,7 +88,7 @@ CREATE TABLE IF NOT EXISTS ci_repository (
     exclude_file_types VARCHAR(200),
     last_commit_id VARCHAR(100),
     last_decompile_at TIMESTAMP,
-    entry_scan_config TEXT,
+    entry_scan_config JSONB,
     push_git_url VARCHAR(500),
     push_branch VARCHAR(100),
     push_username VARCHAR(100),
@@ -79,13 +99,11 @@ CREATE TABLE IF NOT EXISTS ci_repository (
     published_at TIMESTAMP,
     published_by VARCHAR(100),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted_at TIMESTAMP
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 -- 兼容旧库列扩展
-ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS entry_scan_config TEXT;
-ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS deleted_at TIMESTAMP;
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS entry_scan_config JSONB;
 ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS push_git_url VARCHAR(500);
 ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS push_branch VARCHAR(100);
 ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS push_username VARCHAR(100);
@@ -100,6 +118,23 @@ ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS published_by VARCHAR(100);
 
 CREATE INDEX IF NOT EXISTS idx_repo_system_id ON ci_repository (system_id);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_repository
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_repository SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_repository SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+-- Spring ScriptUtils 不支持 DO $$；旧 deleted_at 直接幂等删除
+ALTER TABLE ci_repository DROP COLUMN IF EXISTS deleted_at;
+COMMENT ON COLUMN ci_repository.created_date IS '创建时间';
+COMMENT ON COLUMN ci_repository.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_repository.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_repository.created_by   IS '创建人';
+COMMENT ON COLUMN ci_repository.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_repository
 COMMENT ON TABLE ci_repository IS '代码库配置表';
 COMMENT ON COLUMN ci_repository.system_id IS '关联系统ID';
 COMMENT ON COLUMN ci_repository.git_url IS 'Git 仓库地址';
@@ -123,18 +158,19 @@ COMMENT ON COLUMN ci_repository.last_published_task_id IS '最近一次成功发
 COMMENT ON COLUMN ci_repository.last_published_version_id IS '当前生效的已发布知识版本 ID（ci_knowledge_version.id）；知识浏览与回滚均以此指针读取 NAS releases';
 COMMENT ON COLUMN ci_repository.published_at IS '最近一次成功发布到仓库的时间';
 COMMENT ON COLUMN ci_repository.published_by IS '最近一次成功发布到仓库的操作人';
-COMMENT ON COLUMN ci_repository.deleted_at IS '逻辑删除时间，NULL=未删除';
 
 
 -- ============================================================
 -- 3. ci_prompt — 提示词模板表
 -- 对应 Entity: DecompilePrompt.java (modules/prompt)
 -- 对应 Mapper: DecompilePromptMapper.java
+-- 正文外置 NAS：content_uri / content_hash（schema DEFAULT 种子仅元数据，正文由 classpath 兜底写入）
 -- ============================================================
 CREATE TABLE IF NOT EXISTS ci_prompt (
     id BIGSERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
-    content TEXT NOT NULL,
+    content_uri VARCHAR(255) NOT NULL DEFAULT '',
+    content_hash VARCHAR(100),
     version INT DEFAULT 1 NOT NULL,
     status SMALLINT DEFAULT 1 NOT NULL,
     is_default SMALLINT DEFAULT 0 NOT NULL,
@@ -152,6 +188,14 @@ ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS lifecycle VARCHAR(16) DEFAULT 'RE
 ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS category VARCHAR(16) DEFAULT 'DEFAULT' NOT NULL;
 ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS scope_id BIGINT;
 
+-- C 组：种子 INSERT 前必须已有 content_uri（旧库幂等加列）
+ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS content_uri VARCHAR(255) DEFAULT '';
+ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS content_hash VARCHAR(100);
+ALTER TABLE ci_prompt DROP COLUMN IF EXISTS content;
+ALTER TABLE ci_prompt ALTER COLUMN content_uri SET DEFAULT '';
+UPDATE ci_prompt SET content_uri = '' WHERE content_uri IS NULL;
+ALTER TABLE ci_prompt ALTER COLUMN content_uri SET NOT NULL;
+
 -- 索引
 CREATE INDEX IF NOT EXISTS idx_prompt_lifecycle ON ci_prompt (lifecycle, prompt_type);
 CREATE INDEX IF NOT EXISTS idx_prompt_category_scope ON ci_prompt (category, scope_id);
@@ -159,9 +203,25 @@ CREATE INDEX IF NOT EXISTS idx_prompt_category_scope ON ci_prompt (category, sco
 CREATE UNIQUE INDEX IF NOT EXISTS uk_ci_prompt_type_default_active
     ON ci_prompt (prompt_type) WHERE is_default = 1 AND category = 'DEFAULT';
 
-COMMENT ON TABLE ci_prompt IS '提示词模板表（系统关键配置 — 保留 DML 入口但当前不预置种子，由前端基础配置管理）';
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_prompt
+ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_prompt SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_prompt SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_prompt.created_date IS '创建时间';
+COMMENT ON COLUMN ci_prompt.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_prompt.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_prompt.created_by   IS '创建人';
+COMMENT ON COLUMN ci_prompt.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_prompt
+COMMENT ON TABLE ci_prompt IS '提示词模板表（正文外置 NAS；schema 仅种子 2 条 DEFAULT 元数据）';
 COMMENT ON COLUMN ci_prompt.name IS '提示词名称';
-COMMENT ON COLUMN ci_prompt.content IS '提示词内容';
+COMMENT ON COLUMN ci_prompt.content_uri IS '提示词正文 URI（prompt:{id}/content.md，落 runtimeRoot/prompts）';
+COMMENT ON COLUMN ci_prompt.content_hash IS '提示词正文 MD5';
 COMMENT ON COLUMN ci_prompt.version IS '版本号';
 COMMENT ON COLUMN ci_prompt.status IS '已废弃，请使用 lifecycle；保留列仅为历史兼容';
 COMMENT ON COLUMN ci_prompt.is_default IS '是否默认：0-否，1-是';
@@ -170,416 +230,12 @@ COMMENT ON COLUMN ci_prompt.lifecycle IS '生命周期：DRAFT-草稿(可编辑)
 COMMENT ON COLUMN ci_prompt.category IS '提示词分类：DEFAULT-全局默认提示词 / USER-用户自定义提示词（按 scope 隔离）';
 COMMENT ON COLUMN ci_prompt.scope_id IS 'USER 提示词的 scope ID（系统ID或仓库ID,表示该 USER 提示词归属哪个配置上下文）；DEFAULT 提示词此字段为 NULL（全局可见）';
 
--- 4 个 KEEP-DML 表之一；当前无种子，预留 DML 入口
--- 由前端基础配置 → 提示词页录入，schema 不硬塞示例数据
-INSERT INTO ci_prompt ("name","content","version",status,is_default,created_at,updated_at,prompt_type,lifecycle,category,scope_id) VALUES
-	 ('默认模块提取提示词','
-# Java 代码分析提示词（增量输出模式）
-
-## 角色
-
-你是一位资深 Java 架构师，擅长从代码中识别业务领域并抽象出模块层级。
-
-## 任务
-
-针对下方提供的 Java 源码，**只输出相对已有 `module_hierarchy.json` 的增量模块信息**。
-程序会按 `id` 自动合并；你不需要、也不应该输出已存在的节点。
-
----
-
-## 输入说明
-
-- `{java_code}` —— 待分析的 Java 源码（单文件或一组类，通常是入口 Controller/Service/Scheduler/Consumer 等）
-- `{business_knowledge.md}` —— 已确认入库的业务知识库 Markdown 摘要，**仅用于命名参考**
-- `{module_hierarchy.json}` —— 当前任务的已有模块层级，**JSON 字符串**，结构见下文
-
-`module_hierarchy.json` 的当前结构（可能为空对象）：
-
-```json
-{
-  "modules": [
-    {
-      "id": "m0B1A",
-      "module_name": "存量扫描",
-      "keywords": ["配置", "查询"],
-      "sub_modules": [
-        {
-          "id": "s2Xy9",
-          "sub_module_name": "存量查询",
-          "keywords": ["查询"],
-          "functions": [
-            {
-              "id": "f3AbC",
-              "function_name": "功能A",
-              "class_paths": ["com.example.Controller"]
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
-
-> 字段映射（与代码 DTO 一致）：`module_name` ← `ModuleDto.moduleName`、`sub_module_name` ← `SubModuleDto.subModuleName`、`function_name` ← `FunctionDto.functionName`。
-
----
-
-## 输出格式
-
-**必须输出纯 JSON**，包裹在 ` ```json ... ``` ` 代码块中，**不要任何解释文字**。
-
-如果本次没有新增模块（例如代码全部归属于已有节点），输出：
-
-```json
-{ "modules": [] }
-```
-
-### 增量结构模板
-
-```json
-{
-  "modules": [
-    {
-      "id": "k7LpQ",
-      "module_name": "新模块名",
-      "keywords": ["关键词1", "关键词2"],
-      "sub_modules": [
-        {
-          "id": "t5MnB",
-          "sub_module_name": "子模块名",
-          "keywords": ["关键词"],
-          "functions": [
-            {
-              "id": "p3QwR",
-              "function_name": "功能名"
-            }
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
-
-### 字段硬约束
-
-| 字段 | 类型 | 约束 |
-| --- | --- | --- |
-| `modules[].id` | string | 5 位 Base62，`m` 前缀，仅新增模块时生成 |
-| `modules[].module_name` | string | 业务领域/场景名，禁止具体功能点 |
-| `modules[].keywords` | string[] | 3–5 个，**只含名词**，偏向业务/框架 |
-| `modules[].sub_modules` | object[] | 子模块列表；新增时整段输出（ID 复用见后） |
-| `sub_modules[].id` | string | 5 位 Base62，`s` 前缀 |
-| `sub_modules[].sub_module_name` | string | 具体业务功能名，可使用动词 |
-| `sub_modules[].keywords` | string[] | 3–5 个，允许动词/形容词 |
-| `sub_modules[].functions` | object[] | 功能列表 |
-| `functions[].id` | string | 5 位 Base62，`f` 前缀 |
-| `functions[].function_name` | string | 业务功能名（动词短语） |
-| `functions[].class_paths` | **禁止输出** | 由程序在解析后自动注入 |
-
----
-
-## 命名原则（核心约束）
-
-### 1. 模块名 = 业务领域/场景，不是功能点
-
-向上抽象，找「最大公约数」。多个具体功能共享同一业务领域时，领域名才是模块名。
-
-| ❌ 太具体（功能点） | ✅ 正确（业务领域/场景） |
-| --- | --- |
-| 房产授权 | 房管局业务 |
-| 房产备案 | 房管局业务 |
-| 征信查询 | 人行征信 |
-| 征信上报 | 人行征信 |
-| 定时跑批任务 | 资产包管理 |
-| 消息消费 | 报文数据 |
-| 异步服务 | 行为数据处理 |
-| 消息推送服务 | 源头治理 |
-
-### 2. 子模块名 = 具体业务功能
-
-子模块允许使用业务功能名，如「重庆房管局」「白名单管理」「公积金贷后」。
-
-### 3. 命名禁忌清单（模块层级）
-
-- 具体功能点（房产授权、名单查询、白名单维护）
-- 系统名/包名（PH-CRS 系统、core 包）
-- 技术化通用术语（数据服务、基础服务、核心接口、平台能力）
-- 技术词汇（定时跑批、MQ 消费、异步服务、接口服务、调度任务）
-
-### 4. 关键词要「少而准」，且只用名词
-
-- 数量：模块 3–5 个；子模块 3–5 个
-- 模块关键词：只使用**名词**，去掉动词/形容词；以业务领域/系统框架为主
-- 子模块关键词：允许动词/形容词，可以更具体
-- 优先选「大词」便于后续模块合并（合并时按共同名词判定）
-
-| ❌ 关键词过细 | ✅ 关键词（业务/框架） |
-| --- | --- |
-| 配置管理、查询、导出、导入 | 配置 |
-| 用户权限、角色管理、菜单管理 | 权限 |
-| 贷款审批、贷款申请、贷款展期 | 贷款 |
-| 公积金查询、征信查询、人行查询 | 征信 |
-
-### 5. 功能名 = 业务动作
-
-形如「白名单查询」「公积金上报」「存量扫描执行」这类「业务实体 + 动作」短语。
-**不要**直接复用类名或方法名（如 `getUserInfo`、`UserController`）。
-
----
-
-## 匹配与复用流程（按顺序执行）
-
-### 第 0 步：业务知识库优先
-
-如果 `business_knowledge.md` 中包含业务领域描述，**优先用其中的命名**（模块名、子模块名、功能名）。
-匹配命中后，跳到「ID 复用」节检查是否要复用已有节点。
-
-### 第 1 步：在已有 `module_hierarchy.json` 中精确匹配
-
-按以下顺序尝试命中已有节点：
-
-1. **类路径命中**：`functions[].class_paths` 中已有此入口类的全限定名 → 直接复用所属功能/子模块/模块，不输出
-2. **关键词命中**：当前代码业务关键词与模块/子模块 `keywords` 高度重合（≥70%）
-3. **名称命中**：模块名/子模块名语义相同或包含共同前缀
-
-任一命中即视为「属于已有节点」，**不输出**该节点。
-
-### 第 2 步：智能提取（精确匹配失败时）
-
-按以下线索提取业务领域：
-
-1. **类名业务含义**：先看入口类名，向上抽象到业务领域
-   - `StockScanController` → 「存量扫描」
-   - `WhiteListController` → 「白名单管理」
-   - 多个 Controller 共用同一业务时，提取公共领域作为模块名
-
-2. **技术类识别**：包装类要追溯业务本质
-   - `*Scheduler / *Job / *Task` → 看调度内容，提取业务领域（如「资产包管理」）
-   - `*Consumer / *Listener / *Handler` → 看消息内容，提取业务数据分类（如「报文数据」）
-   - `*MQ / *Message / *Topic` → 提取消息处理的业务领域
-
-3. **公共部分抽象（最大公约数）**：把共同业务概念提升为模块名
-   - 「房管局业务」（包含授权、备案、查询等多个功能）
-   - 「人行征信」（包含查询、上报、解析等多个功能）
-
-4. **功能名语义化**：从类名/方法名提取业务动词短语，不要直译代码标识符
-
-### 第 3 步：业务相关性校验（关键！）
-
-**关键词命中 ≠ 业务相关**。必须再用类路径中的包名做最终确认：
-
-- 包名/类名中的业务实体（如 `houseFund`、`crs`、`pboc`）优先级 > 关键词表面匹配
-- 示例（公共模块「人行征信」）：
-  - 功能 A「公积金贷后核心处理」—— 关键词「贷后」命中，但包名含 `houseFund` → **业务相关 ✓**
-  - 功能 B「统一贷后 job 名单查询」—— 关键词「贷后」命中，但包名是通用「统一贷后」→ **业务不相关 ✗**，应归到「贷后管理」或「名单管理」
-  - 功能 C「CRS 批次号详情列表获取」—— 关键词「批次号」不命中，但 CRS 是征信上报 → **业务相关 ✓**
-
-**判定优先级：类路径的业务包名 > 表面关键词匹配。**
-
----
-
-## ID 生成规则
-
-### 字符集与格式
-
-- 字符集：`0-9 a-z A-Z`（共 62 个字符）
-- 长度：**固定 5 位**
-- 前缀（区分层级）：
-  - 模块：`m` 开头，如 `m0B1A`
-  - 子模块：`s` 开头，如 `s2Xy9`
-  - 功能：`f` 开头，如 `f3AbC`
-
-### 复用优先于新建（重要！）
-
-1. **先判断是否已存在相同业务主题**：在 `module_hierarchy.json` 中搜索
-   - 模块名有共同前缀（如「房管局业务-重庆」与「房管局业务-佛山」合并为「房管局业务」）
-   - 关键词相似度 ≥ 70%
-   - 业务主题一致
-2. **同主题必须复用原 ID**：包括模块、子模块、功能节点的 ID 都不能新建
-3. **仅对真正全新的业务主题生成新 ID**
-4. **新增节点只输出差异部分**：合并到已有节点时，只输出新增的子模块/功能，附带其完整 ID
-
----
-
-## 边界场景处理
-
-| 场景 | 处理方式 |
-| --- | --- |
-| 代码无法识别（语法错乱、缺关键信息） | 输出 `{ "modules": [] }`，不强行编造 |
-| 通用工具类（Util、Constants、Exception） | **不**纳入业务模块；输出空 |
-| 跨多个业务领域的类（少见） | 按主业务归到一个模块，其他业务在 `function_name` 中说明 |
-| 类路径已在某个功能的 `class_paths` 中 | 视为已有节点，不输出 |
-| 与已有节点业务相关但不在任何 `class_paths` 中 | 仍可归属到已有功能/子模块（命中后不输出该节点） |
-
----
-
-## 端到端示例
-
-### 输入
-
-`module_hierarchy.json`：
-
-```json
-{
-  "modules": [
-    {
-      "id": "m0B1A",
-      "module_name": "存量扫描",
-      "keywords": ["配置", "查询"],
-      "sub_modules": [
-        {
-          "id": "s2Xy9",
-          "sub_module_name": "存量查询",
-          "keywords": ["查询"],
-          "functions": [
-            { "id": "f3AbC", "function_name": "存量查询执行", "class_paths": ["com.example.scan.ScanController"] }
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
-
-待分析代码：`com.example.fang.gov.ChongqingAuthController`（重庆房管局授权接口，与「房管局业务」主题一致，但当前任务此前未出现）。
-
-### 期望输出
-
-```json
-{
-  "modules": [
-    {
-      "id": "mK7pQ",
-      "module_name": "房管局业务",
-      "keywords": ["房产", "授权", "备案"],
-      "sub_modules": [
-        {
-          "id": "sP3wR",
-          "sub_module_name": "重庆房管局",
-          "keywords": ["重庆", "授权", "房管局"],
-          "functions": [
-            { "id": "fL9xN", "function_name": "重庆房管局授权" }
-          ]
-        }
-      ]
-    }
-  ]
-}
-```
-
-> 说明：模块 ID、子模块 ID、功能 ID 都是新生成的（因为 `module_hierarchy.json` 中此前没有房管局业务相关内容）；`class_paths` 不输出，由程序后续注入。
-
----
-
-## 自检清单（提交前必过）
-
-- [ ] 输出是**纯 JSON**，无解释文字、无 Markdown 包装（除非用 ` ```json ` 包裹）
-- [ ] **只输出增量**：已存在节点一律不复述
-- [ ] 模块名是**业务领域**，不在禁忌清单内
-- [ ] 模块关键词 3–5 个，**只含名词**
-- [ ] ID 5 位 Base62，前缀对应层级（`m` / `s` / `f`）
-- [ ] **未输出** `class_paths` 字段
-- [ ] 边界场景已正确处理（无法识别/通用工具类 → 空输出）
-',10,1,1,'2026-07-03 17:26:11.598597','2026-07-03 17:26:19.054412','MODULARIZE','RELEASED','DEFAULT',NULL),
-	 ('知识文档生成提示词','
-# 模块说明文档生成提示词
-
-### 一、文档定位
-- **目标读者**：产品经理、开发工程师、集成测试工程师
-- **内容侧重**：业务逻辑描述、边界情况和异常处理
-
-### 二、信息
-- **业务名称**：{公共模块名称}
-- **module_hierarchy.json 内容**:
-{module_hierarchy.json}
-- **java 内容**:
-{java.code}
-
-### 三、文档结构与内容规范
-根据读取到的所有代码文件，提炼业务逻辑，转换为业务语言描述。
-
-1. **概述**
-   - 公共模块名称：【从配置中读取的模块名】
-   - 包含子模块：【列出所有子模块名称】
-   - 业务背景：简述业务问题
-   - 业务目标：期望效果
-   - 功能描述：核心能力（2-3 句话）
-
-2. **涉及类清单**
-   | 序号 | 子模块 | 类路径 | 功能说明 |
-   | --- | --- | --- | --- |
-   | 1 | 因子验证 | com.peig.prep.xxx.VerifyController | xxx |
-   | 2 | 因子配置 | com.peig.prep.xxx.ConfigController | xxx |
-
-3. **输入输出**
-   - 输入：列出所有输入数据源，说明关键字段含义及业务含义
-   - 输出接口 URL：列出所有 HTTP 接口的 URL 地址，格式如 `http://host:port/api/...`
-   - 输出：列出所有输出数据，说明字段维度
-
-4. **核心业务流程图**
-   - 使用 Mermaid 语法绘制流程图
-   - 按业务阶段划分，突出业务动作和判断逻辑
-   - 清晰展示条件分支和循环逻辑
-   - 展示各子模块之间的协作关系
-
-5. **核心业务逻辑**
-   使用中文描述，满足以下要求：
-   - 字段中文命名；首次出现时标注字段含义
-   - 禁止出现代码片段、类名、方法名（可用"处理模块"等抽象描述替代）
-
-6. **调用链路说明**
-   | 调用类型 | 目标服务/系统 | 调用地址/接口 | 说明 |
-   | --- | --- | --- | --- |
-   | HTTP | xxx-service | /api/xxx | 获取 xxx 数据 |
-   | Feign | xxx-service | XxxApi | 调用 xxx 接口 |
-   | RocketMQ | - | topic: xxx | 发送 xxx 消息 |
-   | Redis | - | key: xxx:* | 缓存 xxx 数据 |
-   | MySQL | - | table: xxx | 查询 xxx 数据 |
-
-### 四、格式要求
-- 使用 Markdown 格式编写
-- 标题层级清晰（H1-H3）
-- 表格用于结构化展示
-- 流程图使用 Mermaid 语法
-
-### 五、示例展示
-
-#### 正确示例
-
-```markdown
-## 订单处理模块
-### 业务背景
-随着用户量增长，原有订单处理机制已无法满足高并发场景需求，需要引入异步处理。
-
-### 核心业务逻辑
-1. 系统首先接收订单请求，解析订单信息
-2. 校验订单状态，确保订单处于待处理状态
-3. 将订单信息写入消息队列，由消费模块异步处理
-```
-
-#### 错误示例
-
-```markdown
-## 订单处理模块
-### 业务背景
-...（业务问题描述）
-### 核心业务逻辑
-...（错误：出现了代码注释）
-orderService.process(order);
-...（错误：直接使用类名）
-SceneMonitorServiceImpl.doSomething();
-```
-
-### 六、输出要求
-- 仅输出 Markdown 正文，不要输出任何解释性文字
-- 不输出代码块（除非 Mermaid 流程图）
-- 不要臆造未在源码中出现的数据表名、接口路径、配置项
-- 章节标题严格使用中文数字（一、二、三、...）
-- 如果某章节没有相关信息，输出"暂无相关信息"占位，不要省略章节
-',7,1,1,'2026-07-03 17:28:39.696974','2026-07-03 17:28:52.508313','DOCUMENT_GENERATION','RELEASED','DEFAULT',NULL)
+-- 种子：仅元数据，content_uri=''；正文由 PromptDefaultsBootstrap / 读路径 classpath 兜底写入 NAS
+INSERT INTO ci_prompt ("name", content_uri, "version", status, is_default, created_date, updated_date, prompt_type, lifecycle, category, scope_id) VALUES
+	 ('默认模块提取提示词', '', 1, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'MODULARIZE', 'RELEASED', 'DEFAULT', NULL),
+	 ('知识文档生成提示词', '', 1, 1, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, 'DOCUMENT_GENERATION', 'RELEASED', 'DEFAULT', NULL)
 ON CONFLICT (prompt_type) WHERE is_default = 1 AND category = 'DEFAULT' DO NOTHING;
+
 
 
 -- ============================================================
@@ -599,8 +255,23 @@ CREATE TABLE IF NOT EXISTS ci_scan_window (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
-CREATE UNIQUE INDEX IF NOT EXISTS uk_scan_window_repo ON ci_scan_window (repository_id);
+-- uk_scan_window_repo → 见文末 partial unique uk_scan_window_repo_active
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_scan_window
+ALTER TABLE ci_scan_window ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_scan_window ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_scan_window ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_scan_window ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_scan_window ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_scan_window SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_scan_window SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_scan_window.created_date IS '创建时间';
+COMMENT ON COLUMN ci_scan_window.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_scan_window.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_scan_window.created_by   IS '创建人';
+COMMENT ON COLUMN ci_scan_window.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_scan_window
 COMMENT ON TABLE ci_scan_window IS '仓库执行时间窗口：定时扫描任务以此为准触发任务下发（week_days 位掩码：1=周一 2=周二 4=周三 8=周四 16=周五 32=周六 64=周日，127=每天）';
 COMMENT ON COLUMN ci_scan_window.week_days IS '周几位掩码，bit0..bit6 对应周一到周日';
 COMMENT ON COLUMN ci_scan_window.hour IS '小时 0-23';
@@ -619,9 +290,9 @@ CREATE TABLE IF NOT EXISTS ci_entry_scan_trial (
     repository_id BIGINT NOT NULL,
     user_id VARCHAR(50),
     status VARCHAR(16) NOT NULL,
-    config_snapshot TEXT,
-    result_json TEXT,
-    error_message TEXT,
+    config_snapshot JSONB,
+    result_uri VARCHAR(255),
+    error_message VARCHAR(2000),
     started_at TIMESTAMP NOT NULL,
     finished_at TIMESTAMP,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
@@ -629,13 +300,30 @@ CREATE TABLE IF NOT EXISTS ci_entry_scan_trial (
 );
 
 ALTER TABLE ci_entry_scan_trial ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL;
+ALTER TABLE ci_entry_scan_trial ADD COLUMN IF NOT EXISTS result_uri VARCHAR(255);
+ALTER TABLE ci_entry_scan_trial DROP COLUMN IF EXISTS result_json;
 
 CREATE INDEX IF NOT EXISTS idx_trial_repo ON ci_entry_scan_trial (repository_id);
 CREATE INDEX IF NOT EXISTS idx_trial_status ON ci_entry_scan_trial (status, finished_at);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_entry_scan_trial
+ALTER TABLE ci_entry_scan_trial ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_entry_scan_trial ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_entry_scan_trial ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_entry_scan_trial ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_entry_scan_trial ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_entry_scan_trial SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_entry_scan_trial SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_entry_scan_trial.created_date IS '创建时间';
+COMMENT ON COLUMN ci_entry_scan_trial.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_entry_scan_trial.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_entry_scan_trial.created_by   IS '创建人';
+COMMENT ON COLUMN ci_entry_scan_trial.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_entry_scan_trial
 COMMENT ON TABLE ci_entry_scan_trial IS '入口扫描试跑记录：用户在仓库配置中点击"试跑"产生的入口识别结果（不入库真实任务，每次独立执行）';
-COMMENT ON COLUMN ci_entry_scan_trial.config_snapshot IS '本次试跑用的 entryScanConfig（JSON 字符串）';
-COMMENT ON COLUMN ci_entry_scan_trial.result_json IS '试跑结果：入口类 + 方法列表 JSON 字符串';
+COMMENT ON COLUMN ci_entry_scan_trial.config_snapshot IS '本次试跑用的 entryScanConfig（JSONB）';
+COMMENT ON COLUMN ci_entry_scan_trial.result_uri IS '试跑结果 URI（trial:{id}/result.json，落 runtimeRoot/trials）';
 COMMENT ON COLUMN ci_entry_scan_trial.status IS '试跑状态：PENDING/RUNNING/SUCCESS/FAILED/CANCELLED';
 COMMENT ON COLUMN ci_entry_scan_trial.user_id IS '触发用户';
 COMMENT ON COLUMN ci_entry_scan_trial.started_at IS '开始时间';
@@ -657,11 +345,11 @@ CREATE TABLE IF NOT EXISTS ci_task (
     status VARCHAR(50) NOT NULL,
     type VARCHAR(50) DEFAULT 'INITIAL' NOT NULL,
     progress INT DEFAULT 0 NOT NULL,
-    error_reason TEXT,
+    error_reason VARCHAR(2000),
     duration_ms BIGINT,
     started_at TIMESTAMP,
     ended_at TIMESTAMP,
-    entry_scan_config TEXT,
+    entry_scan_config JSONB,
     active_segment_started_at TIMESTAMP,
     modularize_prompt_id BIGINT,
     document_prompt_id BIGINT,
@@ -678,7 +366,7 @@ CREATE TABLE IF NOT EXISTS ci_task (
     base_version_id BIGINT,
     base_task_id BIGINT,
     resume_from VARCHAR(30),
-    remediation_scope_json TEXT,
+    remediation_scope_json JSONB,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
@@ -687,7 +375,7 @@ CREATE TABLE IF NOT EXISTS ci_task (
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS modularize_prompt_id BIGINT;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS document_prompt_id BIGINT;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS model_name VARCHAR(100);
-ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS entry_scan_config TEXT;
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS entry_scan_config JSONB;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS require_hierarchy_review BOOLEAN DEFAULT TRUE NOT NULL;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS trigger_source VARCHAR(20) DEFAULT 'MANUAL' NOT NULL;
 ALTER TABLE ci_task ALTER COLUMN trigger_source TYPE VARCHAR(40);
@@ -696,7 +384,7 @@ ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS remediation_kind VARCHAR(30);
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS base_version_id BIGINT;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS base_task_id BIGINT;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS resume_from VARCHAR(30);
-ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS remediation_scope_json TEXT;
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS remediation_scope_json JSONB;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS priority INT DEFAULT 50 NOT NULL;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS claimed_by VARCHAR(128);
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS claimed_at TIMESTAMP;
@@ -720,6 +408,22 @@ CREATE INDEX IF NOT EXISTS idx_task_schedule ON ci_task (schedule_id);
 CREATE INDEX IF NOT EXISTS idx_task_queue ON ci_task (priority DESC, created_at ASC) WHERE status = 'PENDING';
 CREATE INDEX IF NOT EXISTS idx_task_claimed ON ci_task (claimed_by) WHERE claimed_by IS NOT NULL;
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_task
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_task SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_task SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_task_queue_by_created_date ON ci_task (priority DESC, created_date ASC) WHERE status = 'PENDING';
+COMMENT ON COLUMN ci_task.created_date IS '创建时间';
+COMMENT ON COLUMN ci_task.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_task.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_task.created_by   IS '创建人';
+COMMENT ON COLUMN ci_task.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_task
 COMMENT ON TABLE ci_task IS '知识构建任务表（任务状态机的权威源）';
 COMMENT ON COLUMN ci_task.system_id IS '关联系统ID';
 COMMENT ON COLUMN ci_task.repository_id IS '关联仓库ID';
@@ -769,6 +473,21 @@ CREATE TABLE IF NOT EXISTS ci_file_snapshot (
 
 CREATE INDEX IF NOT EXISTS idx_snapshot_task_id ON ci_file_snapshot (task_id);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_file_snapshot
+ALTER TABLE ci_file_snapshot ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_file_snapshot ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_file_snapshot ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_file_snapshot ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_file_snapshot ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_file_snapshot SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_file_snapshot SET updated_date = COALESCE(updated_date, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_file_snapshot.created_date IS '创建时间';
+COMMENT ON COLUMN ci_file_snapshot.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_file_snapshot.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_file_snapshot.created_by   IS '创建人';
+COMMENT ON COLUMN ci_file_snapshot.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_file_snapshot
 COMMENT ON TABLE ci_file_snapshot IS '代码文件快照表（任务扫描阶段拉取仓库后落表）';
 COMMENT ON COLUMN ci_file_snapshot.task_id IS '任务ID';
 COMMENT ON COLUMN ci_file_snapshot.file_path IS '相对路径';
@@ -795,7 +514,7 @@ CREATE TABLE IF NOT EXISTS ci_ai_call_record (
     request_uri VARCHAR(255),
     response_uri VARCHAR(255),
     is_success SMALLINT DEFAULT 1 NOT NULL,
-    error_reason TEXT,
+    error_reason VARCHAR(2000),
     duration_ms BIGINT DEFAULT 0 NOT NULL,
     call_stage VARCHAR(50),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
@@ -806,6 +525,21 @@ ALTER TABLE ci_ai_call_record ADD COLUMN IF NOT EXISTS call_stage VARCHAR(50);
 CREATE INDEX IF NOT EXISTS idx_ai_task_id ON ci_ai_call_record (task_id);
 CREATE INDEX IF NOT EXISTS idx_ai_chunk_id ON ci_ai_call_record (chunk_id);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_ai_call_record
+ALTER TABLE ci_ai_call_record ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_ai_call_record ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_ai_call_record ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_ai_call_record ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_ai_call_record ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_ai_call_record SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_ai_call_record SET updated_date = COALESCE(updated_date, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_ai_call_record.created_date IS '创建时间';
+COMMENT ON COLUMN ci_ai_call_record.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_ai_call_record.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_ai_call_record.created_by   IS '创建人';
+COMMENT ON COLUMN ci_ai_call_record.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_ai_call_record
 COMMENT ON TABLE ci_ai_call_record IS 'AI模型调用记录表（按阶段 + 任务聚合统计 Token/成功率/耗时）';
 COMMENT ON COLUMN ci_ai_call_record.task_id IS '任务ID';
 COMMENT ON COLUMN ci_ai_call_record.chunk_id IS '关联切片ID';
@@ -834,15 +568,34 @@ CREATE TABLE IF NOT EXISTS ci_draft_workspace (
     repository_id BIGINT NOT NULL,
     status VARCHAR(50) DEFAULT 'ACTIVE' NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT uk_task_id UNIQUE (task_id)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
+-- v1: INCREMENTAL 任务基线引用（增量任务的 workspace 引用最近 PUSHED 任务的 workspace）
+ALTER TABLE ci_draft_workspace ADD COLUMN IF NOT EXISTS baseline_workspace_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_draft_workspace_baseline ON ci_draft_workspace (baseline_workspace_id);
+
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_draft_workspace
+ALTER TABLE ci_draft_workspace ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_draft_workspace ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_draft_workspace ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_draft_workspace ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_draft_workspace ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_draft_workspace SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_draft_workspace SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_draft_workspace.created_date IS '创建时间';
+COMMENT ON COLUMN ci_draft_workspace.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_draft_workspace.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_draft_workspace.created_by   IS '创建人';
+COMMENT ON COLUMN ci_draft_workspace.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_draft_workspace
 COMMENT ON TABLE ci_draft_workspace IS '草稿工作区表（每个任务 1 个 workspace，作为草稿聚合的根）';
-COMMENT ON COLUMN ci_draft_workspace.task_id IS '任务ID（UNIQUE）';
+COMMENT ON COLUMN ci_draft_workspace.task_id IS '任务ID（活行唯一，见 uk_draft_workspace_task_active）';
 COMMENT ON COLUMN ci_draft_workspace.system_id IS '系统ID';
 COMMENT ON COLUMN ci_draft_workspace.repository_id IS '仓库ID';
 COMMENT ON COLUMN ci_draft_workspace.status IS '状态：ACTIVE, COMPLETED, ARCHIVED';
+COMMENT ON COLUMN ci_draft_workspace.baseline_workspace_id IS 'INCREMENTAL 任务的基线 workspace ID（引用最近 PUSHED 任务的 workspace；非增量任务为 NULL）';
 
 
 -- ============================================================
@@ -867,10 +620,31 @@ CREATE TABLE IF NOT EXISTS ci_knowledge_draft (
 ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS parent_id BIGINT;
 ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS sort_order INT DEFAULT 0 NOT NULL;
 
+-- v1: INCREMENTAL 任务基线继承（NULL=本次新增；非空=从该基线任务继承）
+ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS baseline_task_id BIGINT;
+-- 注意：ci_knowledge_draft 没有 task_id 列（task_id 存在 ci_draft_workspace 表），
+-- 索引应以 workspace_id 为第一列。基线继承查询场景：workspace_id 范围内按 baseline_task_id 过滤
+CREATE INDEX IF NOT EXISTS idx_draft_workspace_baseline ON ci_knowledge_draft (workspace_id, baseline_task_id);
+
 CREATE INDEX IF NOT EXISTS idx_draft_workspace_id ON ci_knowledge_draft (workspace_id);
 CREATE INDEX IF NOT EXISTS idx_draft_status ON ci_knowledge_draft (status);
 CREATE INDEX IF NOT EXISTS idx_draft_parent_id ON ci_knowledge_draft (parent_id);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_knowledge_draft
+ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_knowledge_draft SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_knowledge_draft SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_knowledge_draft.created_date IS '创建时间';
+COMMENT ON COLUMN ci_knowledge_draft.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_knowledge_draft.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_knowledge_draft.created_by   IS '创建人';
+COMMENT ON COLUMN ci_knowledge_draft.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_knowledge_draft
 COMMENT ON TABLE ci_knowledge_draft IS 'Markdown 知识草稿表（自引用树结构，组成模块目录）';
 COMMENT ON COLUMN ci_knowledge_draft.workspace_id IS '关联草稿工作区ID';
 COMMENT ON COLUMN ci_knowledge_draft.parent_id IS '父级草稿ID（自引用，用于构建模块目录树）';
@@ -898,6 +672,21 @@ CREATE TABLE IF NOT EXISTS ci_draft_revision (
 
 CREATE INDEX IF NOT EXISTS idx_revision_draft_id ON ci_draft_revision (draft_id);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_draft_revision
+ALTER TABLE ci_draft_revision ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_draft_revision ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_draft_revision ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_draft_revision ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_draft_revision ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_draft_revision SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_draft_revision SET updated_date = COALESCE(updated_date, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_draft_revision.created_date IS '创建时间';
+COMMENT ON COLUMN ci_draft_revision.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_draft_revision.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_draft_revision.created_by   IS '创建人';
+COMMENT ON COLUMN ci_draft_revision.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_draft_revision
 COMMENT ON TABLE ci_draft_revision IS '草稿修订历史表（每次保存修改留一版，可 diff）';
 COMMENT ON COLUMN ci_draft_revision.draft_id IS '关联草稿ID';
 COMMENT ON COLUMN ci_draft_revision.content_uri IS '修改后正文在存储中的地址';
@@ -914,7 +703,7 @@ CREATE TABLE IF NOT EXISTS ci_draft_review_comment (
     id BIGSERIAL PRIMARY KEY,
     draft_id BIGINT NOT NULL,
     author VARCHAR(50) NOT NULL,
-    comment TEXT NOT NULL,
+    comment VARCHAR(2000) NOT NULL,
     type VARCHAR(20) DEFAULT 'NORMAL' NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
@@ -923,6 +712,21 @@ ALTER TABLE ci_draft_review_comment ADD COLUMN IF NOT EXISTS type VARCHAR(20) DE
 
 CREATE INDEX IF NOT EXISTS idx_comment_draft_id ON ci_draft_review_comment (draft_id);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_draft_review_comment
+ALTER TABLE ci_draft_review_comment ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_draft_review_comment ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_draft_review_comment ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_draft_review_comment ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_draft_review_comment ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_draft_review_comment SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_draft_review_comment SET updated_date = COALESCE(updated_date, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_draft_review_comment.created_date IS '创建时间';
+COMMENT ON COLUMN ci_draft_review_comment.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_draft_review_comment.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_draft_review_comment.created_by   IS '创建人';
+COMMENT ON COLUMN ci_draft_review_comment.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_draft_review_comment
 COMMENT ON TABLE ci_draft_review_comment IS '草稿评审意见表（confirm / 通用批注，type 区分场景）';
 COMMENT ON COLUMN ci_draft_review_comment.draft_id IS '关联草稿ID';
 COMMENT ON COLUMN ci_draft_review_comment.author IS '评审人';
@@ -951,6 +755,21 @@ ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS method_signature 
 
 CREATE INDEX IF NOT EXISTS idx_ref_draft_id ON ci_draft_source_reference (draft_id);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_draft_source_reference
+ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_draft_source_reference SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_draft_source_reference SET updated_date = COALESCE(updated_date, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_draft_source_reference.created_date IS '创建时间';
+COMMENT ON COLUMN ci_draft_source_reference.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_draft_source_reference.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_draft_source_reference.created_by   IS '创建人';
+COMMENT ON COLUMN ci_draft_source_reference.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_draft_source_reference
 COMMENT ON TABLE ci_draft_source_reference IS '草稿代码来源引用表（草稿正文与被引用源码行号区间的双向追溯链）';
 COMMENT ON COLUMN ci_draft_source_reference.draft_id IS '关联草稿ID';
 COMMENT ON COLUMN ci_draft_source_reference.file_path IS '引用源文件路径';
@@ -991,6 +810,21 @@ CREATE INDEX IF NOT EXISTS idx_version_system_id ON ci_knowledge_version (system
 CREATE INDEX IF NOT EXISTS idx_version_number ON ci_knowledge_version (version_num);
 -- (repository_id, version_num) 唯一约束：库内若已有重复则勿自动建唯一索引（会致启动失败），由应用层强制
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_knowledge_version
+ALTER TABLE ci_knowledge_version ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_knowledge_version ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_knowledge_version ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_knowledge_version ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_knowledge_version ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_knowledge_version SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_knowledge_version SET updated_date = COALESCE(updated_date, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_knowledge_version.created_date IS '创建时间';
+COMMENT ON COLUMN ci_knowledge_version.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_knowledge_version.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_knowledge_version.created_by   IS '创建人';
+COMMENT ON COLUMN ci_knowledge_version.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_knowledge_version
 COMMENT ON TABLE ci_knowledge_version IS '知识版本表（确认 → 推送 → 发布全链路审计）';
 COMMENT ON COLUMN ci_knowledge_version.system_id IS '关联系统ID';
 COMMENT ON COLUMN ci_knowledge_version.repository_id IS '关联代码库ID';
@@ -1019,7 +853,8 @@ CREATE TABLE IF NOT EXISTS ci_knowledge_release_edit (
     repository_id BIGINT NOT NULL,
     version_id BIGINT NOT NULL,
     relative_path VARCHAR(500) NOT NULL,
-    content_text TEXT NOT NULL,
+    content_uri VARCHAR(255) NOT NULL DEFAULT '',
+    hash VARCHAR(100),
     status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
     submitted_by VARCHAR(50) NOT NULL,
     approved_by VARCHAR(50),
@@ -1027,10 +862,35 @@ CREATE TABLE IF NOT EXISTS ci_knowledge_release_edit (
     approved_at TIMESTAMP
 );
 
+ALTER TABLE ci_knowledge_release_edit ADD COLUMN IF NOT EXISTS content_uri VARCHAR(255) DEFAULT '';
+ALTER TABLE ci_knowledge_release_edit ADD COLUMN IF NOT EXISTS hash VARCHAR(100);
+ALTER TABLE ci_knowledge_release_edit DROP COLUMN IF EXISTS content_text;
+ALTER TABLE ci_knowledge_release_edit ALTER COLUMN content_uri SET DEFAULT '';
+UPDATE ci_knowledge_release_edit SET content_uri = '' WHERE content_uri IS NULL;
+ALTER TABLE ci_knowledge_release_edit ALTER COLUMN content_uri SET NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_release_edit_repo ON ci_knowledge_release_edit (repository_id);
 CREATE INDEX IF NOT EXISTS idx_release_edit_status ON ci_knowledge_release_edit (status);
 
-COMMENT ON TABLE ci_knowledge_release_edit IS '知识发布文档人工修订待审记录；通过后直写 NAS releases';
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_knowledge_release_edit
+ALTER TABLE ci_knowledge_release_edit ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_knowledge_release_edit ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_knowledge_release_edit ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_knowledge_release_edit ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_knowledge_release_edit ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_knowledge_release_edit SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_knowledge_release_edit SET updated_date = COALESCE(updated_date, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_knowledge_release_edit.created_date IS '创建时间';
+COMMENT ON COLUMN ci_knowledge_release_edit.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_knowledge_release_edit.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_knowledge_release_edit.created_by   IS '创建人';
+COMMENT ON COLUMN ci_knowledge_release_edit.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_knowledge_release_edit
+COMMENT ON TABLE ci_knowledge_release_edit IS '知识发布文档人工修订待审记录；正文外置 NAS，通过后直写 releases';
+COMMENT ON COLUMN ci_knowledge_release_edit.content_uri IS '待审正文 URI（release-edit:{id}/content.md）';
+COMMENT ON COLUMN ci_knowledge_release_edit.hash IS '待审正文 MD5';
+
 
 
 -- ============================================================
@@ -1045,8 +905,8 @@ CREATE TABLE IF NOT EXISTS ci_push_task (
     status VARCHAR(20) NOT NULL DEFAULT 'PENDING',
     retry_count INT DEFAULT 0 NOT NULL,
     max_retries INT DEFAULT 3 NOT NULL,
-    target_info TEXT,
-    error_message TEXT,
+    target_info JSONB,
+    error_message VARCHAR(2000),
     enqueued_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     started_at TIMESTAMP,
     completed_at TIMESTAMP,
@@ -1056,6 +916,21 @@ CREATE TABLE IF NOT EXISTS ci_push_task (
 CREATE INDEX IF NOT EXISTS idx_push_task_version_id ON ci_push_task (version_id);
 CREATE INDEX IF NOT EXISTS idx_push_task_status ON ci_push_task (status);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_push_task
+ALTER TABLE ci_push_task ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_push_task ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_push_task ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_push_task ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_push_task ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_push_task SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_push_task SET updated_date = COALESCE(updated_date, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_push_task.created_date IS '创建时间';
+COMMENT ON COLUMN ci_push_task.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_push_task.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_push_task.created_by   IS '创建人';
+COMMENT ON COLUMN ci_push_task.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_push_task
 COMMENT ON TABLE ci_push_task IS '知识推送任务审计表';
 COMMENT ON COLUMN ci_push_task.version_id IS '关联的知识版本ID';
 COMMENT ON COLUMN ci_push_task.push_method IS '推送方式：GIT 或 S3';
@@ -1094,6 +969,22 @@ CREATE INDEX IF NOT EXISTS idx_audit_system_id ON ci_token_usage_audit (system_i
 CREATE INDEX IF NOT EXISTS idx_audit_task_id ON ci_token_usage_audit (task_id);
 CREATE INDEX IF NOT EXISTS idx_audit_created_at ON ci_token_usage_audit (created_at);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_token_usage_audit
+ALTER TABLE ci_token_usage_audit ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_token_usage_audit ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_token_usage_audit ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_token_usage_audit ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_token_usage_audit ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_token_usage_audit SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_token_usage_audit SET updated_date = COALESCE(updated_date, created_at, CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_audit_created_date ON ci_token_usage_audit (created_date);
+COMMENT ON COLUMN ci_token_usage_audit.created_date IS '创建时间';
+COMMENT ON COLUMN ci_token_usage_audit.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_token_usage_audit.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_token_usage_audit.created_by   IS '创建人';
+COMMENT ON COLUMN ci_token_usage_audit.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_token_usage_audit
 COMMENT ON TABLE ci_token_usage_audit IS 'Token 使用审计表（按系统/任务/模型维度统计成本）';
 COMMENT ON COLUMN ci_token_usage_audit.system_id IS '关联系统ID';
 COMMENT ON COLUMN ci_token_usage_audit.task_id IS '关联任务ID';
@@ -1122,7 +1013,7 @@ CREATE TABLE IF NOT EXISTS ci_operation_log (
     action_type VARCHAR(50) NOT NULL,
     detail VARCHAR(1000) NOT NULL,
     ip_address VARCHAR(50),
-    exception_msg TEXT,
+    exception_msg VARCHAR(4000),
     is_success SMALLINT DEFAULT 1 NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
@@ -1131,6 +1022,22 @@ CREATE INDEX IF NOT EXISTS idx_op_system_id ON ci_operation_log (system_id);
 CREATE INDEX IF NOT EXISTS idx_op_task_id ON ci_operation_log (task_id);
 CREATE INDEX IF NOT EXISTS idx_op_created_at ON ci_operation_log (created_at);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_operation_log
+ALTER TABLE ci_operation_log ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_operation_log ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_operation_log ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_operation_log ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_operation_log ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_operation_log SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_operation_log SET updated_date = COALESCE(updated_date, created_at, CURRENT_TIMESTAMP);
+CREATE INDEX IF NOT EXISTS idx_op_created_date ON ci_operation_log (created_date);
+COMMENT ON COLUMN ci_operation_log.created_date IS '创建时间';
+COMMENT ON COLUMN ci_operation_log.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_operation_log.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_operation_log.created_by   IS '创建人';
+COMMENT ON COLUMN ci_operation_log.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_operation_log
 COMMENT ON TABLE ci_operation_log IS '操作日志审计表（用户行为 / 系统状态机迁移记录）';
 COMMENT ON COLUMN ci_operation_log.system_id IS '关联系统ID';
 COMMENT ON COLUMN ci_operation_log.task_id IS '关联任务ID';
@@ -1166,6 +1073,21 @@ CREATE TABLE IF NOT EXISTS ci_model (
 
 ALTER TABLE ci_model ADD COLUMN IF NOT EXISTS status SMALLINT DEFAULT 1 NOT NULL;
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_model
+ALTER TABLE ci_model ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_model ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_model ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_model ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_model ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_model SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_model SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_model.created_date IS '创建时间';
+COMMENT ON COLUMN ci_model.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_model.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_model.created_by   IS '创建人';
+COMMENT ON COLUMN ci_model.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_model
 COMMENT ON TABLE ci_model IS 'AI 模型配置表（系统关键配置 — 保留 DML 入口但当前不预置种子，由前端基础配置 → 模型配置管理）';
 COMMENT ON COLUMN ci_model.name IS '模型显示名称';
 COMMENT ON COLUMN ci_model.identifier IS '模型调用ID';
@@ -1204,6 +1126,21 @@ CREATE TABLE IF NOT EXISTS ci_model_preset (
 CREATE UNIQUE INDEX IF NOT EXISTS uk_model_preset_identifier ON ci_model_preset (identifier);
 CREATE INDEX IF NOT EXISTS idx_model_preset_status_sort ON ci_model_preset (status, sort_order);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_model_preset
+ALTER TABLE ci_model_preset ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_model_preset ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_model_preset ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_model_preset ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_model_preset ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_model_preset SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_model_preset SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_model_preset.created_date IS '创建时间';
+COMMENT ON COLUMN ci_model_preset.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_model_preset.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_model_preset.created_by   IS '创建人';
+COMMENT ON COLUMN ci_model_preset.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_model_preset
 COMMENT ON TABLE ci_model_preset IS 'AI 模型预设模板表（系统关键配置 — 预置 6 个常见厂商模板供用户一键克隆）';
 COMMENT ON COLUMN ci_model_preset.name IS '预设显示名称';
 COMMENT ON COLUMN ci_model_preset.identifier IS '模型调用ID';
@@ -1231,7 +1168,7 @@ ON CONFLICT (identifier) DO UPDATE SET
     description  = EXCLUDED.description,
     sort_order   = EXCLUDED.sort_order,
     status       = EXCLUDED.status,
-    updated_at   = CURRENT_TIMESTAMP;
+    updated_date = CURRENT_TIMESTAMP;
 
 
 -- ============================================================
@@ -1251,19 +1188,38 @@ CREATE TABLE IF NOT EXISTS ci_method_call (
     line_number INT,
     caller_signature VARCHAR(500),
     target_signature VARCHAR(500),
-    dependency_candidates TEXT,
+    dependency_candidates VARCHAR(4000),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 ALTER TABLE ci_method_call ADD COLUMN IF NOT EXISTS caller_signature VARCHAR(500);
 ALTER TABLE ci_method_call ADD COLUMN IF NOT EXISTS target_signature VARCHAR(500);
-ALTER TABLE ci_method_call ADD COLUMN IF NOT EXISTS dependency_candidates TEXT;
+ALTER TABLE ci_method_call ADD COLUMN IF NOT EXISTS dependency_candidates VARCHAR(4000);
+
+-- v1: INCREMENTAL 任务基线继承（NULL=本次新增；非空=从该基线任务继承）
+ALTER TABLE ci_method_call ADD COLUMN IF NOT EXISTS baseline_task_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_method_call_baseline_task ON ci_method_call (task_id, baseline_task_id);
 
 CREATE INDEX IF NOT EXISTS idx_method_call_task_id ON ci_method_call (task_id);
 CREATE INDEX IF NOT EXISTS idx_method_call_class ON ci_method_call (task_id, class_name, caller_method);
 CREATE INDEX IF NOT EXISTS idx_method_call_caller_sig ON ci_method_call (task_id, caller_signature);
 CREATE INDEX IF NOT EXISTS idx_method_call_target_sig ON ci_method_call (task_id, target_signature);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_method_call
+ALTER TABLE ci_method_call ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_method_call ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_method_call ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_method_call ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_method_call ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_method_call SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_method_call SET updated_date = COALESCE(updated_date, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_method_call.created_date IS '创建时间';
+COMMENT ON COLUMN ci_method_call.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_method_call.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_method_call.created_by   IS '创建人';
+COMMENT ON COLUMN ci_method_call.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_method_call
 COMMENT ON TABLE ci_method_call IS '方法调用链路表（AST 静态分析）';
 COMMENT ON COLUMN ci_method_call.task_id IS '关联任务ID';
 COMMENT ON COLUMN ci_method_call.file_path IS '源文件相对路径';
@@ -1291,21 +1247,40 @@ CREATE TABLE IF NOT EXISTS ci_module_hierarchy (
     parent_id BIGINT,
     node_id VARCHAR(10),
     name VARCHAR(255) NOT NULL,
-    keywords TEXT,
-    class_paths TEXT,
-    method_signatures TEXT,
+    keywords JSONB,
+    class_paths JSONB,
+    method_signatures JSONB,
     confirmed BOOLEAN DEFAULT FALSE NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
-ALTER TABLE ci_module_hierarchy ADD COLUMN IF NOT EXISTS method_signatures TEXT;
+ALTER TABLE ci_module_hierarchy ADD COLUMN IF NOT EXISTS method_signatures JSONB;
 ALTER TABLE ci_module_hierarchy ADD COLUMN IF NOT EXISTS confirmed BOOLEAN DEFAULT FALSE NOT NULL;
+
+-- v1: FUNCTION 节点关联的入口类全限定名（用于按 entry 维度增量清理）
+ALTER TABLE ci_module_hierarchy ADD COLUMN IF NOT EXISTS source_entry_class VARCHAR(500);
+CREATE INDEX IF NOT EXISTS idx_module_hierarchy_source_entry ON ci_module_hierarchy (task_id, source_entry_class);
 
 CREATE INDEX IF NOT EXISTS idx_module_hierarchy_task ON ci_module_hierarchy (task_id);
 CREATE INDEX IF NOT EXISTS idx_module_hierarchy_parent ON ci_module_hierarchy (parent_id);
-CREATE UNIQUE INDEX IF NOT EXISTS uk_module_hierarchy_task_node ON ci_module_hierarchy (task_id, node_id);
+-- uk_module_hierarchy_task_node → 见文末 partial unique uk_module_hierarchy_task_node_active
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_module_hierarchy
+ALTER TABLE ci_module_hierarchy ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_module_hierarchy ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_module_hierarchy ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_module_hierarchy ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_module_hierarchy ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_module_hierarchy SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_module_hierarchy SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_module_hierarchy.created_date IS '创建时间';
+COMMENT ON COLUMN ci_module_hierarchy.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_module_hierarchy.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_module_hierarchy.created_by   IS '创建人';
+COMMENT ON COLUMN ci_module_hierarchy.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_module_hierarchy
 COMMENT ON TABLE ci_module_hierarchy IS '模块层级表（AI 提炼入口的业务归属 DTO 落表）';
 COMMENT ON COLUMN ci_module_hierarchy.task_id IS '任务ID';
 COMMENT ON COLUMN ci_module_hierarchy.system_id IS '系统ID';
@@ -1333,15 +1308,33 @@ CREATE TABLE IF NOT EXISTS ci_entrypoint (
     entry_type VARCHAR(50),
     annotation VARCHAR(255),
     remark VARCHAR(500),
-    methods_json TEXT,
+    methods_json JSONB,
     sort_order INT DEFAULT 0 NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT uk_entrypoint_task_class UNIQUE (task_id, class_name)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
+
+-- v1: INCREMENTAL 任务基线继承（NULL=本次新增；非空=从该基线任务继承）
+ALTER TABLE ci_entrypoint ADD COLUMN IF NOT EXISTS baseline_task_id BIGINT;
+CREATE INDEX IF NOT EXISTS idx_entrypoint_baseline_task ON ci_entrypoint (task_id, baseline_task_id);
 
 CREATE INDEX IF NOT EXISTS idx_entrypoint_task ON ci_entrypoint (task_id);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_entrypoint
+ALTER TABLE ci_entrypoint ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_entrypoint ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_entrypoint ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_entrypoint ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_entrypoint ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_entrypoint SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_entrypoint SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_entrypoint.created_date IS '创建时间';
+COMMENT ON COLUMN ci_entrypoint.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_entrypoint.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_entrypoint.created_by   IS '创建人';
+COMMENT ON COLUMN ci_entrypoint.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_entrypoint
 COMMENT ON TABLE ci_entrypoint IS '知识入口复核表（流水线 PARSING_CODE→AI_ANALYZING 之间落表，等待人工确认或驳回）；方法清单存 methods_json 列，仅供只读展示';
 COMMENT ON COLUMN ci_entrypoint.task_id IS '任务ID';
 COMMENT ON COLUMN ci_entrypoint.system_id IS '系统ID';
@@ -1352,6 +1345,7 @@ COMMENT ON COLUMN ci_entrypoint.annotation IS '触发该类被识别为入口的
 COMMENT ON COLUMN ci_entrypoint.remark IS '附加信息（如 RequestMapping 一级路径 / 队列名等）';
 COMMENT ON COLUMN ci_entrypoint.methods_json IS '入口类下的关键方法列表 JSON 数组：[{methodName, methodSignature, annotation, httpPath, httpMethod}]；只读展示用';
 COMMENT ON COLUMN ci_entrypoint.sort_order IS '同任务内入口排序权重（升序）';
+COMMENT ON COLUMN ci_entrypoint.baseline_task_id IS 'INCREMENTAL 任务基线继承（NULL=本次识别；非空=从该基线任务继承）';
 
 
 -- ============================================================
@@ -1361,12 +1355,30 @@ COMMENT ON COLUMN ci_entrypoint.sort_order IS '同任务内入口排序权重（
 -- ============================================================
 CREATE TABLE IF NOT EXISTS ci_system_config (
     key         VARCHAR(64)  PRIMARY KEY,
-    value       TEXT         NOT NULL,
+    value       VARCHAR(1000) NOT NULL,
     description VARCHAR(255),
     updated_by  VARCHAR(50),
     updated_at  TIMESTAMP    DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_system_config
+ALTER TABLE ci_system_config ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_system_config ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_system_config ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_system_config ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_system_config ALTER COLUMN updated_by TYPE VARCHAR(100);
+UPDATE ci_system_config SET updated_by = 'sys' WHERE updated_by IS NULL OR btrim(updated_by) = '';
+ALTER TABLE ci_system_config ALTER COLUMN updated_by SET DEFAULT 'sys';
+ALTER TABLE ci_system_config ALTER COLUMN updated_by SET NOT NULL;
+UPDATE ci_system_config SET created_date = COALESCE(created_date, updated_at, CURRENT_TIMESTAMP);
+UPDATE ci_system_config SET updated_date = COALESCE(updated_date, updated_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_system_config.created_date IS '创建时间';
+COMMENT ON COLUMN ci_system_config.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_system_config.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_system_config.created_by   IS '创建人';
+COMMENT ON COLUMN ci_system_config.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_system_config
 COMMENT ON TABLE ci_system_config IS '系统配置表（key-value，运行期可在线修改；与 application.yml 同名 key 迁移）';
 COMMENT ON COLUMN ci_system_config.key IS '配置键（业务语义名，如 token.task-limit）';
 COMMENT ON COLUMN ci_system_config.value IS '配置值（文本型，由业务侧按需 parse）';
@@ -1381,25 +1393,41 @@ COMMENT ON COLUMN ci_system_config.updated_by IS '最后修改人';
 -- ============================================================
 CREATE TABLE IF NOT EXISTS ci_user (
     id            BIGSERIAL PRIMARY KEY,
-    username      VARCHAR(50) UNIQUE NOT NULL,
+    username      VARCHAR(50) NOT NULL,
     display_name  VARCHAR(100),
     role          VARCHAR(20) DEFAULT 'USER' NOT NULL,
     status        SMALLINT    DEFAULT 1   NOT NULL,
     last_login_at TIMESTAMP,
     created_at    TIMESTAMP    DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at    TIMESTAMP    DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    deleted_at    TIMESTAMP
+    updated_at    TIMESTAMP    DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
-CREATE INDEX IF NOT EXISTS idx_user_role ON ci_user (role) WHERE deleted_at IS NULL;
+-- idx_user_role：见审计字段块（is_deleted = 0）
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_user
+ALTER TABLE ci_user ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_user ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_user ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_user ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_user ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_user SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_user SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+-- Spring ScriptUtils 不支持 DO $$；旧 deleted_at 直接幂等删除
+ALTER TABLE ci_user DROP COLUMN IF EXISTS deleted_at;
+CREATE INDEX IF NOT EXISTS idx_user_role ON ci_user (role) WHERE is_deleted = 0;
+COMMENT ON COLUMN ci_user.created_date IS '创建时间';
+COMMENT ON COLUMN ci_user.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_user.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_user.created_by   IS '创建人';
+COMMENT ON COLUMN ci_user.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_user
 COMMENT ON TABLE ci_user IS '用户表（MVP 阶段预置 admin 账号，后续扩展多账号）';
 COMMENT ON COLUMN ci_user.username IS '登录账号';
 COMMENT ON COLUMN ci_user.display_name IS '显示名';
 COMMENT ON COLUMN ci_user.role IS '角色：ADMIN-管理员 / USER-普通用户';
 COMMENT ON COLUMN ci_user.status IS '0-停用，1-启用';
 COMMENT ON COLUMN ci_user.last_login_at IS '最近一次登录时间';
-COMMENT ON COLUMN ci_user.deleted_at IS '逻辑删除时间，NULL=未删除';
 
 -- 系统关键配置：预置 admin 账号（与 AuthServiceImpl 硬编码账号对齐）
 INSERT INTO ci_user (id, username, display_name, role, status)
@@ -1422,10 +1450,24 @@ CREATE TABLE IF NOT EXISTS ci_user_quota (
     enabled             SMALLINT     DEFAULT 1 NOT NULL,
     remark              VARCHAR(200),
     created_at          TIMESTAMP    DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at          TIMESTAMP    DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    UNIQUE (user_id)
+    updated_at          TIMESTAMP    DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_user_quota
+ALTER TABLE ci_user_quota ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_user_quota ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_user_quota ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_user_quota ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_user_quota ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_user_quota SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_user_quota SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_user_quota.created_date IS '创建时间';
+COMMENT ON COLUMN ci_user_quota.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_user_quota.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_user_quota.created_by   IS '创建人';
+COMMENT ON COLUMN ci_user_quota.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_user_quota
 COMMENT ON TABLE ci_user_quota IS '用户额度表（按 user 维度的 Token 限额；0 表示不限）';
 COMMENT ON COLUMN ci_user_quota.user_id IS '用户 ID（FK → ci_user.id）';
 COMMENT ON COLUMN ci_user_quota.daily_token_limit IS '单日 Token 上限（0 = 不限）';
@@ -1448,15 +1490,29 @@ CREATE TABLE IF NOT EXISTS ci_repository_entrypoint (
     entry_type VARCHAR(50),
     annotation VARCHAR(255),
     remark VARCHAR(500),
-    methods_json TEXT,
+    methods_json JSONB,
     sort_order INT DEFAULT 0 NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT uk_repo_entrypoint_class UNIQUE (repository_id, class_name)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_repo_entrypoint_repo ON ci_repository_entrypoint (repository_id);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_repository_entrypoint
+ALTER TABLE ci_repository_entrypoint ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_repository_entrypoint ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_repository_entrypoint ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_repository_entrypoint ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_repository_entrypoint ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_repository_entrypoint SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_repository_entrypoint SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_repository_entrypoint.created_date IS '创建时间';
+COMMENT ON COLUMN ci_repository_entrypoint.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_repository_entrypoint.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_repository_entrypoint.created_by   IS '创建人';
+COMMENT ON COLUMN ci_repository_entrypoint.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_repository_entrypoint
 COMMENT ON TABLE ci_repository_entrypoint IS '仓库级已发布入口复核结果（推送成功时从 ci_entrypoint 覆盖写入；知识浏览页只读）';
 
 
@@ -1473,18 +1529,32 @@ CREATE TABLE IF NOT EXISTS ci_repository_module_hierarchy (
     parent_id BIGINT,
     node_id VARCHAR(20) NOT NULL,
     name VARCHAR(200) NOT NULL,
-    keywords TEXT,
-    class_paths TEXT,
-    method_signatures TEXT,
+    keywords JSONB,
+    class_paths JSONB,
+    method_signatures JSONB,
     confirmed BOOLEAN DEFAULT FALSE NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
-    CONSTRAINT uk_repo_hierarchy_node UNIQUE (repository_id, node_id)
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_repo_hierarchy_repo ON ci_repository_module_hierarchy (repository_id);
 CREATE INDEX IF NOT EXISTS idx_repo_hierarchy_parent ON ci_repository_module_hierarchy (parent_id);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_repository_module_hierarchy
+ALTER TABLE ci_repository_module_hierarchy ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_repository_module_hierarchy ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_repository_module_hierarchy ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_repository_module_hierarchy ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_repository_module_hierarchy ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_repository_module_hierarchy SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_repository_module_hierarchy SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_repository_module_hierarchy.created_date IS '创建时间';
+COMMENT ON COLUMN ci_repository_module_hierarchy.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_repository_module_hierarchy.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_repository_module_hierarchy.created_by   IS '创建人';
+COMMENT ON COLUMN ci_repository_module_hierarchy.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_repository_module_hierarchy
 COMMENT ON TABLE ci_repository_module_hierarchy IS '仓库级已发布模块层级复核结果（推送成功时从 ci_module_hierarchy 覆盖写入；知识浏览页只读）';
 
 
@@ -1500,22 +1570,49 @@ CREATE TABLE IF NOT EXISTS ci_repository_publish_snapshot (
     task_id BIGINT NOT NULL,
     version_id BIGINT NOT NULL,
     version_num VARCHAR(50) NOT NULL,
-    entry_scan_config TEXT,
+    entry_scan_config JSONB,
     modularize_prompt_id BIGINT,
     document_prompt_id BIGINT,
     model_name VARCHAR(100),
-    entrypoints_json TEXT NOT NULL,
-    module_hierarchy_json TEXT NOT NULL,
+    entrypoints_uri VARCHAR(255) NOT NULL DEFAULT '',
+    module_hierarchy_uri VARCHAR(255) NOT NULL DEFAULT '',
     published_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     published_by VARCHAR(100),
     CONSTRAINT uk_repo_publish_version UNIQUE (version_id)
 );
 
+ALTER TABLE ci_repository_publish_snapshot ADD COLUMN IF NOT EXISTS entrypoints_uri VARCHAR(255) DEFAULT '';
+ALTER TABLE ci_repository_publish_snapshot ADD COLUMN IF NOT EXISTS module_hierarchy_uri VARCHAR(255) DEFAULT '';
+ALTER TABLE ci_repository_publish_snapshot DROP COLUMN IF EXISTS entrypoints_json;
+ALTER TABLE ci_repository_publish_snapshot DROP COLUMN IF EXISTS module_hierarchy_json;
+UPDATE ci_repository_publish_snapshot SET entrypoints_uri = '' WHERE entrypoints_uri IS NULL;
+UPDATE ci_repository_publish_snapshot SET module_hierarchy_uri = '' WHERE module_hierarchy_uri IS NULL;
+ALTER TABLE ci_repository_publish_snapshot ALTER COLUMN entrypoints_uri SET DEFAULT '';
+ALTER TABLE ci_repository_publish_snapshot ALTER COLUMN module_hierarchy_uri SET DEFAULT '';
+ALTER TABLE ci_repository_publish_snapshot ALTER COLUMN entrypoints_uri SET NOT NULL;
+ALTER TABLE ci_repository_publish_snapshot ALTER COLUMN module_hierarchy_uri SET NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_repo_publish_snapshot_repo ON ci_repository_publish_snapshot (repository_id, published_at DESC);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_repository_publish_snapshot
+ALTER TABLE ci_repository_publish_snapshot ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_repository_publish_snapshot ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_repository_publish_snapshot ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_repository_publish_snapshot ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_repository_publish_snapshot ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_repository_publish_snapshot SET created_date = COALESCE(created_date, published_at, CURRENT_TIMESTAMP);
+UPDATE ci_repository_publish_snapshot SET updated_date = COALESCE(updated_date, published_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_repository_publish_snapshot.created_date IS '创建时间';
+COMMENT ON COLUMN ci_repository_publish_snapshot.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_repository_publish_snapshot.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_repository_publish_snapshot.created_by   IS '创建人';
+COMMENT ON COLUMN ci_repository_publish_snapshot.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_repository_publish_snapshot
 COMMENT ON TABLE ci_repository_publish_snapshot IS '仓库发布快照：每次推送成功写入，供按版本回滚；与 ci_knowledge_version 一一对应';
-COMMENT ON COLUMN ci_repository_publish_snapshot.entrypoints_json IS '本次发布的入口清单 JSON 快照';
-COMMENT ON COLUMN ci_repository_publish_snapshot.module_hierarchy_json IS '本次发布的模块层级 JSON 快照';
+COMMENT ON COLUMN ci_repository_publish_snapshot.entrypoints_uri IS '入口清单快照 URI（snapshot:{repoId}:{versionId}/entrypoints.json）';
+COMMENT ON COLUMN ci_repository_publish_snapshot.module_hierarchy_uri IS '模块层级快照 URI（snapshot:{repoId}:{versionId}/module_hierarchy.json）';
+
 
 
 -- ============================================================
@@ -1525,19 +1622,46 @@ COMMENT ON COLUMN ci_repository_publish_snapshot.module_hierarchy_json IS '本�
 -- ============================================================
 CREATE TABLE IF NOT EXISTS ci_business_knowledge (
     id          BIGSERIAL PRIMARY KEY,
-    system_id   BIGINT       NOT NULL UNIQUE,
-    content     TEXT         NOT NULL DEFAULT '',
+    system_id   BIGINT       NOT NULL,
+    content_uri VARCHAR(255) NOT NULL DEFAULT '',
+    content_hash VARCHAR(100),
     version     INT          NOT NULL DEFAULT 1,
     updated_by  VARCHAR(64),
     created_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at  TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+ALTER TABLE ci_business_knowledge ADD COLUMN IF NOT EXISTS content_uri VARCHAR(255) DEFAULT '';
+ALTER TABLE ci_business_knowledge ADD COLUMN IF NOT EXISTS content_hash VARCHAR(100);
+ALTER TABLE ci_business_knowledge DROP COLUMN IF EXISTS content;
+ALTER TABLE ci_business_knowledge ALTER COLUMN content_uri SET DEFAULT '';
+UPDATE ci_business_knowledge SET content_uri = '' WHERE content_uri IS NULL;
+ALTER TABLE ci_business_knowledge ALTER COLUMN content_uri SET NOT NULL;
+
 CREATE INDEX IF NOT EXISTS idx_business_knowledge_system ON ci_business_knowledge (system_id);
 
-COMMENT ON TABLE  ci_business_knowledge IS '业务知识配置（按系统维度，1:1 覆盖式保存，喂给 AI 占位符 {business_knowledge.md}）';
-COMMENT ON COLUMN ci_business_knowledge.system_id  IS '所属业务系统ID（UNIQUE，1:1）';
-COMMENT ON COLUMN ci_business_knowledge.content    IS 'Markdown 正文，写入到 {business_knowledge.md} 占位符';
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_business_knowledge
+ALTER TABLE ci_business_knowledge ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_business_knowledge ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_business_knowledge ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_business_knowledge ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_business_knowledge ALTER COLUMN updated_by TYPE VARCHAR(100);
+UPDATE ci_business_knowledge SET updated_by = 'sys' WHERE updated_by IS NULL OR btrim(updated_by) = '';
+ALTER TABLE ci_business_knowledge ALTER COLUMN updated_by SET DEFAULT 'sys';
+ALTER TABLE ci_business_knowledge ALTER COLUMN updated_by SET NOT NULL;
+UPDATE ci_business_knowledge SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_business_knowledge SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_business_knowledge.created_date IS '创建时间';
+COMMENT ON COLUMN ci_business_knowledge.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_business_knowledge.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_business_knowledge.created_by   IS '创建人';
+COMMENT ON COLUMN ci_business_knowledge.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_business_knowledge
+COMMENT ON TABLE  ci_business_knowledge IS '业务知识配置（按系统维度，1:1 覆盖式保存；正文外置 NAS）';
+COMMENT ON COLUMN ci_business_knowledge.system_id  IS '所属业务系统ID（活行唯一，见 uk_business_knowledge_system_active）';
+COMMENT ON COLUMN ci_business_knowledge.content_uri IS '业务知识正文 URI（business-knowledge:{systemId}/content.md）';
+COMMENT ON COLUMN ci_business_knowledge.content_hash IS '业务知识正文 MD5';
 COMMENT ON COLUMN ci_business_knowledge.version    IS '保存次数（每次保存 +1，便于审计）';
 COMMENT ON COLUMN ci_business_knowledge.updated_by IS '最后修改人（来自会话用户）';
 
@@ -1560,8 +1684,6 @@ CREATE TABLE IF NOT EXISTS ci_method_function_binding (
     confidence          DECIMAL(4,3),
     created_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    CONSTRAINT uk_mfb_task_class_method
-        UNIQUE (task_id, class_name, method_signature),
     CONSTRAINT chk_mfb_source
         CHECK (source IN ('AI', 'USER', 'MIGRATED'))
 );
@@ -1573,6 +1695,21 @@ CREATE INDEX IF NOT EXISTS idx_mfb_task_class
 CREATE INDEX IF NOT EXISTS idx_mfb_task_module
     ON ci_method_function_binding (task_id, module_node_id);
 
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_method_function_binding
+ALTER TABLE ci_method_function_binding ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_method_function_binding ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_method_function_binding ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_method_function_binding ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_method_function_binding ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_method_function_binding SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_method_function_binding SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_method_function_binding.created_date IS '创建时间';
+COMMENT ON COLUMN ci_method_function_binding.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_method_function_binding.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_method_function_binding.created_by   IS '创建人';
+COMMENT ON COLUMN ci_method_function_binding.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_method_function_binding
 COMMENT ON TABLE  ci_method_function_binding IS '方法→功能 反向绑定（hierarchy 阶段 AI 输出按方法粒度落表）；每方法 1 行，由 (task_id, class_name, method_signature) 唯一定位到 (module, sub_module, function)';
 COMMENT ON COLUMN ci_method_function_binding.task_id            IS '关联任务 ID（FK → ci_task.id）';
 COMMENT ON COLUMN ci_method_function_binding.system_id          IS '冗余系统 ID，便于按系统维度查询';
@@ -1583,6 +1720,200 @@ COMMENT ON COLUMN ci_method_function_binding.class_name         IS '入口类全
 COMMENT ON COLUMN ci_method_function_binding.method_signature   IS '方法签名 methodName(ParamType1,ParamType2)（不含返回类型）';
 COMMENT ON COLUMN ci_method_function_binding.source             IS '归属来源：AI-hierarchy 阶段 AI 输出；USER-人工在 MODULE_HIERARCHY_REVIEW 调整；MIGRATED-从旧 ci_module_hierarchy.method_signatures 一次性迁移';
 COMMENT ON COLUMN ci_method_function_binding.confidence        IS 'AI 输出的归属置信度（0-1，可空）';
+
+
+-- ============================================================
+-- v1: 增量扫描结果表（INCREMENTAL 任务的扫描结果落盘）
+-- 对应 Entity: IncrementalScanRecord.java (modules/scanner)
+-- 对应 Mapper: IncrementalScanMapper.java
+-- 用途：PULLING_CODE 完成后把 git diff 结果（changedPaths / deletedPaths / baselineTaskId / baselineCommitId / headCommitId）
+--       持久化下来；后续 PARSING_CODE / ENTRYPOINT_DISCOVERY / MODULE_HIERARCHY 阶段都从这里读取，不再依赖内存
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ci_incremental_scan (
+    id BIGSERIAL PRIMARY KEY,
+    task_id BIGINT NOT NULL,
+    system_id BIGINT NOT NULL,
+    repository_id BIGINT NOT NULL,
+    baseline_task_id BIGINT,
+    baseline_commit_id VARCHAR(100),
+    head_commit_id VARCHAR(100),
+    scan_mode VARCHAR(20) NOT NULL,
+    changed_paths JSONB NOT NULL DEFAULT '[]'::jsonb,
+    deleted_paths JSONB NOT NULL DEFAULT '[]'::jsonb,
+    inherited_count INT DEFAULT 0 NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_incremental_scan_repo ON ci_incremental_scan (repository_id, scan_mode);
+CREATE INDEX IF NOT EXISTS idx_incremental_scan_baseline ON ci_incremental_scan (baseline_task_id);
+
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_incremental_scan
+ALTER TABLE ci_incremental_scan ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_incremental_scan ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_incremental_scan ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_incremental_scan ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_incremental_scan ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_incremental_scan SET created_date = COALESCE(created_date, created_at, CURRENT_TIMESTAMP);
+UPDATE ci_incremental_scan SET updated_date = COALESCE(updated_date, updated_at, created_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_incremental_scan.created_date IS '创建时间';
+COMMENT ON COLUMN ci_incremental_scan.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_incremental_scan.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_incremental_scan.created_by   IS '创建人';
+COMMENT ON COLUMN ci_incremental_scan.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_incremental_scan
+COMMENT ON TABLE ci_incremental_scan IS 'INCREMENTAL 任务扫描结果落盘（git diff → changed/deleted paths + baseline 引用）';
+COMMENT ON COLUMN ci_incremental_scan.task_id IS '任务ID（活行唯一，见 uk_incremental_scan_task_active）';
+COMMENT ON COLUMN ci_incremental_scan.system_id IS '系统ID';
+COMMENT ON COLUMN ci_incremental_scan.repository_id IS '仓库ID';
+COMMENT ON COLUMN ci_incremental_scan.baseline_task_id IS '数据复制源：最近一次 PUSHED 任务的 ID（INITIAL 任务为 NULL）';
+COMMENT ON COLUMN ci_incremental_scan.baseline_commit_id IS '对比基准 commit（仓库 last_published_commit_id）';
+COMMENT ON COLUMN ci_incremental_scan.head_commit_id IS '本次扫描 HEAD commit';
+COMMENT ON COLUMN ci_incremental_scan.scan_mode IS 'INITIAL / INCREMENTAL';
+COMMENT ON COLUMN ci_incremental_scan.changed_paths IS '本次变更文件相对路径列表（JSONB 数组）';
+COMMENT ON COLUMN ci_incremental_scan.deleted_paths IS '本次删除文件相对路径列表（JSONB 数组）';
+COMMENT ON COLUMN ci_incremental_scan.inherited_count IS '从基线任务继承的入口数（仅 INCREMENTAL 任务有意义）';
+
+
+
+-- ============================================================
+
+-- ============================================================
+-- 审计软删 × 唯一约束：改为部分唯一索引（WHERE is_deleted = 0）
+-- 方案 B：逻辑删腾出「活行」唯一键，覆盖写可再 insert，无需 upsert
+-- 详见 docs/tablelogic-partial-unique-plan.md
+-- ============================================================
+
+-- ci_incremental_scan：原 PK(task_id) → 代理键 id + 活行唯一(task_id)
+-- 注意：Spring ScriptUtils 不支持 DO $$，改为平铺语句（每次启动 DROP+ADD PK 幂等可接受）
+ALTER TABLE ci_incremental_scan ADD COLUMN IF NOT EXISTS id BIGSERIAL;
+ALTER TABLE ci_incremental_scan DROP CONSTRAINT IF EXISTS ci_incremental_scan_pkey;
+ALTER TABLE ci_incremental_scan ADD PRIMARY KEY (id);
+CREATE UNIQUE INDEX IF NOT EXISTS uk_incremental_scan_task_active
+  ON ci_incremental_scan (task_id) WHERE is_deleted = 0;
+
+-- ci_draft_workspace
+ALTER TABLE ci_draft_workspace DROP CONSTRAINT IF EXISTS uk_task_id;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_draft_workspace_task_active
+  ON ci_draft_workspace (task_id) WHERE is_deleted = 0;
+
+-- ci_scan_window
+DROP INDEX IF EXISTS uk_scan_window_repo;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_scan_window_repo_active
+  ON ci_scan_window (repository_id) WHERE is_deleted = 0;
+
+-- ci_entrypoint
+ALTER TABLE ci_entrypoint DROP CONSTRAINT IF EXISTS uk_entrypoint_task_class;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_entrypoint_task_class_active
+  ON ci_entrypoint (task_id, class_name) WHERE is_deleted = 0;
+
+-- ci_module_hierarchy
+DROP INDEX IF EXISTS uk_module_hierarchy_task_node;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_module_hierarchy_task_node_active
+  ON ci_module_hierarchy (task_id, node_id) WHERE is_deleted = 0;
+
+-- ci_method_function_binding
+ALTER TABLE ci_method_function_binding DROP CONSTRAINT IF EXISTS uk_mfb_task_class_method;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_mfb_task_class_method_active
+  ON ci_method_function_binding (task_id, class_name, method_signature) WHERE is_deleted = 0;
+
+-- ci_repository_entrypoint
+ALTER TABLE ci_repository_entrypoint DROP CONSTRAINT IF EXISTS uk_repo_entrypoint_class;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_repo_entrypoint_class_active
+  ON ci_repository_entrypoint (repository_id, class_name) WHERE is_deleted = 0;
+
+-- ci_repository_module_hierarchy
+ALTER TABLE ci_repository_module_hierarchy DROP CONSTRAINT IF EXISTS uk_repo_hierarchy_node;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_repo_hierarchy_node_active
+  ON ci_repository_module_hierarchy (repository_id, node_id) WHERE is_deleted = 0;
+
+-- ci_business_knowledge（1:1 系统）
+ALTER TABLE ci_business_knowledge DROP CONSTRAINT IF EXISTS ci_business_knowledge_system_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_business_knowledge_system_active
+  ON ci_business_knowledge (system_id) WHERE is_deleted = 0;
+
+-- ci_user.username / ci_user_quota.user_id
+ALTER TABLE ci_user DROP CONSTRAINT IF EXISTS ci_user_username_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_user_username_active
+  ON ci_user (username) WHERE is_deleted = 0;
+ALTER TABLE ci_user_quota DROP CONSTRAINT IF EXISTS ci_user_quota_user_id_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uk_user_quota_user_active
+  ON ci_user_quota (user_id) WHERE is_deleted = 0;
+
+
+-- Schema TEXT 字段整改迁移（幂等）：A VARCHAR / B JSONB / C URI
+-- 不做旧正文文件迁移；DROP 旧列后允许丢失非 DEFAULT 正文
+-- ============================================================
+
+-- A 组：TEXT → VARCHAR（Spring ScriptUtils 不支持 DO $$，改为平铺幂等语句）
+UPDATE ci_task SET error_reason = LEFT(error_reason, 2000) WHERE error_reason IS NOT NULL AND length(error_reason) > 2000;
+ALTER TABLE ci_task ALTER COLUMN error_reason TYPE VARCHAR(2000) USING LEFT(error_reason::text, 2000);
+UPDATE ci_ai_call_record SET error_reason = LEFT(error_reason, 2000) WHERE error_reason IS NOT NULL AND length(error_reason) > 2000;
+ALTER TABLE ci_ai_call_record ALTER COLUMN error_reason TYPE VARCHAR(2000) USING LEFT(error_reason::text, 2000);
+UPDATE ci_entry_scan_trial SET error_message = LEFT(error_message, 2000) WHERE error_message IS NOT NULL AND length(error_message) > 2000;
+ALTER TABLE ci_entry_scan_trial ALTER COLUMN error_message TYPE VARCHAR(2000) USING LEFT(error_message::text, 2000);
+UPDATE ci_push_task SET error_message = LEFT(error_message, 2000) WHERE error_message IS NOT NULL AND length(error_message) > 2000;
+ALTER TABLE ci_push_task ALTER COLUMN error_message TYPE VARCHAR(2000) USING LEFT(error_message::text, 2000);
+UPDATE ci_operation_log SET exception_msg = LEFT(exception_msg, 4000) WHERE exception_msg IS NOT NULL AND length(exception_msg) > 4000;
+ALTER TABLE ci_operation_log ALTER COLUMN exception_msg TYPE VARCHAR(4000) USING LEFT(exception_msg::text, 4000);
+UPDATE ci_draft_review_comment SET comment = LEFT(comment, 2000) WHERE comment IS NOT NULL AND length(comment) > 2000;
+ALTER TABLE ci_draft_review_comment ALTER COLUMN comment TYPE VARCHAR(2000) USING LEFT(comment::text, 2000);
+UPDATE ci_system_config SET value = LEFT(value, 1000) WHERE value IS NOT NULL AND length(value) > 1000;
+ALTER TABLE ci_system_config ALTER COLUMN value TYPE VARCHAR(1000) USING LEFT(value::text, 1000);
+UPDATE ci_method_call SET dependency_candidates = LEFT(dependency_candidates, 4000) WHERE dependency_candidates IS NOT NULL AND length(dependency_candidates) > 4000;
+ALTER TABLE ci_method_call ALTER COLUMN dependency_candidates TYPE VARCHAR(4000) USING LEFT(dependency_candidates::text, 4000);
+
+-- B 组：TEXT → JSONB（空串置 NULL；已是 JSONB 时 ALTER TYPE 仍安全）
+UPDATE ci_repository SET entry_scan_config = NULL WHERE entry_scan_config IS NOT NULL AND btrim(entry_scan_config::text) = '';
+ALTER TABLE ci_repository ALTER COLUMN entry_scan_config TYPE JSONB USING entry_scan_config::jsonb;
+UPDATE ci_task SET entry_scan_config = NULL WHERE entry_scan_config IS NOT NULL AND btrim(entry_scan_config::text) = '';
+ALTER TABLE ci_task ALTER COLUMN entry_scan_config TYPE JSONB USING entry_scan_config::jsonb;
+UPDATE ci_task SET remediation_scope_json = NULL WHERE remediation_scope_json IS NOT NULL AND btrim(remediation_scope_json::text) = '';
+ALTER TABLE ci_task ALTER COLUMN remediation_scope_json TYPE JSONB USING remediation_scope_json::jsonb;
+UPDATE ci_entry_scan_trial SET config_snapshot = NULL WHERE config_snapshot IS NOT NULL AND btrim(config_snapshot::text) = '';
+ALTER TABLE ci_entry_scan_trial ALTER COLUMN config_snapshot TYPE JSONB USING config_snapshot::jsonb;
+UPDATE ci_push_task SET target_info = NULL WHERE target_info IS NOT NULL AND btrim(target_info::text) = '';
+ALTER TABLE ci_push_task ALTER COLUMN target_info TYPE JSONB USING target_info::jsonb;
+UPDATE ci_module_hierarchy SET keywords = NULL WHERE keywords IS NOT NULL AND btrim(keywords::text) = '';
+ALTER TABLE ci_module_hierarchy ALTER COLUMN keywords TYPE JSONB USING keywords::jsonb;
+UPDATE ci_module_hierarchy SET class_paths = NULL WHERE class_paths IS NOT NULL AND btrim(class_paths::text) = '';
+ALTER TABLE ci_module_hierarchy ALTER COLUMN class_paths TYPE JSONB USING class_paths::jsonb;
+UPDATE ci_module_hierarchy SET method_signatures = NULL WHERE method_signatures IS NOT NULL AND btrim(method_signatures::text) = '';
+ALTER TABLE ci_module_hierarchy ALTER COLUMN method_signatures TYPE JSONB USING method_signatures::jsonb;
+UPDATE ci_entrypoint SET methods_json = NULL WHERE methods_json IS NOT NULL AND btrim(methods_json::text) = '';
+ALTER TABLE ci_entrypoint ALTER COLUMN methods_json TYPE JSONB USING methods_json::jsonb;
+UPDATE ci_repository_entrypoint SET methods_json = NULL WHERE methods_json IS NOT NULL AND btrim(methods_json::text) = '';
+ALTER TABLE ci_repository_entrypoint ALTER COLUMN methods_json TYPE JSONB USING methods_json::jsonb;
+UPDATE ci_repository_module_hierarchy SET keywords = NULL WHERE keywords IS NOT NULL AND btrim(keywords::text) = '';
+ALTER TABLE ci_repository_module_hierarchy ALTER COLUMN keywords TYPE JSONB USING keywords::jsonb;
+UPDATE ci_repository_module_hierarchy SET class_paths = NULL WHERE class_paths IS NOT NULL AND btrim(class_paths::text) = '';
+ALTER TABLE ci_repository_module_hierarchy ALTER COLUMN class_paths TYPE JSONB USING class_paths::jsonb;
+UPDATE ci_repository_module_hierarchy SET method_signatures = NULL WHERE method_signatures IS NOT NULL AND btrim(method_signatures::text) = '';
+ALTER TABLE ci_repository_module_hierarchy ALTER COLUMN method_signatures TYPE JSONB USING method_signatures::jsonb;
+UPDATE ci_repository_publish_snapshot SET entry_scan_config = NULL WHERE entry_scan_config IS NOT NULL AND btrim(entry_scan_config::text) = '';
+ALTER TABLE ci_repository_publish_snapshot ALTER COLUMN entry_scan_config TYPE JSONB USING entry_scan_config::jsonb;
+
+-- C 组：ADD URI / DROP 旧列（幂等；不做正文迁移）
+ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS content_uri VARCHAR(255) DEFAULT '';
+ALTER TABLE ci_prompt ADD COLUMN IF NOT EXISTS content_hash VARCHAR(100);
+ALTER TABLE ci_prompt DROP COLUMN IF EXISTS content;
+
+ALTER TABLE ci_business_knowledge ADD COLUMN IF NOT EXISTS content_uri VARCHAR(255) DEFAULT '';
+ALTER TABLE ci_business_knowledge ADD COLUMN IF NOT EXISTS content_hash VARCHAR(100);
+ALTER TABLE ci_business_knowledge DROP COLUMN IF EXISTS content;
+
+ALTER TABLE ci_knowledge_release_edit ADD COLUMN IF NOT EXISTS content_uri VARCHAR(255) DEFAULT '';
+ALTER TABLE ci_knowledge_release_edit ADD COLUMN IF NOT EXISTS hash VARCHAR(100);
+ALTER TABLE ci_knowledge_release_edit DROP COLUMN IF EXISTS content_text;
+
+ALTER TABLE ci_entry_scan_trial ADD COLUMN IF NOT EXISTS result_uri VARCHAR(255);
+ALTER TABLE ci_entry_scan_trial DROP COLUMN IF EXISTS result_json;
+
+ALTER TABLE ci_repository_publish_snapshot ADD COLUMN IF NOT EXISTS entrypoints_uri VARCHAR(255) DEFAULT '';
+ALTER TABLE ci_repository_publish_snapshot ADD COLUMN IF NOT EXISTS module_hierarchy_uri VARCHAR(255) DEFAULT '';
+ALTER TABLE ci_repository_publish_snapshot DROP COLUMN IF EXISTS entrypoints_json;
+ALTER TABLE ci_repository_publish_snapshot DROP COLUMN IF EXISTS module_hierarchy_json;
 
 
 -- =====================================================================

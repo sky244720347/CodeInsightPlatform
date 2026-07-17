@@ -45,4 +45,11 @@ public class EntrypointReviewView {
 
     /** 该入口类下的方法列表（由 controller 层从 methods_json 反序列化得到） */
     private List<EntrypointMethodView> methods = new ArrayList<>();
+
+    /**
+     * v1: INCREMENTAL 任务的基线继承标识
+     * <p>NULL = 本次新增（AI 重新识别或 PUSHED 任务不存在）；非空 = 从该基线任务 ID 继承。</p>
+     * <p>前端 Phase 4 UI 用此字段做 diff 视图（"本次新增" vs "基线继承" 分类）。</p>
+     */
+    private Long baselineTaskId;
 }

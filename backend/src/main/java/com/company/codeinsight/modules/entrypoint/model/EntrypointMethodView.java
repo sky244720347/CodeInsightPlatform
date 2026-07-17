@@ -23,4 +23,15 @@ public class EntrypointMethodView {
 
     /** 仅控制器方法：HTTP 方法（GET/POST/PUT/DELETE/PATCH） */
     private String httpMethod;
+
+    /**
+     * v1 方法级 diff（仅 INCREMENTAL 任务有值）
+     * <p>new=本次新增 / modified=同签名内容变更 / unchanged=不变 / deleted=基线有+本次无</p>
+     */
+    private String diffStatus;
+
+    /**
+     * 方法体内容哈希（落表于 methods_json；历史行可能为空）
+     */
+    private String bodyHash;
 }

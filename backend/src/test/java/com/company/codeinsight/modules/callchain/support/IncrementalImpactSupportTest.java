@@ -112,7 +112,7 @@ public class IncrementalImpactSupportTest {
         mc.setExpression("dep." + targetMethod + "()");
         mc.setLineNumber(1);
         mc.setDependencyCandidates(depCandidates);
-        mc.setCreatedAt(LocalDateTime.now());
+        mc.setCreatedDate(LocalDateTime.now());
         methodCallMapper.insert(mc);
     }
 }

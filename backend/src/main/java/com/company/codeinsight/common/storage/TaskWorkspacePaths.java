@@ -5,34 +5,33 @@ import org.springframework.stereotype.Component;
 
 import java.io.File;
 import java.nio.file.Path;
-import java.nio.file.Paths;
 
 /**
- * 统一解析任务工作区与 storage 路径，避免硬编码 temp_repos 分散在各模块。
+ * 统一解析任务工作区路径（基于 EnvStorageResolver 的派生根 workspaceRoot = runtimeRoot/workspaces）。
  */
 @Component
 @RequiredArgsConstructor
 public class TaskWorkspacePaths {
 
-    private final StorageProperties storageProperties;
+    private final EnvStorageResolver storageResolver;
 
     public File taskProjectDir(long taskId) {
-        return new File(storageProperties.taskWorkspaceDir(taskId));
+        return storageResolver.taskWorkspaceDir(taskId).toFile();
     }
 
     public Path taskProjectPath(long taskId) {
-        return Paths.get(storageProperties.taskWorkspaceDir(taskId));
+        return storageResolver.taskWorkspaceDir(taskId);
     }
 
     public Path taskDocsCodeInsight(long taskId) {
         return taskProjectPath(taskId).resolve("docs/code-insight");
     }
 
-    public String storageLocalPath() {
-        return storageProperties.getLocalPath();
+    public String workspaceRoot() {
+        return storageResolver.workspaceRootString();
     }
 
-    public String workspaceRoot() {
-        return storageProperties.getWorkspaceRoot();
+    public Path releasesRoot() {
+        return storageResolver.getActiveReleasesRoot();
     }
 }

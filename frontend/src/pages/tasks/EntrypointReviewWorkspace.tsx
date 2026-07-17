@@ -28,6 +28,7 @@ import { useNavigate } from 'react-router-dom';
 import PageHelpHint from '../../components/PageHelpHint';
 import { entrypointReviewDetailHelp } from '../../constants/reviewPageHelp';
 import {
+  getEntrypointDiff,
   getEntrypointReview,
   getTask,
   rejectEntrypointReview,
@@ -91,12 +92,19 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
   const [items, setItems] = useState<EntrypointReviewItem[]>([]);
   const [rejectReason, setRejectReason] = useState('');
   const [viewMode, setViewMode] = useState<'list' | 'tree'>('list');
+  /** v1: Phase 4 diff 视图模式（INITIAL 任务默认 full，INCREMENTAL 任务默认 diff） */
+  const [displayMode, setDisplayMode] = useState<'full' | 'diff'>('full');
+  const [diffData, setDiffData] = useState<import('../../api/task').EntrypointDiffDto | null>(null);
   const [pendingExcludes, setPendingExcludes] = useState<ExcludeTarget[]>([]);
 
   useEffect(() => {
     setTaskLoading(true);
     getTask(taskId)
-      .then(setTask)
+      .then((t) => {
+        setTask(t);
+        // v1: INCREMENTAL 任务默认 diff 视图
+        if (t?.type === 'INCREMENTAL') setDisplayMode('diff');
+      })
       .catch(() => setTask(null))
       .finally(() => setTaskLoading(false));
   }, [taskId]);
@@ -104,17 +112,30 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
-    getEntrypointReview(taskId)
-      .then((data) => {
-        if (!cancelled) setItems(Array.isArray(data) ? data : []);
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
+    // v1: INCREMENTAL 任务加载 diff 数据；INITIAL 走全量
+    if (task?.type === 'INCREMENTAL') {
+      Promise.all([
+        getEntrypointReview(taskId),
+        getEntrypointDiff(taskId),
+      ]).then(([allItems, diff]) => {
+        if (!cancelled) {
+          setItems(Array.isArray(allItems) ? allItems : []);
+          setDiffData(diff);
+        }
+      }).finally(() => { if (!cancelled) setLoading(false); });
+    } else {
+      getEntrypointReview(taskId)
+        .then((data) => {
+          if (!cancelled) setItems(Array.isArray(data) ? data : []);
+        })
+        .finally(() => {
+          if (!cancelled) setLoading(false);
+        });
+    }
     return () => {
       cancelled = true;
     };
-  }, [taskId]);
+  }, [taskId, task?.type]);  // v1: 依赖 task.type，确保 task 加载后重新判定 INCREMENTAL
 
   const visibleItems = useMemo(() => {
     return items
@@ -268,6 +289,41 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
     });
   }, [visibleItems, canReview]);
 
+  /* v1: diff 模式的树形数据 — 按 4 类分组，节点带颜色 Badge + 方法级 diff 前缀 */
+  const diffTreeData = useMemo<DataNode[]>(() => {
+    if (!diffData || displayMode !== 'diff') return [];
+    return DIFF_GROUPS.filter(g => {
+      const rows = (diffData as unknown as Record<string, EntrypointReviewItem[]>)[g.key];
+      return rows && rows.length > 0;
+    }).map(g => {
+      const rows = (diffData as unknown as Record<string, EntrypointReviewItem[]>)[g.key]!;
+      return {
+        key: `diff-${g.key}`,
+        title: <Space size={4}><Text strong style={{ color: g.color }}>{g.badge || ''} {g.label} ({rows.length})</Text></Space>,
+        selectable: false,
+        children: rows.map(cls => ({
+          key: `diff-${g.key}-class-${cls.id}`,
+          title: <Space size={4}>
+            {g.badge && <Tag color={g.color === '#ff4d4f' ? 'red' : g.color === '#fa8c16' ? 'orange' : 'blue'} style={{ fontSize: 11 }}>{g.badge}</Tag>}
+            <Text strong delete={g.key === 'deletedRows'}>{shortClassName(cls.className)}</Text>
+          </Space>,
+          children: (cls.methods || []).map((m, mi) => ({
+            key: `diff-${g.key}-m-${cls.id}-${mi}`, isLeaf: true,
+            title: <Space size={4} style={{ fontSize: 12 }}>
+              {m.diffStatus === 'new' && <Tag color="blue" style={{ fontSize: 10, lineHeight: '14px' }}>+</Tag>}
+              {m.diffStatus === 'modified' && <Tag color="orange" style={{ fontSize: 10, lineHeight: '14px' }}>~</Tag>}
+              {m.diffStatus === 'deleted' && <Tag color="red" style={{ fontSize: 10, lineHeight: '14px' }}>-</Tag>}
+              <Text delete={m.diffStatus === 'deleted'}
+                style={{ fontSize: 12, color: m.diffStatus === 'new' ? '#1890ff' : m.diffStatus === 'modified' ? '#fa8c16' : m.diffStatus === 'deleted' ? '#ff4d4f' : undefined }}>
+                {m.methodSignature || m.methodName}
+              </Text>
+            </Space>,
+          })),
+        })),
+      };
+    });
+  }, [diffData, displayMode]);
+
   return (
     <div className="ci-page ci-entrypoint-review-detail-page">
       <Card
@@ -298,6 +354,18 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
         }
         extra={
           <Space size={12}>
+            {/* v1: Phase 4 diff 视图切换（INCREMENTAL 任务可用） */}
+            {task?.type === 'INCREMENTAL' && (
+              <Segmented
+                size="large"
+                options={[
+                  { value: 'full', label: '全量视图' },
+                  { value: 'diff', label: 'DIFF 视图' },
+                ]}
+                value={displayMode}
+                onChange={(v) => setDisplayMode(v as 'full' | 'diff')}
+              />
+            )}
             <Segmented
               size="large"
               options={[
@@ -377,6 +445,16 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
               />
             )}
 
+            {/* v1: Phase 4 diff 统计（INCREMENTAL 任务下） */}
+            {displayMode === 'diff' && diffData && (
+              <Space size={4} style={{ marginBottom: 16 }}>
+                <Tag color="geekblue">+{diffData.newRows?.length ?? 0} 新增</Tag>
+                <Tag color="orange">~{diffData.modifiedRows?.length ?? 0} 变更</Tag>
+                <Tag color="red">-{diffData.deletedRows?.length ?? 0} 删除</Tag>
+                <Tag color="green">={diffData.inheritedRows?.length ?? 0} 基线</Tag>
+              </Space>
+            )}
+
             <Space size="large" style={{ marginBottom: 16 }}>
               <Statistic title="入口类数" value={stats.totalClasses} suffix="个" />
               <Statistic title="方法总数" value={stats.totalMethods} suffix="个" />
@@ -395,16 +473,38 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
             {visibleItems.length === 0 ? (
               <Empty description="无可见入口（已全部排除或未识别到入口）。" />
             ) : viewMode === 'tree' ? (
-              <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12, background: '#fafafa' }}>
-                <Tree
-                  treeData={treeData}
-                  defaultExpandAll
-                  showLine={{ showLeafIcon: false }}
-                  blockNode
-                  style={{ fontSize: 13 }}
-                />
-              </div>
+              displayMode === 'diff' && diffData ? (
+                /* v1: DIFF 模式 + 树形视图 — diff 分组树 */
+                <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12, background: '#fafafa' }}>
+                  <Tree
+                    treeData={diffTreeData}
+                    defaultExpandAll
+                    showLine={{ showLeafIcon: false }}
+                    blockNode
+                    style={{ fontSize: 13 }}
+                  />
+                </div>
+              ) : (
+                /* 全量模式 + 树形视图 — 与今天一致 */
+                <div style={{ border: '1px solid #f0f0f0', borderRadius: 6, padding: 12, background: '#fafafa' }}>
+                  <Tree
+                    treeData={treeData}
+                    defaultExpandAll
+                    showLine={{ showLeafIcon: false }}
+                    blockNode
+                    style={{ fontSize: 13 }}
+                  />
+                </div>
+              )
+            ) : displayMode === 'diff' && diffData ? (
+              /* v1: DIFF 模式 — git 风格分组渲染 */
+              <DiffEntryList
+                diffData={diffData}
+                canReview={canReview}
+                addExclude={addExclude}
+              />
             ) : (
+              /* 全量模式 — 与今天一致 */
               <Space direction="vertical" size={16} style={{ width: '100%' }}>
                 {visibleItems.map((it) => {
                   const typeMeta = ENTRY_TYPE_LABEL[it.entryType || ''] || {
@@ -423,6 +523,13 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
                     >
                       <Space size={8} wrap style={{ marginBottom: 4 }}>
                         <Tag color={typeMeta.color}>{typeMeta.label}</Tag>
+                        {/* v1: Phase 4 diff 标识（INCREMENTAL 任务下） */}
+                        {task?.type === 'INCREMENTAL' && it.baselineTaskId && (
+                          <Tag color="green">基线继承</Tag>
+                        )}
+                        {task?.type === 'INCREMENTAL' && !it.baselineTaskId && (
+                          <Tag color="geekblue">本次新增</Tag>
+                        )}
                         <Text strong>{it.className}</Text>
                         {canReview && (
                           <Button
@@ -533,6 +640,145 @@ const EntrypointReviewWorkspace: React.FC<EntrypointReviewWorkspaceProps> = ({
           </>
         )}
       </Card>
+    </div>
+  );
+};
+
+/* ================================================================
+ * v1: DIFF 模式 — git 风格分组渲染
+ * ================================================================ */
+
+const DIFF_GROUPS = [
+  { key: 'newRows',       label: '本次新增',   badge: '[+]', color: '#1890ff', bg: '#e6f7ff', defaultOpen: true },
+  { key: 'modifiedRows',  label: '本次变更',   badge: '[~]', color: '#fa8c16', bg: '#fff7e6', defaultOpen: true },
+  { key: 'deletedRows',   label: '本次删除',   badge: '[-]', color: '#ff4d4f', bg: '#fff1f0', defaultOpen: true },
+  { key: 'inheritedRows', label: '基线继承',   badge: null,  color: '#52c41a', bg: '#f6ffed', defaultOpen: false },
+] as const;
+
+const DiffEntryList: React.FC<{
+  diffData: import('../../api/task').EntrypointDiffDto;
+  canReview: boolean;
+  addExclude: (t: ExcludeTarget) => void;
+}> = ({ diffData, canReview, addExclude }) => {
+  const [collapsed, setCollapsed] = useState<Record<string, boolean>>({});
+
+  return (
+    <Space direction="vertical" size={24} style={{ width: '100%' }}>
+      {DIFF_GROUPS.map(({ key, label, badge, color, bg, defaultOpen }) => {
+        const rows = diffData[key as keyof typeof diffData] as EntrypointReviewItem[];
+        if (!rows || rows.length === 0) return null;
+        const isOpen = collapsed[key] === undefined ? defaultOpen : !!collapsed[key];
+        return (
+          <div key={key}>
+            <div
+              onClick={() => setCollapsed((p) => ({ ...p, [key]: !isOpen }))}
+              style={{
+                cursor: 'pointer', userSelect: 'none', padding: '8px 0',
+                borderBottom: `2px solid ${color}`, marginBottom: 12,
+                display: 'flex', alignItems: 'center', gap: 8,
+              }}
+            >
+              <Text strong style={{ color, fontSize: 14 }}>
+                {isOpen ? '▼' : '▸'} {label} ({rows.length})
+              </Text>
+              {badge && <Tag color={color === '#fa8c16' ? 'orange' : color === '#1890ff' ? 'blue' : 'red'}>{badge}</Tag>}
+            </div>
+            {isOpen && (
+              <Space direction="vertical" size={12} style={{ width: '100%' }}>
+                {rows.map((it) => (
+                  <DiffEntryRow key={it.id} item={it} canReview={canReview}
+                    addExclude={addExclude} color={color} bg={bg} badge={badge} />
+                ))}
+              </Space>
+            )}
+          </div>
+        );
+      })}
+    </Space>
+  );
+};
+
+const DiffEntryRow: React.FC<{
+  item: EntrypointReviewItem;
+  canReview: boolean; addExclude: (t: ExcludeTarget) => void;
+  color: string; bg: string; badge: string | null;
+}> = ({ item, canReview, addExclude, color, bg, badge }) => {
+  const typeMeta = ENTRY_TYPE_LABEL[item.entryType || ''] || {
+    color: 'default', label: item.entryType || 'UNKNOWN',
+  };
+  const isDeleted = badge === '[-]';
+  return (
+    <div style={{
+      borderLeft: `3px solid ${color}`, background: bg,
+      borderRadius: '0 6px 6px 0', padding: 12,
+    }}>
+      <Space size={8} wrap style={{ marginBottom: 4 }}>
+        {badge && <Tag color={color === '#ff4d4f' ? 'red' : color === '#fa8c16' ? 'orange' : color === '#1890ff' ? 'blue' : 'green'}>{badge}</Tag>}
+        <Tag color={typeMeta.color}>{typeMeta.label}</Tag>
+        <Text strong delete={isDeleted}>{item.className}</Text>
+        {canReview && !isDeleted && (
+          <Button type="text" size="small" danger icon={<CloseOutlined />}
+            title="排除整类" onClick={() => addExclude({ className: item.className })} />
+        )}
+        {item.annotation && (
+          <Tag><Text type="secondary" style={{ fontSize: 12 }}>触发注解：{item.annotation}</Text></Tag>
+        )}
+        {item.remark && (
+          <Text type="secondary" style={{ fontSize: 12 }}>路径：{item.remark}</Text>
+        )}
+      </Space>
+      {item.filePath && (
+        <div style={{ marginBottom: 8 }}>
+          <Text type="secondary" style={{ fontSize: 12 }}>{item.filePath}</Text>
+        </div>
+      )}
+      {(item.methods?.length ?? 0) === 0 ? (
+        <Text type="secondary">（该入口未识别到方法）</Text>
+      ) : (
+        <Table<NonNullable<EntrypointReviewItem['methods'][number]>>
+          size="small"
+          rowKey={(r, idx) => `${item.id}-${idx}-${r.methodName}`}
+          dataSource={item.methods}
+          pagination={false}
+          columns={[
+            {
+              title: '方法签名', dataIndex: 'methodSignature', key: 'methodSignature', width: 200,
+              render: (v?: string, r?: NonNullable<EntrypointReviewItem['methods'][number]>) => {
+                const prefix = r?.diffStatus === 'new' ? '+ '
+                  : r?.diffStatus === 'modified' ? '~ '
+                  : r?.diffStatus === 'deleted' ? '- ' : '';
+                const style = r?.diffStatus === 'new' ? { color: '#1890ff', fontWeight: 'bold' } as const
+                  : r?.diffStatus === 'modified' ? { color: '#fa8c16', fontWeight: 'bold' } as const
+                  : r?.diffStatus === 'deleted' ? { color: '#ff4d4f', textDecoration: 'line-through' } as const
+                  : undefined;
+                return <Text code delete={r?.diffStatus === 'deleted'} style={style}>{prefix}{v}</Text>;
+              },
+            },
+            { title: '方法名', dataIndex: 'methodName', key: 'methodName', width: 160 },
+            {
+              title: '注解', dataIndex: 'annotation', key: 'annotation', width: 140,
+              render: (v?: string) => (v ? <Tag>{v}</Tag> : '-'),
+            },
+            {
+              title: 'HTTP', key: 'http',
+              render: (_: unknown, r) =>
+                r.httpPath ? (
+                  <Space size={4}>
+                    {r.httpMethod && <Tag color="geekblue">{r.httpMethod}</Tag>}
+                    <Text code style={{ fontSize: 12 }}>{r.httpPath}</Text>
+                  </Space>
+                ) : null,
+            },
+            ...(canReview ? [
+              { title: '', key: 'actions', width: 60,
+                render: (_: unknown, r: NonNullable<EntrypointReviewItem['methods'][number]>) =>
+                  <Button type="text" size="small" danger icon={<CloseOutlined />}
+                    title="排除方法" onClick={() => addExclude({ className: item.className, methodSignature: r.methodSignature })} />
+              }
+            ] : []),
+          ]}
+        />
+      )}
     </div>
   );
 };

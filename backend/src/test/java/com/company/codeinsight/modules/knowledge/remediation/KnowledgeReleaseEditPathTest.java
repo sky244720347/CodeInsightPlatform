@@ -19,7 +19,7 @@ public class KnowledgeReleaseEditPathTest {
     }
 
     private String invokeNormalize(String path) {
-        KnowledgeReleaseEditService service = new KnowledgeReleaseEditService(null, null);
+        KnowledgeReleaseEditService service = new KnowledgeReleaseEditService(null, null, null);
         return ReflectionTestUtils.invokeMethod(service, "normalizeRelativePath", path);
     }
 }

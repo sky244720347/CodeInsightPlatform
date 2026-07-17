@@ -15,16 +15,17 @@
                    COUNT(*) AS cnt,
                    MAX(last_decompile_at) AS last_decompile_at
             FROM ci_repository
-            WHERE deleted_at IS NULL
+            WHERE is_deleted = 0
             GROUP BY system_id
         ) repo ON repo.system_id = s.id
         LEFT JOIN (
             SELECT system_id, COUNT(*) AS cnt
             FROM ci_knowledge_version
+            WHERE is_deleted = 0
             GROUP BY system_id
         ) kv ON kv.system_id = s.id
         <where>
-            s.deleted_at IS NULL
+            s.is_deleted = 0
             <if test="name != null and name != ''">
                 AND s.name LIKE '%' || #{name,jdbcType=VARCHAR} || '%'
             </if>
@@ -36,12 +37,12 @@
                     SELECT 1
                     FROM ci_repository r
                     WHERE r.system_id = s.id
-                      AND r.deleted_at IS NULL
+                      AND r.is_deleted = 0
                       AND r.last_published_version_id IS NOT NULL
                 )
             </if>
         </where>
-        ORDER BY s.created_at DESC
+        ORDER BY s.created_date DESC
     </select>
 
 </mapper>

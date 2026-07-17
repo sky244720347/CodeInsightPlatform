@@ -40,7 +40,7 @@ public class KnowledgeBrowseItem {
     private String status;
 
     /** 更新时间（ISO 字符串；index/manifest 用文件 lastModified） */
-    private String updatedAt;
+    private String updatedDate;
 
     /** 数据源标识：DB（draft 行）/ TEMP_REPOS（index/manifest 文件）/ RELEASE（已发布产物） */
     private String source;

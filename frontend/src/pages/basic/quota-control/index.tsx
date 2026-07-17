@@ -354,7 +354,7 @@ const QuotaControlPage: React.FC = () => {
                 { title: '备注', dataIndex: 'remark', ellipsis: true },
                 {
                   title: '更新时间',
-                  dataIndex: 'updatedAt',
+                  dataIndex: 'updatedDate',
                   width: 170,
                   render: (t: string) => (t ? new Date(t).toLocaleString() : '-'),
                 },

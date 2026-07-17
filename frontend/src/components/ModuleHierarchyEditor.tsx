@@ -115,6 +115,8 @@ export interface ModuleHierarchyEditorProps {
   loading?: boolean;
   /** 父组件标识的「正在提交」状态（控制 renderSubmit 的 saving 形参） */
   saving?: boolean;
+  /** v1: Phase 4 diff 标识（INCREMENTAL 任务下显示 diff Tag） */
+  taskType?: 'INITIAL' | 'INCREMENTAL';
 
   // ============ 任务流模式（保留旧行为，向后兼容）============
   /**
@@ -215,6 +217,7 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
   renderSubmit,
   renderAlert,
   enableDrag = true,
+  taskType,
 }) => {
   /** 受控模式：未传 taskId 时由父组件通过 value/onChange 持有 hierarchy */
   const isControlled = taskId == null;
@@ -589,11 +592,17 @@ const ModuleHierarchyEditor: React.FC<ModuleHierarchyEditorProps> = ({
 
   const treeData: EditorDataNode[] = useMemo(() => {
     if (!hierarchy) return [];
+    // v1: Phase 4 diff 标识（INCREMENTAL 任务下用 sourceEntryClass 区分）
+    const isIncremental = taskType === 'INCREMENTAL';
     return Object.values(hierarchy.modules ?? {}).map((mod) => {
       const subChildren: EditorDataNode[] = Object.values(mod.subModules ?? {}).map((sub) => {
         const fnChildren: EditorDataNode[] = Object.values(sub.functions ?? {}).map((fn) => ({
           key: fn.id,
-          title: fn.functionName,
+          title: isIncremental && fn.sourceEntryClass
+            ? `[AI 重提炼] ${fn.functionName}`
+            : isIncremental
+              ? `[基线继承] ${fn.functionName}`
+              : fn.functionName,
           nodeType: 'FUNCTION' as const,
           parentModuleId: mod.id,
           parentSubModuleId: sub.id,

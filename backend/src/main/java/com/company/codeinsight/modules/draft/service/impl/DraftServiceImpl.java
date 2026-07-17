@@ -91,7 +91,10 @@ public class DraftServiceImpl implements DraftService {
     private StringRedisTemplate redisTemplate;
 
     @Autowired
-    private com.company.codeinsight.common.storage.StorageProperties storageProperties;
+    private com.company.codeinsight.common.storage.EnvStorageResolver storageResolver;
+
+    @Autowired
+    private com.company.codeinsight.modules.knowledge.mapper.KnowledgeVersionMapper knowledgeVersionMapper;
 
     /**
      * 查询指定评审工作区下的所有草稿
@@ -111,23 +114,61 @@ public class DraftServiceImpl implements DraftService {
      */
     @Override
     public List<com.company.codeinsight.modules.draft.dto.DraftTreeNode> getWorkspaceTree(Long workspaceId) {
+        // v1: INCREMENTAL 任务的 workspace 引用基线 workspace
+        // 查询时合并基线草稿 + 本任务草稿（按 module_name 去重，本任务的优先）
+        DraftWorkspace ws = workspaceMapper.selectById(workspaceId);
+        List<Long> workspaceIds = new ArrayList<>();
+        workspaceIds.add(workspaceId);
+        if (ws != null && ws.getBaselineWorkspaceId() != null) {
+            workspaceIds.add(ws.getBaselineWorkspaceId());
+        }
+
         List<KnowledgeDraft> all = draftMapper.selectList(
                 new LambdaQueryWrapper<KnowledgeDraft>()
-                        .eq(KnowledgeDraft::getWorkspaceId, workspaceId)
+                        .in(KnowledgeDraft::getWorkspaceId, workspaceIds)
                         .orderByAsc(KnowledgeDraft::getSortOrder)
                         .orderByAsc(KnowledgeDraft::getId)
         );
         if (all.isEmpty()) {
             return Collections.emptyList();
         }
-        // 1. 转成 DTO 并用 map 索引
-        Map<Long, com.company.codeinsight.modules.draft.dto.DraftTreeNode> nodeMap = new java.util.HashMap<>(all.size());
+        // v1: 按 module_name 去重（本任务草稿优先；同 module_name 的基线草稿被覆盖）
+        Map<String, KnowledgeDraft> uniqueByModule = new java.util.LinkedHashMap<>();
         for (KnowledgeDraft d : all) {
+            if (!StringUtils.hasText(d.getModuleName())) {
+                continue;
+            }
+            // 优先本任务（id 大的优先）
+            KnowledgeDraft existing = uniqueByModule.get(d.getModuleName());
+            if (existing == null || d.getWorkspaceId().equals(workspaceId)) {
+                uniqueByModule.put(d.getModuleName(), d);
+            }
+        }
+        List<KnowledgeDraft> deduped = new ArrayList<>(uniqueByModule.values());
+        if (deduped.isEmpty()) {
+            return Collections.emptyList();
+        }
+        // v1: 把来自基线 workspace 的草稿的 baseline_task_id 标记为基线任务的 ID
+        //    （否则 them 都是 NULL——因为基线任务是 INITIAL，没有 baseline_task_id 字段）
+        if (ws != null && ws.getBaselineWorkspaceId() != null) {
+            DraftWorkspace baselineWs = workspaceMapper.selectById(ws.getBaselineWorkspaceId());
+            if (baselineWs != null && baselineWs.getTaskId() != null) {
+                for (KnowledgeDraft d : deduped) {
+                    if (d.getBaselineTaskId() == null
+                            && d.getWorkspaceId().equals(ws.getBaselineWorkspaceId())) {
+                        d.setBaselineTaskId(baselineWs.getTaskId());
+                    }
+                }
+            }
+        }
+        // 1. 转成 DTO 并用 map 索引
+        Map<Long, com.company.codeinsight.modules.draft.dto.DraftTreeNode> nodeMap = new java.util.HashMap<>(deduped.size());
+        for (KnowledgeDraft d : deduped) {
             nodeMap.put(d.getId(), com.company.codeinsight.modules.draft.dto.DraftTreeNode.fromDraft(d));
         }
         // 2. 挂父子关系；被挂上子节点的父节点标记为 isFolder=true（前端用此判断"是否目录节点"）
         List<com.company.codeinsight.modules.draft.dto.DraftTreeNode> roots = new java.util.ArrayList<>();
-        for (KnowledgeDraft d : all) {
+        for (KnowledgeDraft d : deduped) {
             com.company.codeinsight.modules.draft.dto.DraftTreeNode node = nodeMap.get(d.getId());
             Long pid = d.getParentId();
             if (pid == null) {
@@ -146,6 +187,132 @@ public class DraftServiceImpl implements DraftService {
         return roots;
     }
 
+    @Override
+    public com.company.codeinsight.modules.draft.dto.DraftTreeDiffDto getWorkspaceTreeDiff(Long workspaceId) {
+        com.company.codeinsight.modules.draft.dto.DraftTreeDiffDto result =
+                new com.company.codeinsight.modules.draft.dto.DraftTreeDiffDto();
+        DraftWorkspace ws = workspaceMapper.selectById(workspaceId);
+        if (ws == null) {
+            return result;
+        }
+
+        // 本次 workspace 草稿（v2: BASELINE_DOC_INHERIT 后本次 workspace 已自包含）
+        List<KnowledgeDraft> currentDrafts = draftMapper.selectList(
+                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<KnowledgeDraft>()
+                        .eq(KnowledgeDraft::getWorkspaceId, workspaceId));
+        java.util.Set<String> currentModuleNames = new java.util.HashSet<>();
+        for (KnowledgeDraft d : currentDrafts) {
+            if (d.getModuleName() != null) currentModuleNames.add(d.getModuleName());
+        }
+
+        // 基线模块名从 releases 目录的 module-map.yaml 读取（纯 release 方案）
+        java.util.Set<String> baselineModuleNames = new java.util.HashSet<>();
+        Long baselineTaskId = null;
+        if (ws.getRepositoryId() != null) {
+            com.company.codeinsight.modules.repository.entity.CodeRepository repo =
+                    repositoryMapper.selectById(ws.getRepositoryId());
+            if (repo != null && repo.getLastPublishedVersionId() != null) {
+                com.company.codeinsight.modules.knowledge.entity.KnowledgeVersion version =
+                        knowledgeVersionMapper.selectById(repo.getLastPublishedVersionId());
+                if (version != null && "PUSHED".equals(version.getStatus())) {
+                    baselineTaskId = version.getTaskId();
+                    java.nio.file.Path releaseDir = storageResolver.releaseDir(
+                            version.getSystemId(), version.getRepositoryId(), version.getVersionNum());
+                    java.nio.file.Path mapFile = releaseDir.resolve("meta").resolve("module-map.yaml");
+                    if (java.nio.file.Files.exists(mapFile)) {
+                        baselineModuleNames.addAll(parseModuleMapNames(mapFile));
+                    }
+                }
+            }
+        }
+
+        // v2 分类（按 baselineTaskId 字段区分）：
+        //   new       = baselineTaskId == null 且 module_name 不在基线中
+        //   modified  = baselineTaskId == null 且 module_name 在基线中（AI 重生成覆盖）
+        //   inherited = baselineTaskId != null（直接从基线 release 复制，未重跑）
+        List<KnowledgeDraft> newDrafts = new java.util.ArrayList<>();
+        List<KnowledgeDraft> modifiedDrafts = new java.util.ArrayList<>();
+        List<KnowledgeDraft> inheritedDrafts = new java.util.ArrayList<>();
+        for (KnowledgeDraft d : currentDrafts) {
+            if (d.getModuleName() == null) continue;
+            if (d.getBaselineTaskId() != null) {
+                inheritedDrafts.add(d);
+            } else if (baselineModuleNames.contains(d.getModuleName())) {
+                modifiedDrafts.add(d);
+            } else {
+                newDrafts.add(d);
+            }
+        }
+
+        //   deleted = 基线有 + 本次无（真正删除）— 从 release module-map.yaml 构造虚拟节点
+        List<com.company.codeinsight.modules.draft.dto.DraftTreeNode> deletedNodes = new java.util.ArrayList<>();
+        long syntheticId = -1;
+        for (String name : baselineModuleNames) {
+            if (!currentModuleNames.contains(name)) {
+                com.company.codeinsight.modules.draft.dto.DraftTreeNode node =
+                        new com.company.codeinsight.modules.draft.dto.DraftTreeNode();
+                node.setId(syntheticId--);
+                node.setModuleName(name);
+                node.setBaselineTaskId(baselineTaskId);
+                node.setIsFolder(false);
+                node.setSortOrder(0);
+                deletedNodes.add(node);
+            }
+        }
+
+        result.setNewRows(buildTree(newDrafts));
+        result.setModifiedRows(buildTree(modifiedDrafts));
+        result.setInheritedRows(buildTree(inheritedDrafts));
+        result.setDeletedRows(deletedNodes);
+        log.info("DraftTreeDiff v2 — workspaceId={} repoId={} new={} modified={} inherited={} deleted={}",
+                workspaceId, ws.getRepositoryId(),
+                newDrafts.size(), modifiedDrafts.size(), inheritedDrafts.size(), deletedNodes.size());
+        return result;
+    }
+
+    /** 解析 module-map.yaml，返回所有模块名 */
+    private java.util.Set<String> parseModuleMapNames(java.nio.file.Path yamlFile) {
+        java.util.Set<String> names = new java.util.LinkedHashSet<>();
+        try {
+            List<String> lines = java.nio.file.Files.readAllLines(yamlFile);
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (trimmed.startsWith("- name:")) {
+                    names.add(parseYamlQuotedValue(trimmed.substring("- name:".length())));
+                }
+            }
+        } catch (java.io.IOException e) {
+            log.warn("解析 module-map.yaml 失败: {}", yamlFile, e);
+        }
+        return names;
+    }
+
+    /** 内部：从 KnowledgeDraft 列表构建树（按 parent_id 递归） */
+    private List<com.company.codeinsight.modules.draft.dto.DraftTreeNode> buildTree(List<KnowledgeDraft> drafts) {
+        if (drafts == null || drafts.isEmpty()) return Collections.emptyList();
+        java.util.Map<Long, com.company.codeinsight.modules.draft.dto.DraftTreeNode> nodeMap = new java.util.HashMap<>(drafts.size());
+        for (KnowledgeDraft d : drafts) {
+            nodeMap.put(d.getId(), com.company.codeinsight.modules.draft.dto.DraftTreeNode.fromDraft(d));
+        }
+        List<com.company.codeinsight.modules.draft.dto.DraftTreeNode> roots = new java.util.ArrayList<>();
+        for (KnowledgeDraft d : drafts) {
+            com.company.codeinsight.modules.draft.dto.DraftTreeNode node = nodeMap.get(d.getId());
+            Long pid = d.getParentId();
+            if (pid == null) {
+                roots.add(node);
+            } else {
+                com.company.codeinsight.modules.draft.dto.DraftTreeNode parent = nodeMap.get(pid);
+                if (parent != null) {
+                    parent.setIsFolder(Boolean.TRUE);
+                    parent.getChildren().add(node);
+                } else {
+                    roots.add(node);
+                }
+            }
+        }
+        return roots;
+    }
+
     /**
      * 获取指定任务的评审工作区实体
      */
@@ -154,6 +321,93 @@ public class DraftServiceImpl implements DraftService {
         return workspaceMapper.selectOne(
                 new LambdaQueryWrapper<DraftWorkspace>().eq(DraftWorkspace::getTaskId, taskId)
         );
+    }
+
+    /**
+     * v2: 单篇草稿的正文 DIFF — 返回基线 + 本次两份正文的 contentUri。
+     * <p>通过 draftId 找到本次草稿 → 查 workspace 的 baselineWorkspaceId →
+     * 在基线 workspace 中按 moduleName 匹配基线草稿。</p>
+     */
+    @Override
+    public com.company.codeinsight.modules.draft.dto.DocumentDiffDto getDocumentDiff(Long draftId) {
+        KnowledgeDraft draft = draftMapper.selectById(draftId);
+        if (draft == null) {
+            throw new com.company.codeinsight.common.exception.BusinessException("草稿不存在: " + draftId);
+        }
+        DraftWorkspace ws = workspaceMapper.selectById(draft.getWorkspaceId());
+        if (ws == null) {
+            throw new com.company.codeinsight.common.exception.BusinessException("工作区不存在");
+        }
+
+        com.company.codeinsight.modules.draft.dto.DocumentDiffDto dto =
+                new com.company.codeinsight.modules.draft.dto.DocumentDiffDto();
+        dto.setCurrentDraftId(draft.getId());
+        dto.setCurrentContentUri(draft.getContentUri());
+        dto.setCurrentModuleName(draft.getModuleName());
+
+        // 基线正文从 releases 目录读取（基线 draft 物理文件在推送后已被删除）
+        if (draft.getModuleName() != null && ws.getRepositoryId() != null) {
+            com.company.codeinsight.modules.repository.entity.CodeRepository repo =
+                    repositoryMapper.selectById(ws.getRepositoryId());
+            if (repo != null && repo.getLastPublishedVersionId() != null) {
+                com.company.codeinsight.modules.knowledge.entity.KnowledgeVersion version =
+                        knowledgeVersionMapper.selectById(repo.getLastPublishedVersionId());
+                if (version != null && "PUSHED".equals(version.getStatus())) {
+                    java.nio.file.Path releaseDir = storageResolver.releaseDir(
+                            version.getSystemId(), version.getRepositoryId(), version.getVersionNum());
+                    java.nio.file.Path mapFile = releaseDir.resolve("meta").resolve("module-map.yaml");
+                    if (java.nio.file.Files.exists(mapFile)) {
+                        String baselineFileName = findModuleFileNameInYaml(mapFile, draft.getModuleName());
+                        if (baselineFileName != null) {
+                            java.nio.file.Path baselineFile = releaseDir.resolve("modules").resolve(baselineFileName);
+                            if (java.nio.file.Files.exists(baselineFile)) {
+                                try {
+                                    dto.setBaselineContent(java.nio.file.Files.readString(baselineFile));
+                                    dto.setBaselineModuleName(draft.getModuleName());
+                                } catch (java.io.IOException e) {
+                                    log.warn("读取基线 release 文件失败: {}", baselineFile, e);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return dto;
+    }
+
+    /** 在 module-map.yaml 中按 moduleName 查找对应的文件名 */
+    private String findModuleFileNameInYaml(java.nio.file.Path yamlFile, String moduleName) {
+        try {
+            List<String> lines = java.nio.file.Files.readAllLines(yamlFile);
+            String pendingName = null;
+            for (String line : lines) {
+                String trimmed = line.trim();
+                if (trimmed.startsWith("- name:")) {
+                    pendingName = parseYamlQuotedValue(trimmed.substring("- name:".length()));
+                } else if (trimmed.startsWith("path:") && pendingName != null) {
+                    if (moduleName.equals(pendingName)) {
+                        String path = parseYamlQuotedValue(trimmed.substring("path:".length()));
+                        int lastSlash = path.lastIndexOf('/');
+                        return lastSlash >= 0 ? path.substring(lastSlash + 1) : path;
+                    }
+                    pendingName = null;
+                }
+            }
+        } catch (java.io.IOException e) {
+            log.warn("解析 module-map.yaml 失败: {}", yamlFile, e);
+        }
+        return null;
+    }
+
+    /** 提取 YAML 引号内的值 */
+    private String parseYamlQuotedValue(String raw) {
+        String s = raw.trim();
+        if (s.length() >= 2 && (s.startsWith("\"") && s.endsWith("\"")
+                || s.startsWith("'") && s.endsWith("'"))) {
+            return s.substring(1, s.length() - 1);
+        }
+        return s;
     }
 
     /**
@@ -195,7 +449,7 @@ public class DraftServiceImpl implements DraftService {
 
         // 3. 若无自动保存痕迹，从原始 URI 地址读取磁盘上的正式草稿文件
         try {
-            Path path = DraftFileUtil.resolve(draft.getContentUri(), storageProperties);
+            Path path = DraftFileUtil.resolve(draft.getContentUri(), storageResolver);
             File file = path.toFile();
             if (file.exists()) {
                 return Files.readString(path);
@@ -230,7 +484,7 @@ public class DraftServiceImpl implements DraftService {
 
         try {
             // 读取原有的物理正文以对比差异
-            Path draftPath = DraftFileUtil.resolve(draft.getContentUri(), storageProperties);
+            Path draftPath = DraftFileUtil.resolve(draft.getContentUri(), storageResolver);
             File file = draftPath.toFile();
             String originalContent = "";
             if (file.exists()) {
@@ -261,7 +515,7 @@ public class DraftServiceImpl implements DraftService {
             String hash = DigestUtils.md5DigestAsHex(content.getBytes());
             draft.setHash(hash);
             draft.setStatus(DraftStatus.EDITING.name());
-            draft.setUpdatedAt(LocalDateTime.now());
+            draft.setUpdatedDate(LocalDateTime.now());
             draftMapper.updateById(draft);
 
             // 差分对比原文本与新文本，生成行级增改统计信息
@@ -274,7 +528,7 @@ public class DraftServiceImpl implements DraftService {
             revision.setContentUri(draft.getContentUri());
             revision.setAuthor(author);
             revision.setRemark(finalRemark);
-            revision.setCreatedAt(LocalDateTime.now());
+            revision.setCreatedDate(LocalDateTime.now());
             revisionMapper.insert(revision);
 
             // 若代码库是本地路径，同时在本地代码库指定目录下更新保存一份备份
@@ -355,7 +609,7 @@ public class DraftServiceImpl implements DraftService {
 
         // 修改状态为 CONFIRMED
         draft.setStatus(DraftStatus.CONFIRMED.name());
-        draft.setUpdatedAt(LocalDateTime.now());
+        draft.setUpdatedDate(LocalDateTime.now());
         draftMapper.updateById(draft);
 
         // 若填写了通过意见，写入 ci_review_comment 表（type=PASS），与驳回意见统一管理
@@ -363,9 +617,10 @@ public class DraftServiceImpl implements DraftService {
             DraftReviewComment passComment = new DraftReviewComment();
             passComment.setDraftId(draftId);
             passComment.setAuthor(author);
-            passComment.setComment(comment);
+            passComment.setComment(com.company.codeinsight.common.util.DbStringLimits.truncate(
+                    comment, com.company.codeinsight.common.util.DbStringLimits.COMMENT));
             passComment.setType("PASS");
-            passComment.setCreatedAt(LocalDateTime.now());
+            passComment.setCreatedDate(LocalDateTime.now());
             commentMapper.insert(passComment);
         }
     }
@@ -418,7 +673,7 @@ public class DraftServiceImpl implements DraftService {
 
         // 2. 工作区晋升 COMPLETED
         ws.setStatus("COMPLETED");
-        ws.setUpdatedAt(now);
+        ws.setUpdatedDate(now);
         workspaceMapper.updateById(ws);
 
         // 3. 任务级通过意见留痕（挂到工作区下第一篇草稿，避免新建「工作区级评论」表）
@@ -426,9 +681,10 @@ public class DraftServiceImpl implements DraftService {
             DraftReviewComment passComment = new DraftReviewComment();
             passComment.setDraftId(drafts.get(0).getId());
             passComment.setAuthor(author);
-            passComment.setComment("[任务级通过] " + comment);
+            passComment.setComment(com.company.codeinsight.common.util.DbStringLimits.truncate(
+                    "[任务级通过] " + comment, com.company.codeinsight.common.util.DbStringLimits.COMMENT));
             passComment.setType("PASS");
-            passComment.setCreatedAt(now);
+            passComment.setCreatedDate(now);
             commentMapper.insert(passComment);
         }
 
@@ -483,7 +739,7 @@ public class DraftServiceImpl implements DraftService {
     @Override
     public List<DraftRevision> getRevisions(Long draftId) {
         return revisionMapper.selectList(
-                new LambdaQueryWrapper<DraftRevision>().eq(DraftRevision::getDraftId, draftId).orderByDesc(DraftRevision::getCreatedAt)
+                new LambdaQueryWrapper<DraftRevision>().eq(DraftRevision::getDraftId, draftId).orderByDesc(DraftRevision::getCreatedDate)
         );
     }
 
@@ -493,7 +749,7 @@ public class DraftServiceImpl implements DraftService {
     @Override
     public List<DraftReviewComment> getComments(Long draftId) {
         return commentMapper.selectList(
-                new LambdaQueryWrapper<DraftReviewComment>().eq(DraftReviewComment::getDraftId, draftId).orderByDesc(DraftReviewComment::getCreatedAt)
+                new LambdaQueryWrapper<DraftReviewComment>().eq(DraftReviewComment::getDraftId, draftId).orderByDesc(DraftReviewComment::getCreatedDate)
         );
     }
 
@@ -505,7 +761,7 @@ public class DraftServiceImpl implements DraftService {
      *   <li>按 taskId 反查 ci_draft_workspace 拿到 workspaceId</li>
      *   <li>一次性 selectBatchIds 拉取工作区下所有草稿（O(1) IO），构造 draftId → KnowledgeDraft 索引</li>
      *   <li>用 IN(draftIds) 一次查所有复核意见（避免 N+1）</li>
-     *   <li>内存 join 出 moduleName / filePath，按 createdAt desc 排序</li>
+     *   <li>内存 join 出 moduleName / filePath，按 createdDate desc 排序</li>
      * </ol>
      *
      * <p>与 {@link #getComments(Long)} 的差异：本方法面向整组任务，输出补齐来源草稿元信息；
@@ -537,7 +793,7 @@ public class DraftServiceImpl implements DraftService {
         List<DraftReviewComment> comments = commentMapper.selectList(
                 new LambdaQueryWrapper<DraftReviewComment>()
                         .in(DraftReviewComment::getDraftId, draftIds)
-                        .orderByDesc(DraftReviewComment::getCreatedAt)
+                        .orderByDesc(DraftReviewComment::getCreatedDate)
         );
 
         // 4. 内存 join 出 moduleName / filePath
@@ -550,7 +806,7 @@ public class DraftServiceImpl implements DraftService {
             dto.setAuthor(c.getAuthor());
             dto.setComment(c.getComment());
             dto.setType(c.getType());
-            dto.setCreatedAt(c.getCreatedAt());
+            dto.setCreatedDate(c.getCreatedDate());
             KnowledgeDraft src = draftIndex.get(c.getDraftId());
             if (src != null) {
                 dto.setModuleName(src.getModuleName());
@@ -685,7 +941,7 @@ public class DraftServiceImpl implements DraftService {
         List<String> effectiveStatuses = (statuses == null || statuses.isEmpty()) ? REVIEWABLE_STATUSES : statuses;
         LambdaQueryWrapper<DecompileTask> wrapper = new LambdaQueryWrapper<DecompileTask>()
                 .in(DecompileTask::getStatus, effectiveStatuses)
-                .orderByDesc(DecompileTask::getUpdatedAt);
+                .orderByDesc(DecompileTask::getUpdatedDate);
         if (systemId != null) {
             wrapper.eq(DecompileTask::getSystemId, systemId);
         }
@@ -709,7 +965,7 @@ public class DraftServiceImpl implements DraftService {
      * <p>设计要点：</p>
      * <ul>
      *   <li>三表关联通过 MyBatis-Plus 三次 selectList 内存中拼接，避免自定义 XML。</li>
-     *   <li>blockingDrafts 按 updated_at desc 排序，让复核人优先处理最近变更的草稿。</li>
+     *   <li>blockingDrafts 按 updated_date desc 排序，让复核人优先处理最近变更的草稿。</li>
      *   <li>无阻塞时 ready=true，blockingDrafts 为空列表，前端可直接放行向导。</li>
      * </ul>
      */
@@ -751,7 +1007,7 @@ public class DraftServiceImpl implements DraftService {
                 new LambdaQueryWrapper<KnowledgeDraft>()
                         .in(KnowledgeDraft::getWorkspaceId, workspaceIds)
                         .in(KnowledgeDraft::getStatus, NON_TERMINAL_DRAFT_STATUSES)
-                        .orderByDesc(KnowledgeDraft::getUpdatedAt)
+                        .orderByDesc(KnowledgeDraft::getUpdatedDate)
         );
 
         dto.setUnconfirmedCount(blocking.size());
@@ -768,7 +1024,7 @@ public class DraftServiceImpl implements DraftService {
             item.setModuleName(d.getModuleName());
             item.setStatus(d.getStatus());
             item.setWorkspaceId(d.getWorkspaceId());
-            item.setUpdatedAt(d.getUpdatedAt());
+            item.setUpdatedDate(d.getUpdatedDate());
 
             DraftWorkspace ws = wsMap.get(d.getWorkspaceId());
             if (ws != null) {
@@ -862,7 +1118,7 @@ public class DraftServiceImpl implements DraftService {
                 new LambdaQueryWrapper<KnowledgeDraft>()
                         .in(KnowledgeDraft::getWorkspaceId, workspaceIds)
                         .in(KnowledgeDraft::getStatus, NON_TERMINAL_DRAFT_STATUSES)
-                        .orderByDesc(KnowledgeDraft::getUpdatedAt)
+                        .orderByDesc(KnowledgeDraft::getUpdatedDate)
         );
 
         dto.setUnconfirmedCount(blocking.size());
@@ -879,7 +1135,7 @@ public class DraftServiceImpl implements DraftService {
             item.setModuleName(d.getModuleName());
             item.setStatus(d.getStatus());
             item.setWorkspaceId(d.getWorkspaceId());
-            item.setUpdatedAt(d.getUpdatedAt());
+            item.setUpdatedDate(d.getUpdatedDate());
 
             DraftWorkspace ws = wsMap.get(d.getWorkspaceId());
             if (ws != null) {

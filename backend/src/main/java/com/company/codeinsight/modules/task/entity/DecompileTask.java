@@ -144,7 +144,7 @@ public class DecompileTask extends BaseEntity {
 
     /**
      * 队列优先级 0-100，越大越优先。
-     * <p>SCHEDULED 默认 60（高于手动），MANUAL 默认 50；TaskQueueDispatcher 按此字段 + created_at ASC 排序。</p>
+     * <p>SCHEDULED 默认 60（高于手动），MANUAL 默认 50；TaskQueueDispatcher 按此字段 + created_date ASC 排序。</p>
      */
     @TableField("priority")
     private Integer priority;

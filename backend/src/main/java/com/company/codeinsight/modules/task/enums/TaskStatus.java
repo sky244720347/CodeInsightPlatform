@@ -45,6 +45,12 @@ public enum TaskStatus {
      */
     MODULE_HIERARCHY_REVIEW,
     /**
+     * 基线文档继承中（仅 INCREMENTAL 任务：将基线 workspace 的知识文档复制到本次 workspace，
+     * 使本次 workspace 自包含，修复版本创建/ZIP/推送残缺缺陷）。
+     * 失败后支持「重新继承基线文档」按钮单独重跑此步骤。
+     */
+    BASELINE_DOC_INHERIT,
+    /**
      * 知识生成中（整合模块/功能级 Markdown 并写入 ci_knowledge_draft 进行版本归档）
      */
     GENERATING_DOC,

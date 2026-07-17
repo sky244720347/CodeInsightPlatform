@@ -73,7 +73,7 @@ public interface DraftService {
      *
      * <p>副作用：</p>
      * <ol>
-     *   <li>工作区下所有 draft.status → CONFIRMED（统一戳 updated_at）</li>
+     *   <li>工作区下所有 draft.status → CONFIRMED（统一戳 updated_date）</li>
      *   <li>workspace.status → COMPLETED</li>
      *   <li>若任务当前处于 PENDING_REVIEW / REVIEWING，状态机推进到 CONFIRMED</li>
      *   <li>若 {@code comment} 非空，往工作区下第一篇草稿挂一条 type=PASS 的复核意见（带「任务级通过」前缀）</li>
@@ -111,7 +111,7 @@ public interface DraftService {
      * {@link #getComments(Long)} 并存，前者面向整组，后者面向单篇。</p>
      *
      * @param taskId 任务 ID
-     * @return 按 createdAt desc 排序的评论列表；工作区为空时返回空列表
+     * @return 按 createdDate desc 排序的评论列表；工作区为空时返回空列表
      */
     java.util.List<com.company.codeinsight.modules.draft.dto.TaskCommentDto> listAllCommentsByTask(Long taskId);
 
@@ -157,5 +157,26 @@ public interface DraftService {
      * @return 就绪度聚合 DTO
      */
     com.company.codeinsight.modules.draft.dto.RepositoryReadinessDto findReadiness(Long systemId, Long repositoryId);
+
+    /**
+     * v2: 草稿 diff 视图（前端 Phase 4 UI 用）
+     * <p>INITIAL 任务或无基线时返回 4 个空 list；INCREMENTAL 任务返回 4 类：</p>
+     * <ul>
+     *   <li>newRows：本次新增（baselineTaskId == null 且 module_name 不在基线中）</li>
+     *   <li>modifiedRows：本次重生成覆盖基线（baselineTaskId == null 且 module_name 在基线中）</li>
+     *   <li>inheritedRows：基线继承（baselineTaskId != null，直接复制未重跑）</li>
+     *   <li>deletedRows：本次删除（基线 workspace 有 + 本次 workspace 无）</li>
+     * </ul>
+     */
+    com.company.codeinsight.modules.draft.dto.DraftTreeDiffDto getWorkspaceTreeDiff(Long workspaceId);
+
+    /**
+     * v2: 单篇草稿的正文 DIFF — 返回基线 + 本次两份正文内容 URI，
+     * 前端用 Monaco DiffEditor 自行计算 diff 并左右对比展示。
+     *
+     * @param draftId 本次 workspace 中的草稿 ID（须为 modifiedRows 中的草稿）
+     * @return 包含 baselineContentUri 和 currentContentUri 的 DTO；无基线时 baselineContentUri 为 null
+     */
+    com.company.codeinsight.modules.draft.dto.DocumentDiffDto getDocumentDiff(Long draftId);
 }
 

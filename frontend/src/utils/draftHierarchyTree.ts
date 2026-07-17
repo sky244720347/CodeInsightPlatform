@@ -11,6 +11,8 @@ export interface DraftHierarchyTreeNode {
   classPaths?: string[];
   methodSignatures?: string[];
   children?: DraftHierarchyTreeNode[];
+  /** v2: 变更类型标记（INCREMENTAL 任务），用于树节点 Badge 展示 */
+  diffType?: 'new' | 'modified' | 'inherited' | 'deleted';
 }
 
 const NODE_TYPE_TAG: Record<DraftHierarchyTreeNode['nodeType'], { color: string; label: string }> = {
@@ -43,8 +45,13 @@ function indexDrafts(leaves: DraftTreeNode[]) {
   const byPath = new Map<string, DraftTreeNode>();
   for (const d of leaves) {
     if (d.moduleName) {
-      byModuleName.set(d.moduleName, d);
-      byModuleName.set(normalizeLabel(d.moduleName), d);
+      const existing = byModuleName.get(d.moduleName);
+      // v2: 同名草稿优先保留非继承的（baselineTaskId == null = AI 重生成/新增），
+      // 避免继承草稿覆盖 AI 草稿导致 DIFF 视图错误标记为"继承"
+      if (!existing || (existing.baselineTaskId != null && d.baselineTaskId == null)) {
+        byModuleName.set(d.moduleName, d);
+        byModuleName.set(normalizeLabel(d.moduleName), d);
+      }
     }
     if (d.filePath) {
       byPath.set(d.filePath, d);

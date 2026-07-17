@@ -33,7 +33,7 @@ export interface TokenUsageAudit {
   cost: number;
   type: string;
   status: number;
-  createdAt: string;
+  createdDate: string;
 }
 
 export function getTokenStats(systemId?: number): Promise<TokenStats> {

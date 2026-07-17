@@ -2,9 +2,12 @@ package com.company.codeinsight.modules.prompt.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.baomidou.mybatisplus.core.toolkit.CollectionUtils;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
+import com.company.codeinsight.common.util.DataUriUtil;
 import com.company.codeinsight.modules.model.entity.AiModel;
 import com.company.codeinsight.modules.prompt.dto.PromptTestResultDto;
 import com.company.codeinsight.modules.prompt.dto.PromptTestStreamEventDto;
@@ -22,6 +25,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
+import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.DigestUtils;
@@ -32,9 +36,11 @@ import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
+import java.util.Collection;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -52,6 +58,8 @@ import java.util.stream.Collectors;
 public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMapper, DecompilePrompt> implements DecompilePromptService {
 
     private static final String DEFAULT_PROMPT_TYPE = "MODULARIZE";
+    private static final String REDIS_KEY_PREFIX = "ci:meta:prompt:";
+    private static final Duration REDIS_TTL = Duration.ofHours(6);
 
     @Value("${code-insight.ai.mock:true}")
     private boolean isMockAi;
@@ -77,7 +85,231 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
     @Autowired
     private CodeRepositoryMapper codeRepositoryMapper;
 
+    @Autowired
+    private EnvStorageResolver storageResolver;
+
+    @Autowired
+    private StringRedisTemplate stringRedisTemplate;
+
     private final HttpClient httpClient = HttpClient.newBuilder().build();
+
+    @Override
+    public boolean save(DecompilePrompt entity) {
+        if (entity == null) {
+            return false;
+        }
+        String body = entity.getContent();
+        if (!StringUtils.hasText(entity.getContentUri())) {
+            entity.setContentUri("");
+        }
+        // 正文不入 PG
+        entity.setContent(null);
+        boolean ok = super.save(entity);
+        if (ok && entity.getId() != null) {
+            persistContent(entity, body);
+            entity.setContent(body);
+        }
+        return ok;
+    }
+
+    @Override
+    public boolean updateById(DecompilePrompt entity) {
+        if (entity == null || entity.getId() == null) {
+            return false;
+        }
+        String body = entity.getContent();
+        entity.setContent(null);
+        if (!StringUtils.hasText(entity.getContentUri())) {
+            DecompilePrompt existing = super.getById(entity.getId());
+            if (existing != null) {
+                entity.setContentUri(existing.getContentUri());
+                entity.setContentHash(existing.getContentHash());
+            }
+        }
+        boolean ok = super.updateById(entity);
+        if (ok && body != null) {
+            persistContent(entity, body);
+            entity.setContent(body);
+        } else if (ok) {
+            hydrate(entity);
+        }
+        return ok;
+    }
+
+    @Override
+    public DecompilePrompt getById(java.io.Serializable id) {
+        DecompilePrompt prompt = super.getById(id);
+        hydrate(prompt);
+        return prompt;
+    }
+
+    @Override
+    public List<DecompilePrompt> listByIds(Collection<? extends java.io.Serializable> idList) {
+        List<DecompilePrompt> list = super.listByIds(idList);
+        if (CollectionUtils.isNotEmpty(list)) {
+            list.forEach(this::hydrate);
+        }
+        return list;
+    }
+
+    @Override
+    public <E extends com.baomidou.mybatisplus.core.metadata.IPage<DecompilePrompt>> E page(
+            E page, com.baomidou.mybatisplus.core.conditions.Wrapper<DecompilePrompt> queryWrapper) {
+        E result = super.page(page, queryWrapper);
+        if (result != null && CollectionUtils.isNotEmpty(result.getRecords())) {
+            result.getRecords().forEach(this::hydrate);
+        }
+        return result;
+    }
+
+    /**
+     * 启动补写：对 schema 2 条 DEFAULT 提示词若 URI/文件为空，从 classpath 写入 NAS。
+     */
+    public void bootstrapSchemaDefaultContents() {
+        List<DecompilePrompt> defaults = this.list(new LambdaQueryWrapper<DecompilePrompt>()
+                .eq(DecompilePrompt::getCategory, "DEFAULT")
+                .eq(DecompilePrompt::getIsDefault, 1)
+                .in(DecompilePrompt::getPromptType,
+                        DecompilePrompt.TYPE_MODULARIZE, DecompilePrompt.TYPE_DOCUMENT_GENERATION));
+        for (DecompilePrompt p : defaults) {
+            ensureSchemaDefaultContent(p);
+            hydrate(p);
+        }
+    }
+
+    private void persistContent(DecompilePrompt entity, String body) {
+        if (entity == null || entity.getId() == null) {
+            return;
+        }
+        String uri = DataUriUtil.buildPromptUri(entity.getId());
+        String hash = DataUriUtil.writeUtf8(uri, body == null ? "" : body, storageResolver);
+        entity.setContentUri(uri);
+        entity.setContentHash(hash);
+        super.update(new LambdaUpdateWrapper<DecompilePrompt>()
+                .eq(DecompilePrompt::getId, entity.getId())
+                .set(DecompilePrompt::getContentUri, uri)
+                .set(DecompilePrompt::getContentHash, hash));
+        evictCache(entity.getId());
+        putCache(entity.getId(), body);
+    }
+
+    private void hydrate(DecompilePrompt prompt) {
+        if (prompt == null || prompt.getId() == null) {
+            return;
+        }
+        String cached = getCache(prompt.getId());
+        if (StringUtils.hasText(cached)) {
+            prompt.setContent(cached);
+            return;
+        }
+        String body = "";
+        if (StringUtils.hasText(prompt.getContentUri())) {
+            body = DataUriUtil.readUtf8(prompt.getContentUri(), storageResolver);
+        }
+        if (!StringUtils.hasText(body)) {
+            body = ensureSchemaDefaultContent(prompt);
+        }
+        prompt.setContent(body == null ? "" : body);
+        putCache(prompt.getId(), prompt.getContent());
+    }
+
+    /**
+     * 仅 2 条 schema DEFAULT：读 miss 时从 classpath 写 NAS 并回填 URI。
+     * 文件已存在且非空则不覆盖。
+     */
+    private String ensureSchemaDefaultContent(DecompilePrompt prompt) {
+        if (prompt == null || !isSchemaDefaultPrompt(prompt)) {
+            return prompt != null && StringUtils.hasText(prompt.getContentUri())
+                    ? DataUriUtil.readUtf8(prompt.getContentUri(), storageResolver) : "";
+        }
+        String uri = StringUtils.hasText(prompt.getContentUri())
+                ? prompt.getContentUri() : DataUriUtil.buildPromptUri(prompt.getId());
+        try {
+            var path = DataUriUtil.resolve(uri, storageResolver);
+            if (Files.isRegularFile(path) && Files.size(path) > 0) {
+                return DataUriUtil.readUtf8(uri, storageResolver);
+            }
+        } catch (Exception e) {
+            log.debug("check prompt file failed id={}: {}", prompt.getId(), e.getMessage());
+        }
+        String resourcePath = DecompilePrompt.TYPE_MODULARIZE.equals(prompt.getPromptType())
+                ? "analyze_prompt.md" : "module_doc_prompt.md";
+        String resourceContent = readClasspath(resourcePath);
+        if (!StringUtils.hasText(resourceContent)) {
+            return "";
+        }
+        String hash = DataUriUtil.writeUtf8(uri, resourceContent, storageResolver);
+        prompt.setContentUri(uri);
+        prompt.setContentHash(hash);
+        super.update(new LambdaUpdateWrapper<DecompilePrompt>()
+                .eq(DecompilePrompt::getId, prompt.getId())
+                .set(DecompilePrompt::getContentUri, uri)
+                .set(DecompilePrompt::getContentHash, hash));
+        putCache(prompt.getId(), resourceContent);
+        log.info("schema DEFAULT prompt bootstrapped from classpath: id={} type={} resource={}",
+                prompt.getId(), prompt.getPromptType(), resourcePath);
+        return resourceContent;
+    }
+
+    private boolean isSchemaDefaultPrompt(DecompilePrompt prompt) {
+        if (prompt == null) {
+            return false;
+        }
+        if (!"DEFAULT".equalsIgnoreCase(prompt.getCategory())) {
+            return false;
+        }
+        if (prompt.getIsDefault() == null || prompt.getIsDefault() != 1) {
+            return false;
+        }
+        String type = prompt.getPromptType();
+        return DecompilePrompt.TYPE_MODULARIZE.equals(type)
+                || DecompilePrompt.TYPE_DOCUMENT_GENERATION.equals(type);
+    }
+
+    private String readClasspath(String resourcePath) {
+        try {
+            ClassPathResource res = new ClassPathResource(resourcePath);
+            if (!res.exists()) {
+                return "";
+            }
+            return new String(res.getInputStream().readAllBytes(), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            log.warn("read classpath {} failed: {}", resourcePath, e.getMessage());
+            return "";
+        }
+    }
+
+    private String getCache(Long id) {
+        try {
+            String v = stringRedisTemplate.opsForValue().get(REDIS_KEY_PREFIX + id);
+            return StringUtils.hasText(v) ? v : null;
+        } catch (Exception e) {
+            log.debug("prompt redis get miss/degraded id={}: {}", id, e.getMessage());
+            return null;
+        }
+    }
+
+    private void putCache(Long id, String body) {
+        if (id == null || !StringUtils.hasText(body)) {
+            return;
+        }
+        try {
+            stringRedisTemplate.opsForValue().set(REDIS_KEY_PREFIX + id, body, REDIS_TTL);
+        } catch (Exception e) {
+            log.debug("prompt redis put degraded id={}: {}", id, e.getMessage());
+        }
+    }
+
+    private void evictCache(Long id) {
+        if (id == null) {
+            return;
+        }
+        try {
+            stringRedisTemplate.delete(REDIS_KEY_PREFIX + id);
+        } catch (Exception e) {
+            log.debug("prompt redis del degraded id={}: {}", id, e.getMessage());
+        }
+    }
 
     /**
      * 分页查询提示词模板，支持按名称/状态/用途/生命周期/分类/scope 过滤，按创建时间倒序排列
@@ -108,7 +340,7 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
         if (isDefault != null) {
             queryWrapper.eq(DecompilePrompt::getIsDefault, isDefault);
         }
-        queryWrapper.orderByDesc(DecompilePrompt::getCreatedAt);
+        queryWrapper.orderByDesc(DecompilePrompt::getCreatedDate);
         return this.page(page, queryWrapper);
     }
 
@@ -239,9 +471,14 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
                         .eq(DecompilePrompt::getIsDefault, 1)
                         .eq(DecompilePrompt::getCategory, "DEFAULT")
                         .last("LIMIT 1"));
+        if (oldDefault != null) {
+            hydrate(oldDefault);
+        }
         // 3. 内容比对：MD5 一致则跳过
         if (oldDefault != null) {
-            String oldMd5 = DigestUtils.md5DigestAsHex(
+            String oldMd5 = StringUtils.hasText(oldDefault.getContentHash())
+                    ? oldDefault.getContentHash()
+                    : DigestUtils.md5DigestAsHex(
                     (oldDefault.getContent() == null ? "" : oldDefault.getContent()).getBytes(StandardCharsets.UTF_8));
             if (oldMd5.equals(resourceMd5)) {
                 log.info("syncFromResource 内容一致, 跳过: promptType={}, resource={}", normalized, resourcePath);
@@ -271,8 +508,8 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
         fresh.setIsDefault(1);
         fresh.setCategory("DEFAULT");
         fresh.setScopeId(null);
-        fresh.setCreatedAt(LocalDateTime.now());
-        fresh.setUpdatedAt(LocalDateTime.now());
+        fresh.setCreatedDate(LocalDateTime.now());
+        fresh.setUpdatedDate(LocalDateTime.now());
         this.save(fresh);
         // 5. 归档旧默认（如有）
         Long oldId = null;
@@ -330,7 +567,7 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
         if (explicitId == null) {
             throw new BusinessException("任务未绑定" + label + "提示词，无法执行流水线。请前往「系统与仓库」完成提示词绑定后重新创建任务。");
         }
-        DecompilePrompt hit = this.baseMapper.selectById(explicitId);
+        DecompilePrompt hit = this.getById(explicitId);
         if (hit == null || !hit.isReleased() || !promptType.equals(hit.getPromptType())) {
             throw new BusinessException("任务绑定的" + label + "提示词无效或未发布，无法执行流水线");
         }
@@ -379,12 +616,12 @@ public class DecompilePromptServiceImpl extends ServiceImpl<DecompilePromptMappe
         if (documentId == null) {
             throw new BusinessException(scope + "未绑定文档生成提示词，请前往「系统与仓库」完成提示词绑定");
         }
-        DecompilePrompt modularize = this.baseMapper.selectById(modularizeId);
+        DecompilePrompt modularize = this.getById(modularizeId);
         if (modularize == null || !modularize.isReleased()
                 || !DecompilePrompt.TYPE_MODULARIZE.equals(modularize.getPromptType())) {
             throw new BusinessException(scope + "绑定的模块提取提示词无效或未发布，请前往「系统与仓库」重新绑定");
         }
-        DecompilePrompt document = this.baseMapper.selectById(documentId);
+        DecompilePrompt document = this.getById(documentId);
         if (document == null || !document.isReleased()
                 || !DecompilePrompt.TYPE_DOCUMENT_GENERATION.equals(document.getPromptType())) {
             throw new BusinessException(scope + "绑定的文档生成提示词无效或未发布，请前往「系统与仓库」重新绑定");

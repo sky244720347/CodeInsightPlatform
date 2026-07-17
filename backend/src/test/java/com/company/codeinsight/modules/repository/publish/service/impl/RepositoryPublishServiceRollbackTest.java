@@ -1,7 +1,10 @@
 package com.company.codeinsight.modules.repository.publish.service.impl;
 
+import com.company.codeinsight.common.config.CodeInsightEnvProperties;
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.common.storage.StorageProperties;
+import com.company.codeinsight.common.util.DataUriUtil;
 import com.company.codeinsight.modules.entrypoint.mapper.EntrypointMapper;
 import com.company.codeinsight.modules.hierarchy.mapper.ModuleHierarchyNodeMapper;
 import com.company.codeinsight.modules.knowledge.browse.RepositoryActiveKnowledgeResolver;
@@ -43,7 +46,7 @@ class RepositoryPublishServiceRollbackTest {
     @Mock private RepositoryPublishSnapshotMapper snapshotMapper;
     @Mock private DecompilePromptMapper promptMapper;
 
-    private StorageProperties storageProperties;
+    private EnvStorageResolver storageResolver;
     private RepositoryActiveKnowledgeResolver activeKnowledgeResolver;
     private RepositoryPublishServiceImpl service;
 
@@ -52,10 +55,12 @@ class RepositoryPublishServiceRollbackTest {
 
     @BeforeEach
     void setUp() {
-        storageProperties = new StorageProperties();
-        storageProperties.setMode(com.company.codeinsight.common.storage.StorageMode.LOCAL);
-        storageProperties.setLocalPath(tempRoot.toString());
-        activeKnowledgeResolver = new RepositoryActiveKnowledgeResolver(repositoryMapper, versionMapper, storageProperties);
+        storageResolver = new EnvStorageResolver(new CodeInsightEnvProperties(), new StorageProperties());
+        storageResolver.overrideRootsForTest(
+                tempRoot.resolve("data"),
+                tempRoot.resolve("ws"),
+                tempRoot.resolve("releases"));
+        activeKnowledgeResolver = new RepositoryActiveKnowledgeResolver(repositoryMapper, versionMapper, storageResolver);
         service = new RepositoryPublishServiceImpl(
                 taskMapper,
                 versionMapper,
@@ -67,8 +72,8 @@ class RepositoryPublishServiceRollbackTest {
                 snapshotMapper,
                 promptMapper,
                 new ObjectMapper(),
-                storageProperties,
-                activeKnowledgeResolver
+                activeKnowledgeResolver,
+                storageResolver
         );
     }
 
@@ -89,15 +94,20 @@ class RepositoryPublishServiceRollbackTest {
         version.setSourceCommit("commit-rollback-target");
         when(versionMapper.selectById(99L)).thenReturn(version);
 
+        String epUri = DataUriUtil.buildSnapshotEntrypointsUri(10L, 99L);
+        String hierUri = DataUriUtil.buildSnapshotModuleHierarchyUri(10L, 99L);
+        DataUriUtil.writeUtf8(epUri, "[]", storageResolver);
+        DataUriUtil.writeUtf8(hierUri, "[]", storageResolver);
+
         RepositoryPublishSnapshot snapshot = new RepositoryPublishSnapshot();
         snapshot.setRepositoryId(10L);
         snapshot.setVersionId(99L);
         snapshot.setTaskId(7L);
-        snapshot.setEntrypointsJson("[]");
-        snapshot.setModuleHierarchyJson("[]");
+        snapshot.setEntrypointsUri(epUri);
+        snapshot.setModuleHierarchyUri(hierUri);
         when(snapshotMapper.selectByVersionId(99L)).thenReturn(snapshot);
 
-        Path releaseDir = storageProperties.releaseDir(1L, 10L, "v1.0.0");
+        Path releaseDir = storageResolver.releaseDir(1L, 10L, "v1.0.0");
         Files.createDirectories(releaseDir);
 
         service.rollbackToVersion(10L, 99L, "tester");
@@ -140,11 +150,16 @@ class RepositoryPublishServiceRollbackTest {
         version.setStatus("PUSHED");
         when(versionMapper.selectById(99L)).thenReturn(version);
 
+        String epUri = DataUriUtil.buildSnapshotEntrypointsUri(10L, 99L);
+        String hierUri = DataUriUtil.buildSnapshotModuleHierarchyUri(10L, 99L);
+        DataUriUtil.writeUtf8(epUri, "[]", storageResolver);
+        DataUriUtil.writeUtf8(hierUri, "[]", storageResolver);
+
         RepositoryPublishSnapshot snapshot = new RepositoryPublishSnapshot();
         snapshot.setRepositoryId(10L);
         snapshot.setVersionId(99L);
-        snapshot.setEntrypointsJson("[]");
-        snapshot.setModuleHierarchyJson("[]");
+        snapshot.setEntrypointsUri(epUri);
+        snapshot.setModuleHierarchyUri(hierUri);
         when(snapshotMapper.selectByVersionId(99L)).thenReturn(snapshot);
 
         BusinessException ex = Assertions.assertThrows(BusinessException.class,

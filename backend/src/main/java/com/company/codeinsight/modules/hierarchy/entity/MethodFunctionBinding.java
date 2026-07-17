@@ -4,10 +4,11 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
+import lombok.EqualsAndHashCode;
 
 import java.math.BigDecimal;
-import java.time.LocalDateTime;
 
 /**
  * 方法 → 功能 反向绑定实体。
@@ -22,8 +23,9 @@ import java.time.LocalDateTime;
  * @see com.company.codeinsight.modules.hierarchy.entity.ModuleHierarchyNode
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_method_function_binding")
-public class MethodFunctionBinding {
+public class MethodFunctionBinding extends BaseEntity {
 
     @TableId(type = IdType.AUTO)
     private Long id;
@@ -63,8 +65,4 @@ public class MethodFunctionBinding {
 
     /** AI 输出的归属置信度（0-1，可空） */
     private BigDecimal confidence;
-
-    private LocalDateTime createdAt;
-
-    private LocalDateTime updatedAt;
 }

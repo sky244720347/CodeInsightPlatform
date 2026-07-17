@@ -12,7 +12,9 @@ import 'highlight.js/styles/github.css';
  * 1. 基于 react-markdown + remark-gfm：支持标题、列表、表格、任务清单、删除线等 GFM 语法；
  * 2. 通过 rehype-highlight 为代码块提供语法高亮，主题与 premium 视觉系统一致；
  * 3. 自定义 <code> 渲染器：识别 ```mermaid 代码块，调用 mermaid 渲染出 SVG 图表；
- * 4. 当内容变化时，组件会清空旧的 mermaid 渲染结果并重新生成，保证与编辑器中的源码实时同步。
+ * 4. 当内容变化时，组件会清空旧的 mermaid 渲染结果并重新生成，保证与编辑器中的源码实时同步；
+ * 5. Mermaid 语法失败时禁止把错误 SVG 注入 document.body（suppressErrorRendering），
+ *    仅在组件内展示「Mermaid 渲染失败」UI，避免 residual DOM 污染其它页面。
  */
 
 export interface MarkdownViewProps {
@@ -28,6 +30,8 @@ function initMermaid() {
   if (mermaidInitialized) return;
   mermaid.initialize({
     startOnLoad: false,
+    // 禁止把 "Syntax error in text" 错误 SVG 直接插入 DOM；失败时抛错由调用方处理
+    suppressErrorRendering: true,
     securityLevel: 'loose',
     theme: 'neutral',
     fontFamily:
@@ -48,6 +52,17 @@ function initMermaid() {
     },
   });
   mermaidInitialized = true;
+}
+
+/**
+ * 清理 mermaid.render 可能残留在 document 上的临时节点。
+ * 即使开启 suppressErrorRendering，部分版本仍可能留下 #d{id} / #{id} 元素。
+ */
+function cleanupMermaidTempNodes(renderId: string) {
+  if (typeof document === 'undefined') return;
+  document.getElementById(renderId)?.remove();
+  document.getElementById(`d${renderId}`)?.remove();
+  document.querySelectorAll(`[id^="d${renderId}"]`).forEach((el) => el.remove());
 }
 
 /**
@@ -76,23 +91,39 @@ const MermaidBlock: React.FC<{ source: string; idHint: string }> = ({ source, id
   useEffect(() => {
     initMermaid();
     let cancelled = false;
-    const renderId = `mmd-${idHint}-${Date.now()}`;
+    // id 仅允许字母数字与连字符，避免 mermaid 选择器异常
+    const safeHint = String(idHint).replace(/[^a-zA-Z0-9_-]/g, '-');
+    const renderId = `mmd-${safeHint}-${Date.now()}`;
+
+    const trimmed = source.trim();
+    if (!trimmed) {
+      setError('空的 Mermaid 代码块');
+      setSvg('');
+      return () => {
+        cancelled = true;
+      };
+    }
+
     mermaid
-      .render(renderId, source)
+      .render(renderId, trimmed)
       .then(({ svg: rendered }) => {
+        cleanupMermaidTempNodes(renderId);
         if (!cancelled) {
           setSvg(rendered);
           setError('');
         }
       })
       .catch((err) => {
+        cleanupMermaidTempNodes(renderId);
         if (!cancelled) {
           setError(err instanceof Error ? err.message : String(err));
           setSvg('');
         }
       });
+
     return () => {
       cancelled = true;
+      cleanupMermaidTempNodes(renderId);
     };
   }, [source, idHint]);
 
@@ -140,8 +171,7 @@ const MarkdownView: React.FC<MarkdownViewProps> = ({ content, className }) => {
             const match = /language-(\w+)/.exec(codeClassName || '');
             const lang = match?.[1];
             if (!inline && lang === 'mermaid') {
-              const source = String(children).replace(/\n$/, '');
-              // 用源码哈希作为 idHint，保证同一图多次渲染时稳定
+              const source = String(children).replace(/\n$/, '').trim();
               const idHint = `${mermaidBlocks.indexOf(source)}-${source.length}`;
               return <MermaidBlock source={source} idHint={idHint} />;
             }

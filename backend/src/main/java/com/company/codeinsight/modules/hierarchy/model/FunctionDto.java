@@ -66,4 +66,17 @@ public class FunctionDto {
     public void setConfirmedYn(String raw) {
         this.confirmed = YnBooleanJson.parse(raw);
     }
+
+    /**
+     * v1: INCREMENTAL 任务的"AI 重提炼"标识
+     * <p>非空 = 本次 AI 重新提炼了该 FUNCTION 节点（来源入口类全限定名）；空 = 基线继承。</p>
+     * <p>Phase 4 UI 用此字段做"AI 重提炼"vs"基线继承"分类（橙色 vs 绿色 Tag）。</p>
+     */
+    private String sourceEntryClass;
+
+    /**
+     * v1 重构: methodSignature 级 diff 状态 (new / modified / unchanged / deleted)
+     * <p>由 reverseEngineerDiff 在 AI 输出后按 methodSignature 反查标记</p>
+     */
+    private String diffStatus;
 }

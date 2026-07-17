@@ -87,6 +87,6 @@ public class RepositoryReadinessDto {
         /**
          * 草稿最近一次更新时间，用于排序与展示
          */
-        private LocalDateTime updatedAt;
+        private LocalDateTime updatedDate;
     }
 }

@@ -60,4 +60,17 @@ public class ModuleDto {
 
     /** 子模块列表（按 sub_module_id 索引） */
     private Map<String, SubModuleDto> subModules = new LinkedHashMap<>();
+
+    /**
+     * v1: INCREMENTAL 任务的"AI 重提炼"标识（仅 FUNCTION 级节点有值）
+     * <p>MODULE 级节点的 sourceEntryClass 通常为 null；FUNCTION 级节点的 sourceEntryClass
+     * = 本次 AI 重提炼的入口类全限定名。Phase 4 UI 用此字段做"AI 重提炼"vs"基线继承"分类。</p>
+     */
+    private String sourceEntryClass;
+
+    /**
+     * v1: 模块级 diff 标识（new / modified / unchanged / deleted）
+     * <p>前端 Phase 4 DIFF 视图用此字段做 4 组分类。INITIAL 任务全部 null。</p>
+     */
+    private String diffStatus;
 }

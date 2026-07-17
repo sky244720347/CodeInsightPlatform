@@ -3,17 +3,18 @@ package com.company.codeinsight.modules.ai.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 /**
  * AI 调用历史明细实体类
  * 映射数据库中的 ci_ai_call_record 表，记录每一次大模型 API 的请求与响应审计日志。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_ai_call_record")
-public class AiCallRecord {
+public class AiCallRecord extends BaseEntity {
 
     /**
      * 自增主键 ID
@@ -83,10 +84,4 @@ public class AiCallRecord {
 
     /** 调用阶段标识：MODULE_HIERARCHY / GENERATING_DOC 等 */
     private String callStage;
-
-    /**
-     * 记录创建的时间
-     */
-    private LocalDateTime createdAt;
 }
-

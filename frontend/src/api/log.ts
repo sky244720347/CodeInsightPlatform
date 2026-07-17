@@ -11,7 +11,7 @@ export interface OperationLog {
   ipAddress: string | null;
   exceptionMsg: string | null;
   isSuccess: number;
-  createdAt: string;
+  createdDate: string;
 }
 
 export function listLogs(params: {

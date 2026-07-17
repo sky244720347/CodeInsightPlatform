@@ -76,7 +76,7 @@ public class AiSummaryModuleDocTest {
         mc.setCallerMethod("list");
         mc.setDependencyName("userService:UserService");
         mc.setTargetMethod("findById");
-        mc.setCreatedAt(java.time.LocalDateTime.now());
+        mc.setCreatedDate(java.time.LocalDateTime.now());
         methodCallMapper.insert(mc);
 
         // 4. 插入 ModuleHierarchyNode（手动跳过 AI 提炼，直接构造 DTO）
@@ -255,7 +255,7 @@ public class AiSummaryModuleDocTest {
         mc.setCallerMethod("run");
         mc.setDependencyName("x:X");
         mc.setTargetMethod("go");
-        mc.setCreatedAt(java.time.LocalDateTime.now());
+        mc.setCreatedDate(java.time.LocalDateTime.now());
         methodCallMapper.insert(mc);
 
         ModuleHierarchyNode modRow = new ModuleHierarchyNode();

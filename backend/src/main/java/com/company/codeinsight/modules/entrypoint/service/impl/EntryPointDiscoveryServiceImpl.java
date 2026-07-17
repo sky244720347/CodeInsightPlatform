@@ -83,6 +83,99 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
     }
 
     @Override
+    public List<DiscoveredEntrypoint> discoverEntriesInFiles(Long taskId, File projectDir, EntryPointConfig config,
+                                                             Set<String> relativePaths) {
+        if (relativePaths == null || relativePaths.isEmpty()) {
+            log.info("discoverEntriesInFiles: relativePaths 为空，taskId={} 不需要识别", taskId);
+            return Collections.emptyList();
+        }
+        if (projectDir == null || !projectDir.exists() || !projectDir.isDirectory()) {
+            log.warn("discoverEntriesInFiles: projectDir 无效 taskId={}", taskId);
+            return Collections.emptyList();
+        }
+        EntryPointConfig cfg = normalizeConfig(config);
+
+        // 1) 加载本任务的调用链（基线继承后的版本），构建 className -> file_path 索引
+        //    用于入口识别时定位类路径（特别是多模块项目）
+        List<MethodCall> calls = methodCallService.listByTaskId(taskId);
+        Map<String, String> shortNameToFilePath = new HashMap<>();
+        for (MethodCall mc : calls) {
+            if (StringUtils.hasText(mc.getClassName()) && StringUtils.hasText(mc.getFilePath())) {
+                shortNameToFilePath.putIfAbsent(mc.getClassName(), mc.getFilePath());
+            }
+        }
+
+        // 2) 对 relativePaths 内的每个 .java 文件做单文件识别
+        Map<String, EntryPoint> entries = new LinkedHashMap<>();
+        int parsedFiles = 0;
+        int parseFailures = 0;
+        for (String relativePath : relativePaths) {
+            if (!StringUtils.hasText(relativePath) || !relativePath.endsWith(".java")) {
+                continue;
+            }
+            File file = new File(projectDir, relativePath.replace('/', File.separatorChar));
+            if (!file.exists() || !file.isFile()) {
+                log.warn("discoverEntriesInFiles: 变更文件不存在 taskId={} path={}", taskId, relativePath);
+                continue;
+            }
+            ParsedClassInfo info;
+            try {
+                info = javaParserService.parseFile(file);
+                parsedFiles++;
+            } catch (Exception e) {
+                parseFailures++;
+                log.warn("discoverEntriesInFiles: parseFile 失败 taskId={} path={} err={}",
+                        taskId, relativePath, e.getMessage());
+                continue;
+            }
+            if (info == null || !StringUtils.hasText(info.getClassName())) {
+                continue;
+            }
+            String fq = fqName(info);
+
+            if (isExcluded(fq, info, cfg)) continue;
+            if (isClassExcludedByTarget(fq, cfg)) continue;
+
+            String matchedType = matchEntryType(fq, info, cfg);
+            if (matchedType == null) continue;
+
+            String annotation = extractTriggerAnnotation(info.getAnnotations(), matchedType);
+            if (annotation == null) {
+                annotation = firstHitAnnotation(info, cfg.rulesFor(matchedType));
+            }
+            // 用 relativePath 强制覆盖（确保 filePath 是相对路径格式，不是绝对路径）
+            EntryPoint ep = new EntryPoint();
+            ep.setClassName(fq);
+            ep.setFilePath(relativePath);
+            ep.setEntryType(matchedType);
+            ep.setAnnotation(annotation);
+            // remark 字段全量识别会调 buildRemark；这里简化：增量识别不生成 remark
+            ep.setRemark(null);
+            if (!entries.containsKey(fq)) {
+                entries.put(fq, ep);
+            }
+        }
+
+        // 3) 为每个识别出的入口抽取方法列表
+        List<DiscoveredEntrypoint> result = new ArrayList<>(entries.size());
+        for (EntryPoint ep : entries.values()) {
+            List<DiscoveredMethod> methods = filterMethodsByExcludeTargets(
+                    extractMethodsForEntry(projectDir, ep), ep.getClassName(), cfg);
+            if (methods.isEmpty()) {
+                continue;
+            }
+            DiscoveredEntrypoint dep = new DiscoveredEntrypoint();
+            dep.setBase(ep);
+            dep.setMethods(methods);
+            result.add(dep);
+        }
+
+        log.info("EntryPointDiscoveryService.discoverEntriesInFiles done. taskId={} parsedFiles={} parseFailures={} entries={}",
+                taskId, parsedFiles, parseFailures, result.size());
+        return result;
+    }
+
+    @Override
     public String collectReachableSource(Long taskId, String entryClassName, File projectDir) {
         return collectReachableSource(taskId, entryClassName, projectDir, null);
     }
@@ -406,6 +499,7 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
                 dm.setAnnotation(extractHttpMappingAnnotation(info, m));
                 dm.setHttpPath(m.getRequestMapping());
                 dm.setHttpMethod(m.getHttpMethod());
+                dm.setBodyHash(m.getBodyHash());
                 out.add(dm);
             }
         } else if ("APPLICATION".equals(entryType) || "MAIN".equals(entryType)) {
@@ -415,6 +509,7 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
                     dm.setMethodName(m.getName());
                     dm.setMethodSignature(buildSignature(entry.getClassName(), m));
                     dm.setAnnotation("main");
+                    dm.setBodyHash(m.getBodyHash());
                     out.add(dm);
                     break;
                 }
@@ -432,6 +527,7 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
                 dm.setMethodName(m.getName());
                 dm.setMethodSignature(buildSignature(entry.getClassName(), m));
                 dm.setAnnotation("class-level: " + classLevelAnn);
+                dm.setBodyHash(m.getBodyHash());
                 out.add(dm);
             }
         } else {
@@ -441,6 +537,7 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
                 DiscoveredMethod dm = new DiscoveredMethod();
                 dm.setMethodName(m.getName());
                 dm.setMethodSignature(buildSignature(entry.getClassName(), m));
+                dm.setBodyHash(m.getBodyHash());
                 out.add(dm);
             }
         }

@@ -3,16 +3,18 @@ package com.company.codeinsight.modules.log.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 /**
  * 系统操作审计日志实体类
  * 映射 ci_operation_log 表，记录包含用户登录、工作区更新、推送 Git 以及任务发布等的历史操作。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_operation_log")
-public class OperationLog {
+public class OperationLog extends BaseEntity {
 
     /**
      * 自增主键 ID
@@ -64,10 +66,4 @@ public class OperationLog {
      * 操作是否成功：0-失败, 1-成功
      */
     private Integer isSuccess;
-
-    /**
-     * 日志记录时间
-     */
-    private LocalDateTime createdAt;
 }
-

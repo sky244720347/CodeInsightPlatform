@@ -17,7 +17,7 @@ export interface KnowledgeVersion {
   confirmedBy: string;
   confirmedAt: string;
   pushedAt: string | null;
-  createdAt: string;
+  createdDate: string;
   /** 是否为仓库当前生效的已发布版本 */
   activePublished?: boolean;
 }
@@ -34,7 +34,7 @@ export interface PushTask {
   enqueuedAt: string;
   startedAt?: string;
   completedAt?: string;
-  createdAt: string;
+  createdDate: string;
 }
 
 export function createVersion(taskId: number, versionNum: string, confirmedBy?: string): Promise<KnowledgeVersion> {

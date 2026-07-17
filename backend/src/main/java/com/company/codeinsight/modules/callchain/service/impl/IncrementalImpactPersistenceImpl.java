@@ -1,5 +1,6 @@
 package com.company.codeinsight.modules.callchain.service.impl;
 
+import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.modules.callchain.model.ImpactTrace;
 import com.company.codeinsight.modules.callchain.model.IncrementalImpact;
 import com.company.codeinsight.modules.callchain.service.IncrementalImpactPersistence;
@@ -16,14 +17,12 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.SerializationFeature;
 import com.fasterxml.jackson.datatype.jsr310.JavaTimeModule;
 import lombok.extern.slf4j.Slf4j;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
 import java.io.IOException;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
-import java.util.List;
 
 @Slf4j
 @Service
@@ -33,12 +32,12 @@ public class IncrementalImpactPersistenceImpl implements IncrementalImpactPersis
 
     private final ModuleHierarchyService moduleHierarchyService;
     private final ObjectMapper objectMapper;
+    private final EnvStorageResolver storageResolver;
 
-    @Value("${code-insight.storage.local-path:./storage}")
-    private String storageBase;
-
-    public IncrementalImpactPersistenceImpl(ModuleHierarchyService moduleHierarchyService) {
+    public IncrementalImpactPersistenceImpl(ModuleHierarchyService moduleHierarchyService,
+                                            EnvStorageResolver storageResolver) {
         this.moduleHierarchyService = moduleHierarchyService;
+        this.storageResolver = storageResolver;
         this.objectMapper = new ObjectMapper()
                 .registerModule(new JavaTimeModule())
                 .disable(SerializationFeature.WRITE_DATES_AS_TIMESTAMPS);
@@ -84,7 +83,7 @@ public class IncrementalImpactPersistenceImpl implements IncrementalImpactPersis
     }
 
     private File impactFile(Long taskId) {
-        return new File(storageBase, "task_" + taskId + "/" + FILE_NAME);
+        return storageResolver.taskDataDir(taskId).resolve(FILE_NAME).toFile();
     }
 
     private IncrementalImpactDto toDto(Long taskId, IncrementalImpact impact, IncrementalContext ctx) {

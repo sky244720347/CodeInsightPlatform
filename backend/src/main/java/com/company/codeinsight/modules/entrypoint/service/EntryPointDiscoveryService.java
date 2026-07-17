@@ -6,6 +6,7 @@ import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
 
 import java.io.File;
 import java.util.List;
+import java.util.Set;
 
 /**
  * 反编译项目入口识别服务
@@ -34,6 +35,27 @@ public interface EntryPointDiscoveryService {
      * </p>
      */
     List<DiscoveredEntrypoint> discoverEntriesWithMethods(Long taskId, File projectDir, EntryPointConfig config);
+
+    /**
+     * v1: 增量入口识别 — 仅对指定相对路径列表的 .java 文件做识别。
+     * <p>实现要点：
+     * <ul>
+     *   <li>复用 {@link #discoverEntriesWithMethods(Long, File, EntryPointConfig)} 的判定规则
+     *       （4 类入口：Controller / ScheduledJob / MqListener / Other），不走全项目 parseDirectory</li>
+     *   <li>对 relativePaths 内的每个文件调 {@code JavaParserService.parseFile} 单文件解析</li>
+     *   <li>单文件解析失败不中断整批；类自身判定失败不识别为入口</li>
+     *   <li>判定逻辑（{@code isExcluded / matchEntryType / addEntry}）与全量识别保持一致</li>
+     * </ul>
+     * </p>
+     *
+     * @param taskId        任务 ID
+     * @param projectDir    项目目录（temp_repos/task_{taskId}）
+     * @param config        入口识别配置（include/exclude 规则）
+     * @param relativePaths 相对路径列表（相对于 projectDir，例如 "src/main/java/com/demo/UserController.java"）
+     * @return 识别到的入口（含方法列表）
+     */
+    List<DiscoveredEntrypoint> discoverEntriesInFiles(Long taskId, File projectDir, EntryPointConfig config,
+                                                      Set<String> relativePaths);
 
     /** 兼容旧调用 */
     String collectReachableSource(Long taskId, String entryClassName, File projectDir);

@@ -177,8 +177,8 @@ const TokenAudit: React.FC = () => {
     },
     {
       title: '创建时间',
-      dataIndex: 'createdAt',
-      key: 'createdAt',
+      dataIndex: 'createdDate',
+      key: 'createdDate',
       render: (date: string) => new Date(date).toLocaleString(),
     },
   ];

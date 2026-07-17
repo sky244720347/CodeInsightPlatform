@@ -39,4 +39,10 @@ public class DiscoveredMethod {
      * 非控制器方法时为 null。
      */
     private String httpMethod;
+
+    /**
+     * 方法体内容哈希（同 {@link com.company.codeinsight.modules.parser.model.ParsedClassInfo.MethodInfo#bodyHash}）
+     * 用于 INCREMENTAL 入口 DIFF 识别「同签名内容变更」。
+     */
+    private String bodyHash;
 }

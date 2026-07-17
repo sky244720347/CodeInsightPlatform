@@ -9,6 +9,6 @@ import java.util.List;
 @Mapper
 public interface EntryScanTrialMapper extends BaseMapper<EntryScanTrialEntity> {
 
-    @Select("SELECT DISTINCT repository_id FROM ci_entry_scan_trial")
+    @Select("SELECT DISTINCT repository_id FROM ci_entry_scan_trial WHERE is_deleted = 0")
     List<Long> listDistinctRepositoryIds();
 }

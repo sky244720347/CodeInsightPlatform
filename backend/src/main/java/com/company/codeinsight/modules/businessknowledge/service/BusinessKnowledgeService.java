@@ -8,7 +8,7 @@ import com.company.codeinsight.modules.businessknowledge.entity.BusinessKnowledg
  *
  * <p>对外暴露：</p>
  * <ul>
- *     <li>{@link #getBySystemId(Long)} — 供前端获取完整对象（含 version / updatedAt 等元数据）</li>
+ *     <li>{@link #getBySystemId(Long)} — 供前端获取完整对象（含 version / updatedDate 等元数据）</li>
  *     <li>{@link #getContentBySystemId(Long)} — 供 AI 调用方取纯文本（无配置时返回空串）</li>
  *     <li>{@link #upsert(Long, String, String)} — 前端保存入口（覆盖式，自动 version+1）</li>
  * </ul>

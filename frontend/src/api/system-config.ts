@@ -5,7 +5,7 @@ export interface SystemConfig {
   value: string;
   description?: string;
   updatedBy?: string;
-  updatedAt?: string;
+  updatedDate?: string;
 }
 
 export const listSystemConfig = (): Promise<SystemConfig[]> => {

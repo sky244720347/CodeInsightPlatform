@@ -13,6 +13,7 @@ const STAGE_LABELS: Record<string, string> = {
   AI_ANALYZING: 'AI 分析',
   MODULE_HIERARCHY: '模块层级提炼',
   MODULE_HIERARCHY_REVIEW: '模块层级复核',
+  BASELINE_DOC_INHERIT: '基线文档继承',
   GENERATING_DOC: '文档生成',
   PENDING_REVIEW: '待复核',
   CONFIRMED: '已确认',
@@ -63,7 +64,7 @@ const PipelineAnalysis: React.FC = () => {
         const colorMap: Record<string, string> = {
           PULLING_CODE: 'blue', PARSING_CODE: 'cyan', ENTRYPOINT_DISCOVERY: 'geekblue', ENTRYPOINT_REVIEW: 'gold',
           AI_ANALYZING: 'orange', MODULE_HIERARCHY: 'gold',
-          MODULE_HIERARCHY_REVIEW: 'geekblue', GENERATING_DOC: 'lime',
+          MODULE_HIERARCHY_REVIEW: 'geekblue', BASELINE_DOC_INHERIT: 'cyan', GENERATING_DOC: 'lime',
           PENDING_REVIEW: 'magenta', CONFIRMED: 'green', PUSHED: 'green', FAILED: 'red',
         };
         return <Tag color={colorMap[v] ?? 'default'}>{label}</Tag>;

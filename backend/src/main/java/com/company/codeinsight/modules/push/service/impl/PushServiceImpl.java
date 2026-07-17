@@ -18,7 +18,7 @@ import org.springframework.transaction.annotation.Transactional;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.company.codeinsight.common.auth.OperatorContext;
 import com.company.codeinsight.common.exception.BusinessException;
-import com.company.codeinsight.common.storage.StorageProperties;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.modules.repository.publish.entity.RepositoryPublishSnapshot;
 import com.company.codeinsight.modules.repository.publish.service.RepositoryPublishService;
 import com.company.codeinsight.common.util.DraftFileUtil;
@@ -97,7 +97,7 @@ public class PushServiceImpl implements PushService {
     private StringRedisTemplate redisTemplate;
 
     @Autowired
-    private com.company.codeinsight.common.storage.StorageProperties storageProperties;
+    private com.company.codeinsight.common.storage.EnvStorageResolver storageResolver;
 
     @Autowired
     private RepositoryPublishService repositoryPublishService;
@@ -152,7 +152,7 @@ public class PushServiceImpl implements PushService {
         pushTask.setRetryCount(0);
         pushTask.setMaxRetries(3);
         pushTask.setEnqueuedAt(LocalDateTime.now());
-        pushTask.setCreatedAt(LocalDateTime.now());
+        pushTask.setCreatedDate(LocalDateTime.now());
         pushTaskMapper.insert(pushTask);
 
         // 更新 KnowledgeVersion 状态
@@ -211,7 +211,7 @@ public class PushServiceImpl implements PushService {
 
         // 校验草稿内容中不能残留 `- [ ]` 待确认标记
         for (KnowledgeDraft draft : drafts) {
-            File draftFile = DraftFileUtil.resolve(draft.getContentUri(), storageProperties).toFile();
+            File draftFile = DraftFileUtil.resolve(draft.getContentUri(), storageResolver).toFile();
             if (draftFile.exists()) {
                 try {
                     String content = Files.readString(draftFile.toPath());
@@ -361,7 +361,8 @@ public class PushServiceImpl implements PushService {
     private void handlePushFailure(PushTask pushTask, KnowledgeVersion version, Exception e) {
         int retryCount = pushTask.getRetryCount() != null ? pushTask.getRetryCount() + 1 : 1;
         pushTask.setRetryCount(retryCount);
-        pushTask.setErrorMessage(e.getMessage());
+        pushTask.setErrorMessage(com.company.codeinsight.common.util.DbStringLimits.truncate(
+                e.getMessage(), com.company.codeinsight.common.util.DbStringLimits.ERROR_REASON));
 
         if (retryCount < pushTask.getMaxRetries()) {
             // 未达最大重试次数，重新入队
@@ -393,7 +394,8 @@ public class PushServiceImpl implements PushService {
 
     private void markTaskFailed(PushTask pushTask, String errorMessage) {
         pushTask.setStatus(PushTaskStatus.FAILED.name());
-        pushTask.setErrorMessage(errorMessage);
+        pushTask.setErrorMessage(com.company.codeinsight.common.util.DbStringLimits.truncate(
+                errorMessage, com.company.codeinsight.common.util.DbStringLimits.ERROR_REASON));
         pushTask.setCompletedAt(LocalDateTime.now());
         pushTaskMapper.updateById(pushTask);
     }
@@ -404,7 +406,7 @@ public class PushServiceImpl implements PushService {
                 version.getTaskId(), version.getId(), operator);
         DecompileTask task = taskMapper.selectById(version.getTaskId());
         if (task != null) {
-            java.nio.file.Path releaseDir = storageProperties.releaseDir(
+            java.nio.file.Path releaseDir = storageResolver.releaseDir(
                     task.getSystemId(), task.getRepositoryId(), version.getVersionNum());
             repositoryPublishService.exportArtifactsToRelease(releaseDir, snapshot);
         }
@@ -426,6 +428,6 @@ public class PushServiceImpl implements PushService {
         return pushTaskMapper.selectList(
                 new LambdaQueryWrapper<PushTask>()
                         .eq(PushTask::getVersionId, versionId)
-                        .orderByDesc(PushTask::getCreatedAt));
+                        .orderByDesc(PushTask::getCreatedDate));
     }
 }

@@ -16,7 +16,7 @@ public interface DecompileTaskService extends IService<DecompileTask> {
     Page<DecompileTask> listTasksPage(int current, int size, Long systemId, String status, String type,
                                       List<String> statuses, String triggerSource,
                                       String keyword, String modelName,
-                                      String createdAtStart, String createdAtEnd);
+                                      String createdDateStart, String createdDateEnd);
 
     Map<String, Long> countByStatusGroup(Long systemId);
 
@@ -77,6 +77,8 @@ public interface DecompileTaskService extends IService<DecompileTask> {
     void retryTask(Long id);
     void resumeAfterHierarchyReview(Long id);
     void rebuildModuleHierarchy(Long id);
+    /** 重新继承基线文档（仅 INCREMENTAL 任务 BASELINE_DOC_INHERIT 失败时可用） */
+    void retryBaselineInherit(Long id);
     void resumeAfterEntrypointReview(Long id);
 
     void resumeAfterEntrypointReview(Long id, java.util.List<com.company.codeinsight.modules.entrypoint.model.ExcludeTarget> additionalExcludes);

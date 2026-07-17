@@ -40,7 +40,7 @@ public class TaskQueueClaimService {
         task.setClaimedBy(worker);
         task.setClaimedAt(now);
         task.setLeaseUntil(now.plusHours(clusterProperties.getTaskLeaseHours()));
-        task.setUpdatedAt(now);
+        task.setUpdatedDate(now);
         taskMapper.updateById(task);
         return task;
     }
@@ -57,7 +57,7 @@ public class TaskQueueClaimService {
         task.setClaimedBy(null);
         task.setClaimedAt(null);
         task.setLeaseUntil(null);
-        task.setUpdatedAt(LocalDateTime.now());
+        task.setUpdatedDate(LocalDateTime.now());
         taskMapper.updateById(task);
     }
 }

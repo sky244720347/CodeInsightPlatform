@@ -3,7 +3,6 @@ package com.company.codeinsight.modules.repository.entity;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
-import com.baomidou.mybatisplus.annotation.TableLogic;
 import com.baomidou.mybatisplus.annotation.TableName;
 import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
@@ -13,7 +12,7 @@ import java.time.LocalDateTime;
 /**
  * Git 代码仓库配置实体类
  * 对应数据库中的 ci_repository 表，存储 Git 仓库地址、克隆分支、访问帐密、扫描过滤规则及最近一次分析详情。
- * 通过 deleted_at + @TableLogic 实现软删除。
+ * 软删除通过 BaseEntity.isDeleted + MyBatis-Plus @TableLogic 实现。
  */
 @Data
 @EqualsAndHashCode(callSuper = true)
@@ -110,9 +109,6 @@ public class CodeRepository extends BaseEntity {
     @TableField("entry_scan_config")
     private String entryScanConfig;
 
-    /**
-     * 逻辑删除时间。NULL=未删除，非空=已删除时间。
-     */
     /** 仓库级模块提取提示词 ID（FK → ci_prompt.id） */
     private Long modularizePromptId;
 
@@ -130,8 +126,4 @@ public class CodeRepository extends BaseEntity {
 
     /** 最近一次成功发布到仓库的操作人 */
     private String publishedBy;
-
-    @TableLogic(value = "null", delval = "now()")
-    private LocalDateTime deletedAt;
 }
-

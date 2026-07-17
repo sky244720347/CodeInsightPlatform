@@ -115,7 +115,7 @@ public class MethodFunctionBindingPersistTest {
         mc.setTargetSignature("findById");
         mc.setExpression("userService.findById(id)");
         mc.setLineNumber(20);
-        mc.setCreatedAt(LocalDateTime.now());
+        mc.setCreatedDate(LocalDateTime.now());
         methodCallMapper.insert(mc);
     }
 

@@ -135,8 +135,8 @@ const DraftReviewListPage: React.FC = () => {
     },
     {
       title: '创建时间',
-      dataIndex: 'createdAt',
-      key: 'createdAt',
+      dataIndex: 'createdDate',
+      key: 'createdDate',
       width: 170,
       render: (t: string) => (t ? new Date(t).toLocaleString() : '-'),
     },

@@ -82,9 +82,9 @@ public class DashboardServiceImpl implements DashboardService {
             dailyDuration.put(date, 0L);
         }
         all.stream()
-                .filter(t -> t.getCreatedAt() != null)
+                .filter(t -> t.getCreatedDate() != null)
                 .forEach(t -> {
-                    String date = t.getCreatedAt().format(DTF);
+                    String date = t.getCreatedDate().format(DTF);
                     if (dailyCount.containsKey(date)) {
                         dailyCount.merge(date, 1L, Long::sum);
                         if (t.getDurationMs() != null) {
@@ -241,7 +241,7 @@ public class DashboardServiceImpl implements DashboardService {
     public List<Map<String, Object>> getSystemCoverage() {
         List<SystemApplication> systems = systemMapper.selectList(
                 new LambdaQueryWrapper<SystemApplication>()
-                        .isNull(SystemApplication::getDeletedAt)
+                        .eq(SystemApplication::getIsDeleted, 0)
         );
         if (systems.isEmpty()) return Collections.emptyList();
 

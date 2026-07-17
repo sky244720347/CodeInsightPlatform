@@ -4,17 +4,18 @@ import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableId;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableName;
+import com.company.codeinsight.common.model.BaseEntity;
 import lombok.Data;
-
-import java.time.LocalDateTime;
+import lombok.EqualsAndHashCode;
 
 /**
  * 模块层级持久化实体（3 行结构通用）
  * 对应 ci_module_hierarchy 表：用 level + parent_id 树形表示模块/子模块/功能三级。
  */
 @Data
+@EqualsAndHashCode(callSuper = true)
 @TableName("ci_module_hierarchy")
-public class ModuleHierarchyNode {
+public class ModuleHierarchyNode extends BaseEntity {
 
     @TableId(type = IdType.AUTO)
     private Long id;
@@ -58,7 +59,9 @@ public class ModuleHierarchyNode {
     @TableField("confirmed")
     private Boolean confirmed;
 
-    private LocalDateTime createdAt;
-
-    private LocalDateTime updatedAt;
+    /**
+     * v1: FUNCTION 节点关联的入口类全限定名（用于按 entry 维度增量清理）
+     */
+    @TableField("source_entry_class")
+    private String sourceEntryClass;
 }

@@ -17,7 +17,7 @@ import java.util.concurrent.Semaphore;
 /**
  * 知识构建任务并发闸门。
  * <ul>
- *   <li>集群模式（{@code code-insight.cluster.enabled=true}）：Redis Set 分布式计数</li>
+ *   <li>集群模式（非 {@code code-insight.env=dev}）：Redis Set 分布式计数</li>
  *   <li>单机模式：JVM {@link Semaphore}（兼容本地开发）</li>
  * </ul>
  */
