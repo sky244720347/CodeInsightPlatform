@@ -353,7 +353,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 }
                 execLog.log(taskId, "  [module " + moduleIndex + "/" + moduleTotal + "] " + moduleDto.getModuleName());
                 try {
-                    generateModuleDraft(task, ws, moduleDto, hierarchy, projectDir);
+                    generateModuleDraft(task, ws, moduleDto, projectDir);
                     regenerated++;
                 } catch (Exception e) {
                     failed++;
@@ -502,7 +502,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         // 2. 渲染 prompt
         String promptTemplate = decompilePromptService.requireTaskPromptContent(task,
                 com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION);
-        String scopedJson = buildScopedHierarchyJson(moduleDto, subModuleDto, functionDto);
+        String scopedJson = buildScopedHierarchyJson(taskId, moduleDto, subModuleDto, functionDto, projectDir);
         String label = moduleDto.getModuleName() + " / " + subModuleDto.getSubModuleName() + " / " + funcName;
         String promptInput = promptTemplateLoader.renderModuleDoc(promptTemplate, label, scopedJson, source);
         if (promptTemplateLoader.hasUnresolvedModuleDocPlaceholders(promptInput)) {
@@ -589,7 +589,8 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     }
                     try {
                         String content = Files.readString(f.toPath());
-                        sb.append("// === Class: ").append(cp).append(" ===\n").append(content).append("\n\n");
+                        String fq = resolveFqClassName(taskId, cp, projectDir, null);
+                        sb.append("// === Class: ").append(fq).append(" ===\n").append(content).append("\n\n");
                     } catch (IOException e) {
                         log.warn("collectFunctionSourceCode fallback 读文件失败: {} {}", f.getAbsolutePath(), e.getMessage());
                     }
@@ -633,15 +634,14 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                         className, classFilePath, classFile.getAbsolutePath());
                 continue;
             }
-            String filteredContent = filterClassToMethods(classFile, methodSigs);
-            if (!StringUtils.hasText(filteredContent)) {
+            ClassMethodSnippet snippet = filterClassToMethods(classFile, methodSigs);
+            if (snippet == null || !StringUtils.hasText(snippet.methodsBody)) {
                 missFilter++;
                 log.warn("collectFunctionSourceCode: 方法截取为空 class={} methods={}",
                         className, sampleForLog(methodSigs, 8));
                 continue;
             }
-            sb.append("// === Class: ").append(className).append(" ===\n");
-            sb.append(filteredContent).append("\n\n");
+            appendClassMethodSnippet(sb, taskId, className, projectDir, snippet);
         }
         if (!StringUtils.hasText(sb.toString())) {
             log.warn("collectFunctionSourceCode: 组装结果为空 taskId={} function={} roots={} reachable={} missLookup={} missFile={} missFilter={}",
@@ -752,11 +752,16 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         return sb.append("]").toString();
     }
 
-    /** 构建 Function-scoped hierarchy JSON（仅保留该 Function 所在路径） */
+    /**
+     * FUNCTION_DOC 专用 scoped JSON：在 analyze 视图之外额外注入权威 {@code class_paths} / {@code methods}，
+     * 供文档「涉及类清单」原样引用，避免模型照抄提示词示例包名。
+     */
     private String buildScopedHierarchyJson(
+            Long taskId,
             com.company.codeinsight.modules.hierarchy.model.ModuleDto m,
             com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm,
-            com.company.codeinsight.modules.hierarchy.model.FunctionDto fn) {
+            com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
+            File projectDir) {
         try {
             Map<String, Object> scoped = new LinkedHashMap<>();
             Map<String, Object> modMap = new LinkedHashMap<>();
@@ -767,15 +772,246 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             subMap.put("id", sm.getId());
             subMap.put("subModuleName", sm.getSubModuleName());
             subMap.put("keywords", sm.getKeywords() != null ? sm.getKeywords() : Collections.emptyList());
-            Map<String, Object> fnMap = new LinkedHashMap<>();
-            fnMap.put("id", fn.getId());
-            fnMap.put("functionName", fn.getFunctionName());
-            subMap.put("functions", Collections.singletonList(fnMap));
+            subMap.put("functions", Collections.singletonList(buildFunctionDocView(taskId, fn, projectDir)));
             modMap.put("subModules", Collections.singletonList(subMap));
             scoped.put("modules", Collections.singletonList(modMap));
             return objectMapper.writeValueAsString(scoped);
         } catch (Exception e) {
+            log.warn("buildScopedHierarchyJson 失败: {}", e.getMessage());
             return "{}";
+        }
+    }
+
+    /** 模块文档专用：仅序列化当前模块，并为各功能注入权威类路径 / 方法列表。 */
+    private String buildModuleDocHierarchyJson(
+            Long taskId,
+            com.company.codeinsight.modules.hierarchy.model.ModuleDto m,
+            File projectDir) {
+        try {
+            Map<String, Object> root = new LinkedHashMap<>();
+            Map<String, Object> modMap = new LinkedHashMap<>();
+            modMap.put("id", m.getId());
+            modMap.put("moduleName", m.getModuleName());
+            modMap.put("keywords", m.getKeywords() != null ? m.getKeywords() : Collections.emptyList());
+            List<Map<String, Object>> subList = new ArrayList<>();
+            for (com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm : m.getSubModules().values()) {
+                Map<String, Object> subMap = new LinkedHashMap<>();
+                subMap.put("id", sm.getId());
+                subMap.put("subModuleName", sm.getSubModuleName());
+                subMap.put("keywords", sm.getKeywords() != null ? sm.getKeywords() : Collections.emptyList());
+                List<Map<String, Object>> fnList = new ArrayList<>();
+                for (com.company.codeinsight.modules.hierarchy.model.FunctionDto fn : sm.getFunctions().values()) {
+                    fnList.add(buildFunctionDocView(taskId, fn, projectDir));
+                }
+                subMap.put("functions", fnList);
+                subList.add(subMap);
+            }
+            modMap.put("subModules", subList);
+            root.put("modules", Collections.singletonList(modMap));
+            return objectMapper.writerWithDefaultPrettyPrinter().writeValueAsString(root);
+        } catch (Exception e) {
+            log.warn("buildModuleDocHierarchyJson 失败: {}", e.getMessage());
+            return "{}";
+        }
+    }
+
+    private Map<String, Object> buildFunctionDocView(
+            Long taskId,
+            com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
+            File projectDir) {
+        Map<String, Object> fnMap = new LinkedHashMap<>();
+        fnMap.put("id", fn.getId());
+        fnMap.put("functionName", fn.getFunctionName());
+        List<String> classPaths = resolveAuthoritativeClasses(taskId, fn, projectDir);
+        fnMap.put("class_paths", classPaths);
+        fnMap.put("methods", resolveAuthoritativeMethods(taskId, fn, projectDir));
+        return fnMap;
+    }
+
+    /**
+     * 文档生成权威类清单：binding.class_name → fn.classPaths → BFS 可达类（均升 FQ，去重保序）。
+     */
+    public List<String> resolveAuthoritativeClasses(
+            Long taskId,
+            com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
+            File projectDir) {
+        LinkedHashSet<String> out = new LinkedHashSet<>();
+        if (fn == null) {
+            return new ArrayList<>();
+        }
+        List<MethodFunctionBinding> bindings = loadBindingsForFunction(taskId, fn.getId());
+        if (bindings != null) {
+            for (MethodFunctionBinding b : bindings) {
+                if (!StringUtils.hasText(b.getClassName())) {
+                    continue;
+                }
+                out.add(resolveFqClassName(taskId, b.getClassName(), projectDir, null));
+            }
+        }
+        if (out.isEmpty() && fn.getClassPaths() != null) {
+            for (String cp : fn.getClassPaths()) {
+                if (!StringUtils.hasText(cp)) {
+                    continue;
+                }
+                out.add(resolveFqClassName(taskId, cp, projectDir, null));
+            }
+        }
+        if (out.isEmpty()) {
+            Set<String> roots = loadFunctionRootSignatures(taskId, fn);
+            if (!roots.isEmpty()) {
+                Set<String> reachable = methodCallGraphService.resolveReachableMethods(taskId, roots);
+                for (String shortOrFq : groupByClass(reachable).keySet()) {
+                    out.add(resolveFqClassName(taskId, shortOrFq, projectDir, null));
+                }
+            }
+        }
+        return new ArrayList<>(out);
+    }
+
+    /**
+     * 权威方法列表：binding 优先；否则 classPaths[0] × methodSignatures。
+     */
+    public List<Map<String, String>> resolveAuthoritativeMethods(
+            Long taskId,
+            com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
+            File projectDir) {
+        List<Map<String, String>> out = new ArrayList<>();
+        if (fn == null) {
+            return out;
+        }
+        List<MethodFunctionBinding> bindings = loadBindingsForFunction(taskId, fn.getId());
+        if (bindings != null && !bindings.isEmpty()) {
+            for (MethodFunctionBinding b : bindings) {
+                if (!StringUtils.hasText(b.getClassName()) || !StringUtils.hasText(b.getMethodSignature())) {
+                    continue;
+                }
+                Map<String, String> row = new LinkedHashMap<>();
+                row.put("classFq", resolveFqClassName(taskId, b.getClassName(), projectDir, null));
+                row.put("methodSignature", b.getMethodSignature().trim());
+                out.add(row);
+            }
+            return out;
+        }
+        if (fn.getMethodSignatures() != null && !fn.getMethodSignatures().isEmpty()
+                && fn.getClassPaths() != null && !fn.getClassPaths().isEmpty()) {
+            String classPath = fn.getClassPaths().stream().filter(StringUtils::hasText).findFirst().orElse(null);
+            if (StringUtils.hasText(classPath)) {
+                String fq = resolveFqClassName(taskId, classPath, projectDir, null);
+                for (String sig : fn.getMethodSignatures()) {
+                    if (!StringUtils.hasText(sig)) {
+                        continue;
+                    }
+                    Map<String, String> row = new LinkedHashMap<>();
+                    row.put("classFq", fq);
+                    row.put("methodSignature", sig.trim());
+                    out.add(row);
+                }
+            }
+        }
+        return out;
+    }
+
+    private List<MethodFunctionBinding> loadBindingsForFunction(Long taskId, String functionNodeId) {
+        if (taskId == null || !StringUtils.hasText(functionNodeId) || methodFunctionBindingMapper == null) {
+            return Collections.emptyList();
+        }
+        List<MethodFunctionBinding> bindings =
+                methodFunctionBindingMapper.selectByTaskAndFunction(taskId, functionNodeId);
+        return bindings != null ? bindings : Collections.emptyList();
+    }
+
+    /**
+     * 将短类名/FQ 解析为全限定名。失败时保留原值并打 warn，不编造包名。
+     */
+    public String resolveFqClassName(Long taskId, String nameHint, File projectDir, ParsedClassInfo parsed) {
+        if (!StringUtils.hasText(nameHint)) {
+            return nameHint;
+        }
+        String trimmed = nameHint.trim();
+        if (trimmed.contains(".")) {
+            return trimmed;
+        }
+        if (parsed != null && StringUtils.hasText(parsed.getPackageName())
+                && StringUtils.hasText(parsed.getClassName())) {
+            return parsed.getPackageName() + "." + parsed.getClassName();
+        }
+        String filePath = lookupClassFilePath(taskId, trimmed);
+        if (StringUtils.hasText(filePath) && projectDir != null) {
+            File classFile = new File(projectDir, filePath);
+            if (classFile.exists()) {
+                try {
+                    ParsedClassInfo info = javaParserService.parseFile(classFile);
+                    if (info != null && StringUtils.hasText(info.getPackageName())
+                            && StringUtils.hasText(info.getClassName())) {
+                        return info.getPackageName() + "." + info.getClassName();
+                    }
+                } catch (Exception e) {
+                    log.debug("resolveFqClassName parse failed class={} err={}", trimmed, e.getMessage());
+                }
+            }
+            String fromPath = fqFromSourceRelativePath(filePath);
+            if (StringUtils.hasText(fromPath)) {
+                return fromPath;
+            }
+        }
+        log.warn("resolveFqClassName: 无法升 FQ，保留短名 class={} taskId={}", trimmed, taskId);
+        return trimmed;
+    }
+
+    /** 从 {@code .../src/main/java/com/foo/Bar.java} 反推 {@code com.foo.Bar}。 */
+    public static String fqFromSourceRelativePath(String relativePath) {
+        if (!StringUtils.hasText(relativePath)) {
+            return null;
+        }
+        String norm = relativePath.replace('\\', '/');
+        String marker = "/src/main/java/";
+        int idx = norm.indexOf(marker);
+        if (idx < 0) {
+            marker = "/src/test/java/";
+            idx = norm.indexOf(marker);
+        }
+        String rel;
+        if (idx >= 0) {
+            rel = norm.substring(idx + marker.length());
+        } else if (norm.startsWith("src/main/java/")) {
+            rel = norm.substring("src/main/java/".length());
+        } else if (norm.startsWith("src/test/java/")) {
+            rel = norm.substring("src/test/java/".length());
+        } else {
+            return null;
+        }
+        if (!rel.endsWith(".java")) {
+            return null;
+        }
+        String withoutExt = rel.substring(0, rel.length() - ".java".length());
+        if (!StringUtils.hasText(withoutExt) || withoutExt.contains("..")) {
+            return null;
+        }
+        return withoutExt.replace('/', '.');
+    }
+
+    private void appendClassMethodSnippet(StringBuilder sb, Long taskId, String classNameHint,
+                                          File projectDir, ClassMethodSnippet snippet) {
+        String fq = resolveFqClassName(taskId, classNameHint, projectDir, snippet.parsed);
+        sb.append("// === Class: ").append(fq).append(" ===\n");
+        String pkg = snippet.parsed != null ? snippet.parsed.getPackageName() : null;
+        if (!StringUtils.hasText(pkg) && fq != null && fq.contains(".")) {
+            pkg = fq.substring(0, fq.lastIndexOf('.'));
+        }
+        if (StringUtils.hasText(pkg)) {
+            sb.append("package ").append(pkg).append(";\n");
+        }
+        sb.append(snippet.methodsBody).append("\n\n");
+    }
+
+    /** 方法截取结果：保留 ParsedClassInfo 以便写 package / FQ 头。 */
+    public static final class ClassMethodSnippet {
+        final ParsedClassInfo parsed;
+        final String methodsBody;
+
+        public ClassMethodSnippet(ParsedClassInfo parsed, String methodsBody) {
+            this.parsed = parsed;
+            this.methodsBody = methodsBody;
         }
     }
 
@@ -853,7 +1089,6 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
     private void generateModuleDraft(DecompileTask task, DraftWorkspace ws,
                                     com.company.codeinsight.modules.hierarchy.model.ModuleDto moduleDto,
-                                    com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy hierarchy,
                                     File projectDir) {
         String moduleName = moduleDto.getModuleName();
 
@@ -869,8 +1104,8 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         String promptTemplate = decompilePromptService.requireTaskPromptContent(task,
                 com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION);
 
-        // 把整个 ModuleHierarchy DTO 序列化成 JSON 给 AI 作为 {module_hierarchy.json} 输入
-        String moduleHierarchyJson = serializeHierarchyToJson(hierarchy);
+        // 把当前模块（含权威 class_paths / methods）序列化成 JSON 给 AI
+        String moduleHierarchyJson = buildModuleDocHierarchyJson(task.getId(), moduleDto, projectDir);
 
         String promptInput = promptTemplateLoader.renderModuleDoc(
                 promptTemplate, moduleName, moduleHierarchyJson, moduleSource);
@@ -1013,10 +1248,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                         className, classFilePath, classFile.getAbsolutePath());
                 continue;
             }
-            String filteredContent = filterClassToMethods(classFile, methodSigs);
-            if (!StringUtils.hasText(filteredContent)) continue;
-            sb.append("// === Class: ").append(className).append(" ===\n");
-            sb.append(filteredContent).append("\n\n");
+            ClassMethodSnippet snippet = filterClassToMethods(classFile, methodSigs);
+            if (snippet == null || !StringUtils.hasText(snippet.methodsBody)) continue;
+            appendClassMethodSnippet(sb, taskId, className, projectDir, snippet);
         }
         if (!StringUtils.hasText(sb.toString()) && missFile > 0) {
             log.warn("模块 {} 源码组装为空（missFile={}），请检查 NAS workspace 与 filePath",
@@ -1086,11 +1320,11 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
     /**
      * 按 methodName 集合截取类文件源码（用 startLine/endLine 范围）
-     * 只输出目标方法，不输出 import / 字段 / 其他方法
+     * 只输出目标方法，不输出 import / 字段 / 其他方法；调用方负责拼 FQ / package 头。
      */
-    private String filterClassToMethods(File classFile, Set<String> targetMethodSigs) {
+    private ClassMethodSnippet filterClassToMethods(File classFile, Set<String> targetMethodSigs) {
         try {
-            com.company.codeinsight.modules.parser.model.ParsedClassInfo info = javaParserService.parseFile(classFile);
+            ParsedClassInfo info = javaParserService.parseFile(classFile);
             if (info == null) return null;
             // 把 methodSigs 集合 → Set<methodName>（"listUsers(Integer)" → "listUsers"）
             Set<String> targetMethodNames = new java.util.HashSet<>();
@@ -1101,7 +1335,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             }
             java.util.List<String> lines = Files.readAllLines(classFile.toPath());
             StringBuilder sb = new StringBuilder();
-            for (com.company.codeinsight.modules.parser.model.ParsedClassInfo.MethodInfo mi : info.getMethods()) {
+            for (ParsedClassInfo.MethodInfo mi : info.getMethods()) {
                 if (targetMethodNames.contains(mi.getName())
                         && mi.getStartLine() != null && mi.getEndLine() != null) {
                     int start = mi.getStartLine() - 1;
@@ -1112,7 +1346,11 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     sb.append("\n");
                 }
             }
-            return sb.toString();
+            String body = sb.toString();
+            if (!StringUtils.hasText(body)) {
+                return null;
+            }
+            return new ClassMethodSnippet(info, body);
         } catch (Exception e) {
             log.warn("filterClassToMethods failed for {}: {}", classFile, e.getMessage());
             return null;
