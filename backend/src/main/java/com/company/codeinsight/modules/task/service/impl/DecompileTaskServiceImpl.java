@@ -7,7 +7,9 @@ import com.company.codeinsight.common.cluster.ClusterInstanceId;
 import com.company.codeinsight.common.cluster.ClusterProperties;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.exception.ErrorCode;
+import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
+import com.company.codeinsight.common.util.DirectoryCleanupUtil;
 import com.company.codeinsight.modules.ai.entity.AiCallRecord;
 import com.company.codeinsight.modules.ai.mapper.AiCallRecordMapper;
 import com.company.codeinsight.modules.draft.entity.DraftRevision;
@@ -48,6 +50,7 @@ import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.io.File;
+import java.nio.file.Path;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
@@ -210,6 +213,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
 
     @Autowired
     private TaskWorkspacePaths taskWorkspacePaths;
+
+    @Autowired
+    private EnvStorageResolver storageResolver;
 
     /**
      * 分页获取任务列表
@@ -724,8 +730,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
      *       ai_call_record / token_usage_audit</li>
      *   <li>草稿工作区链：draft_workspace / knowledge_draft / draft_revision /
      *       draft_review_comment / draft_source_reference</li>
-     *   <li>磁盘临时目录：{storage}/task_{id}/</li>
-     *   <li>磁盘执行日志：pipeline.log</li>
+     *   <li>磁盘：workspaces/task_{id}、task_{id}/（pipeline.log）、drafts/task_{id}/、ai_logs/task_{id}/</li>
      *   <li>内存上下文：pipelineContextCache / taskCache</li>
      * </ol>
      *
@@ -1566,25 +1571,36 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         cleanupTaskWorkspace(id);
     }
 
-    /** 清理任务临时工作区（terminate/retry/cancel 后调用） */
+    /**
+     * 清理任务在 NAS/runtimeRoot 上的全部磁盘产物（terminate/retry/cancel/delete 后调用）。
+     * <p>覆盖：workspaces、taskDataDir、drafts、ai_logs。删除失败打 warn，
+     * 真正 clone 前 {@code CodeScannerServiceImpl} 会再强制清一次并硬失败。</p>
+     */
     private void cleanupTaskWorkspace(Long taskId) {
-        try {
-            File ws = taskWorkspacePaths.taskProjectDir(taskId);
-            if (ws.exists()) {
-                deleteRecursively(ws);
-                log.info("cleanupTaskWorkspace: taskId={} path={}", taskId, ws.getAbsolutePath());
-            }
-        } catch (Exception e) {
-            log.warn("cleanupTaskWorkspace failed taskId={}: {}", taskId, e.getMessage());
+        if (taskId == null) {
+            return;
         }
+        deleteDiskQuietly("workspace", taskWorkspacePaths.taskProjectPath(taskId), taskId);
+        // taskDataDir 含 pipeline.log / incremental-impact.json；整目录删掉即可，无需再 truncate
+        deleteDiskQuietly("taskData", storageResolver.taskDataDir(taskId), taskId);
+        deleteDiskQuietly("drafts", storageResolver.draftsRoot().resolve("task_" + taskId), taskId);
+        deleteDiskQuietly("aiLogs", storageResolver.aiLogDir(taskId), taskId);
     }
 
-    private static void deleteRecursively(File dir) {
-        File[] children = dir.listFiles();
-        if (children != null) {
-            for (File f : children) deleteRecursively(f);
+    private void deleteDiskQuietly(String label, Path path, Long taskId) {
+        if (path == null) {
+            return;
         }
-        dir.delete();
+        try {
+            if (!java.nio.file.Files.exists(path)) {
+                return;
+            }
+            DirectoryCleanupUtil.deleteRecursively(path);
+            log.info("cleanupTaskWorkspace: taskId={} {} path={}", taskId, label, path.toAbsolutePath());
+        } catch (Exception e) {
+            log.warn("cleanupTaskWorkspace failed taskId={} {} path={}: {}",
+                    taskId, label, path.toAbsolutePath(), e.getMessage());
+        }
     }
 
     @Override

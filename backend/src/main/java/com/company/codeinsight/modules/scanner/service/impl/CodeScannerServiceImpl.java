@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.exception.ErrorCode;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
+import com.company.codeinsight.common.util.DirectoryCleanupUtil;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
 import com.company.codeinsight.modules.scanner.entity.CodeFileSnapshot;
@@ -36,6 +37,7 @@ import java.io.File;
 import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.HashSet;
@@ -91,8 +93,8 @@ public class CodeScannerServiceImpl implements CodeScannerService {
 
         // 确定该任务的临时存放目录 (workspace-root/task_{taskId})
         File targetDir = taskWorkspacePaths.taskProjectDir(taskId);
-        // 清理上一次运行残留的临时旧目录
-        deleteDirectory(targetDir);
+        // 清理上一次运行残留；必须删净，否则 JGit 报 destination already exists
+        prepareEmptyCloneDirectory(taskId, targetDir);
 
         String commitId = "MOCK_COMMIT_" + System.currentTimeMillis();
         boolean gitPullSuccess = false;
@@ -139,6 +141,12 @@ public class CodeScannerServiceImpl implements CodeScannerService {
                 gitPullSuccess = true;
                 log.info("Git 克隆成功, Commit ID: {}", commitId);
             } catch (Exception e) {
+                // 目标目录未清空时绝不能降级 Mock，否则会「跑错仓库」却看似成功
+                if (isDestinationAlreadyExistsError(e)) {
+                    log.error("JGit 克隆失败：目标目录未清空 taskId={} path={}", taskId, targetDir.getAbsolutePath());
+                    throw new BusinessException("扫描代码失败: 工作区目录未清空，无法 clone（"
+                            + targetDir.getAbsolutePath() + "）。请重试或检查 NAS 文件锁。原因: " + e.getMessage());
+                }
                 log.warn("JGit 克隆仓库失败 ({}), 启动本地 Mock 代码生成以便离线跑通闭环", e.getMessage());
                 try {
                     // 容错降级：在没有外网或 Git 服务器不可达时，在目标目录自动拼装一套标准的 Controller/Service/Mapper 模拟文件
@@ -533,18 +541,45 @@ public class CodeScannerServiceImpl implements CodeScannerService {
     }
 
     /**
-     * 递归删除文件夹及其所有子文件与子目录
+     * clone 前强制清空工作区。失败直接抛错，避免 JGit "already exists" 或脏目录混扫。
      */
-    private void deleteDirectory(File file) {
-        if (file.isDirectory()) {
-            File[] files = file.listFiles();
-            if (files != null) {
-                for (File f : files) {
-                    deleteDirectory(f);
+    private void prepareEmptyCloneDirectory(Long taskId, File targetDir) {
+        Path path = targetDir.toPath();
+        try {
+            if (Files.exists(path)) {
+                log.info("pullAndScan 清理旧工作区 taskId={} path={}", taskId, path.toAbsolutePath());
+                DirectoryCleanupUtil.deleteRecursively(path);
+            }
+        } catch (IOException e) {
+            long left = DirectoryCleanupUtil.countEntries(path);
+            throw new BusinessException("扫描代码失败: 无法清空工作区目录 " + path.toAbsolutePath()
+                    + "（残留条目约 " + left + "）。NAS 上可能有文件锁或只读文件。原因: " + e.getMessage());
+        }
+        if (Files.exists(path) && !DirectoryCleanupUtil.isAbsentOrEmpty(path)) {
+            throw new BusinessException("扫描代码失败: 工作区目录清空后仍非空: " + path.toAbsolutePath());
+        }
+        // JGit 要求目录不存在或为空；空目录可保留，不存在亦可（clone 会创建）
+        File parent = targetDir.getParentFile();
+        if (parent != null && !parent.exists() && !parent.mkdirs()) {
+            throw new BusinessException("扫描代码失败: 无法创建 workspace 父目录 " + parent.getAbsolutePath());
+        }
+    }
+
+    private static boolean isDestinationAlreadyExistsError(Throwable e) {
+        Throwable cur = e;
+        while (cur != null) {
+            String msg = cur.getMessage();
+            if (msg != null) {
+                String lower = msg.toLowerCase();
+                if (lower.contains("already exists")
+                        || lower.contains("not an empty directory")
+                        || lower.contains("destination path")) {
+                    return true;
                 }
             }
+            cur = cur.getCause();
         }
-        file.delete();
+        return false;
     }
 
     /**

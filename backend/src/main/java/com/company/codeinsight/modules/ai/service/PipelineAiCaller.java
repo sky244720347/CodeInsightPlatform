@@ -84,17 +84,6 @@ public class PipelineAiCaller {
             try {
                 String response = aiSummaryService.summarizeWithPrompt(
                         taskId, currentPrompt, modelName, callMeta);
-                // TEMP: 排查空响应 / 截断 JSON 用，确认后删除
-                boolean sentinel = response != null && "{}".equals(response.trim());
-                log.warn("[AI-DEBUG-TEMP] stage={} target={} attempt={}/{} len={} sentinel={} resp=\n{}",
-                        stageTag, target, attempt, maxAttempts,
-                        response == null ? -1 : response.length(), sentinel, response);
-                execLog.log(taskId, String.format(
-                        "[AI-DEBUG-TEMP] stage=%s target=%s attempt=%d/%d len=%d sentinel=%s resp=\n%s",
-                        stageTag, target, attempt, maxAttempts,
-                        response == null ? -1 : response.length(),
-                        sentinel,
-                        response == null ? "null" : response));
                 ValidationResult vr = validator.validate(response);
                 if (vr.success()) {
                     if (attempt > 1) {

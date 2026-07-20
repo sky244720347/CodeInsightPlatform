@@ -39,6 +39,8 @@ public class MethodCallGraphServiceImpl implements MethodCallGraphService {
 
         Set<String> visited = new LinkedHashSet<>(rootSignatures);
         Deque<String> queue = new ArrayDeque<>(rootSignatures);
+        int edgeHits = 0;
+        int rootMissEdges = 0;
 
         while (!queue.isEmpty()) {
             String cur = queue.poll();
@@ -49,7 +51,11 @@ public class MethodCallGraphServiceImpl implements MethodCallGraphService {
                             .eq(MethodCall::getCallerSignature, cur)
                             .isNotNull(MethodCall::getTargetSignature)
             );
+            if (outgoing.isEmpty() && rootSignatures.contains(cur)) {
+                rootMissEdges++;
+            }
             for (MethodCall mc : outgoing) {
+                edgeHits++;
                 String target = mc.getTargetSignature();
                 if (StringUtils.hasText(target) && !visited.contains(target)) {
                     visited.add(target);
@@ -57,8 +63,31 @@ public class MethodCallGraphServiceImpl implements MethodCallGraphService {
                 }
             }
         }
-        log.debug("MethodCallGraphService BFS taskId={} roots={} reachable={}",
-                taskId, rootSignatures.size(), visited.size());
+        // roots 本身始终在 visited；若 rootMissEdges≈roots 且 edgeHits=0，多半是签名格式不匹配（FQ vs 短类名）
+        if (rootMissEdges > 0 && edgeHits == 0) {
+            log.warn("MethodCallGraphService BFS 根签名在 ci_method_call 无出边 taskId={} roots={} rootMissEdges={} sampleRoots={}",
+                    taskId, rootSignatures.size(), rootMissEdges, sampleRoots(rootSignatures, 3));
+        } else {
+            log.info("MethodCallGraphService BFS taskId={} roots={} reachable={} edgeHits={}",
+                    taskId, rootSignatures.size(), visited.size(), edgeHits);
+        }
         return visited;
+    }
+
+    private static String sampleRoots(Set<String> roots, int limit) {
+        if (roots == null || roots.isEmpty()) {
+            return "[]";
+        }
+        StringBuilder sb = new StringBuilder("[");
+        int i = 0;
+        for (String r : roots) {
+            if (i > 0) sb.append(", ");
+            sb.append(r);
+            if (++i >= limit) {
+                sb.append(", ...");
+                break;
+            }
+        }
+        return sb.append("]").toString();
     }
 }

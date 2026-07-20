@@ -399,22 +399,21 @@ public class TaskRetryCleanupTest {
     }
 
     /**
-     * pipeline.log 被清空（细节：retry 后磁盘目录被 cleanupTaskWorkspace 整个删了，
-     * pipeline 下次启动会通过 log() 的 mkdirs 自动重建）
+     * pipeline.log 被清空：retry 后 taskDataDir（含 pipeline.log）整目录删除；
+     * 下次 runPipeline 启动时 execLog.log() 会自动 mkdirs。
      */
     @Test
     public void testRetryClearsPipelineLog() {
-        // 先确认日志存在
         File logFile = storageResolver.taskDataDir(TASK_ID).resolve("pipeline.log").toFile();
         Assertions.assertTrue(logFile.exists() && logFile.length() > 0,
                 "seed 后 pipeline.log 应存在且非空");
 
         decompileTaskService.retryTask(TASK_ID);
 
-        // retry 后整个磁盘 task 目录被清掉（cleanupTaskWorkspace）
-        // 这是预期行为：下次 runPipeline 启动时 execLog.log() 会自动 mkdirs
-        Assertions.assertFalse(logFile.exists() || logFile.length() == 0,
-                "retry 后磁盘 task 目录应被清掉，pipeline.log 不应残留");
+        Assertions.assertTrue(!logFile.exists() || logFile.length() == 0,
+                "retry 后 pipeline.log 应被删除或清空");
+        Assertions.assertFalse(storageResolver.taskDataDir(TASK_ID).toFile().exists(),
+                "retry 后 taskDataDir 整目录应被删除");
     }
 
     /**

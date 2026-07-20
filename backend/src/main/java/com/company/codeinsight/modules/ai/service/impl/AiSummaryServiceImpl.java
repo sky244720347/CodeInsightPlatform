@@ -266,6 +266,14 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
         // 4. projectDir 通过 taskId 反查（pipeline 启动时 pullAndScan 已写入该目录）
         File projectDir = taskWorkspacePaths.taskProjectDir(taskId);
+        if (projectDir == null || !projectDir.isDirectory()) {
+            log.error("generateDraftDocument: NAS/workspace 不可用 taskId={} projectDir={}",
+                    taskId, projectDir == null ? null : projectDir.getAbsolutePath());
+            execLog.log(taskId, "  [error] projectDir 不存在或不可读: "
+                    + (projectDir == null ? "null" : projectDir.getAbsolutePath()));
+        } else {
+            log.info("generateDraftDocument: taskId={} projectDir={}", taskId, projectDir.getAbsolutePath());
+        }
 
         // 5. 增量模式：算出「本次变更文件对应的 FQ 类名集合」，用于判定哪些模块需要重跑 AI
         java.util.Set<String> changedFqSet = null;
@@ -448,8 +456,12 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     String label = m.getModuleName() + " / " + sm.getSubModuleName() + " / " + fn.getFunctionName();
                     execLog.log(taskId, "  [fn " + fnIndex + "/" + fnTotal + "] " + label);
                     try {
-                        generateFunctionDraft(task, ws, m, sm, fn, hierarchy, projectDir);
-                        regenerated++;
+                        if (generateFunctionDraft(task, ws, m, sm, fn, hierarchy, projectDir)) {
+                            regenerated++;
+                        } else {
+                            // 源码收集失败等软跳过：不算 regenerated，避免出现 regenerated=N 但无 AI/无文档
+                            skipped++;
+                        }
                     } catch (Exception e) {
                         failed++;
                         log.error("generateFunctionDraft failed for function {}: {}", label, e.getMessage(), e);
@@ -460,13 +472,17 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         }
         execLog.log(taskId, String.format(
                 "  文档生成汇总 = 成功 %d / 共 %d（失败 %d，跳过 %d）",
-                regenerated, fnTotal - skipped, failed, skipped));
+                regenerated, fnTotal, failed, skipped));
         log.info("generateDraftDocument done (function). taskId={} total={} regenerated={} skipped={} failed={}",
                 taskId, fnTotal, regenerated, skipped, failed);
     }
 
-    /** 按功能粒度生成单条草稿 */
-    private void generateFunctionDraft(DecompileTask task, DraftWorkspace ws,
+    /**
+     * 按功能粒度生成单条草稿。
+     *
+     * @return true 已写出草稿（含 AI / 占位）；false 因无可达源码软跳过
+     */
+    private boolean generateFunctionDraft(DecompileTask task, DraftWorkspace ws,
                                         com.company.codeinsight.modules.hierarchy.model.ModuleDto moduleDto,
                                         com.company.codeinsight.modules.hierarchy.model.SubModuleDto subModuleDto,
                                         com.company.codeinsight.modules.hierarchy.model.FunctionDto functionDto,
@@ -478,8 +494,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         // 1. 收集该 Function 的源码
         String source = collectFunctionSourceCode(taskId, functionDto, projectDir);
         if (!StringUtils.hasText(source)) {
-            log.warn("Function {} BFS 无可达源码，跳过", funcName);
-            return;
+            log.warn("Function {} BFS 无可达源码，跳过（详见上方 collectFunctionSourceCode 诊断）", funcName);
+            execLog.log(taskId, "  [skip] function=" + funcName + " 原因=BFS/源码文件不可达");
+            return false;
         }
 
         // 2. 渲染 prompt
@@ -492,7 +509,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             log.warn("Function {} prompt 有未替换占位符，回退占位文档", funcName);
             upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto,
                     buildPlaceholderDoc(moduleDto), "PENDING_REVIEW", projectDir);
-            return;
+            return true;
         }
 
         // 3. 调 AI（可配置重试 + pipeline.log）
@@ -531,75 +548,140 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             finalMarkdown = aiMarkdown;
             initialStatus = "AI_GENERATED";
         }
-            upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto, finalMarkdown, initialStatus, projectDir);
+        upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto, finalMarkdown, initialStatus, projectDir);
+        return true;
     }
 
     /** 收集单个 Function 的可达源码（从 method_function_binding 反查根方法 → BFS） */
     private String collectFunctionSourceCode(Long taskId,
                                               com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
                                               File projectDir) {
+        String funcName = fn != null ? fn.getFunctionName() : "?";
+        String fnId = fn != null ? fn.getId() : null;
+        boolean projectOk = projectDir != null && projectDir.isDirectory();
+        if (!projectOk) {
+            log.warn("collectFunctionSourceCode: projectDir 不可用 taskId={} function={} id={} path={}",
+                    taskId, funcName, fnId, projectDir == null ? null : projectDir.getAbsolutePath());
+        }
+
         Set<String> rootSignatures = loadFunctionRootSignatures(taskId, fn);
         if (rootSignatures.isEmpty()) {
             // fallback：按 classPaths（兼容旧数据，且反向绑定表为空时不再做大杂烩 BFS）
-            if (fn.getClassPaths() != null && !fn.getClassPaths().isEmpty()) {
+            int classPathCount = fn != null && fn.getClassPaths() != null ? fn.getClassPaths().size() : 0;
+            log.warn("collectFunctionSourceCode: 无 BFS 根签名，走 classPaths 整文件回退 taskId={} function={} id={} classPaths={}",
+                    taskId, funcName, fnId, classPathCount);
+            if (fn != null && fn.getClassPaths() != null && !fn.getClassPaths().isEmpty()) {
                 StringBuilder sb = new StringBuilder();
+                int missLookup = 0;
+                int missFile = 0;
                 for (String cp : fn.getClassPaths()) {
                     String classFilePath = lookupClassFilePath(taskId, cp);
-                    if (classFilePath == null) continue;
+                    if (classFilePath == null) {
+                        missLookup++;
+                        continue;
+                    }
                     File f = new File(projectDir, classFilePath);
-                    if (!f.exists()) continue;
+                    if (!f.exists()) {
+                        missFile++;
+                        log.warn("collectFunctionSourceCode fallback 文件不存在: class={} rel={} abs={}",
+                                cp, classFilePath, f.getAbsolutePath());
+                        continue;
+                    }
                     try {
                         String content = Files.readString(f.toPath());
                         sb.append("// === Class: ").append(cp).append(" ===\n").append(content).append("\n\n");
-                    } catch (IOException ignored) {}
+                    } catch (IOException e) {
+                        log.warn("collectFunctionSourceCode fallback 读文件失败: {} {}", f.getAbsolutePath(), e.getMessage());
+                    }
+                }
+                if (!StringUtils.hasText(sb.toString())) {
+                    log.warn("collectFunctionSourceCode fallback 仍为空 taskId={} function={} missLookup={} missFile={}",
+                            taskId, funcName, missLookup, missFile);
                 }
                 return sb.toString();
             }
             return "";
         }
+
         Set<String> reachableMethods = methodCallGraphService.resolveReachableMethods(taskId, rootSignatures);
         Map<String, Set<String>> classToMethodSigs = groupByClass(reachableMethods);
+        log.info("collectFunctionSourceCode: taskId={} function={} id={} roots={} reachable={} classes={} projectDir={}",
+                taskId, funcName, fnId, rootSignatures.size(), reachableMethods.size(),
+                classToMethodSigs.size(),
+                projectDir == null ? null : projectDir.getAbsolutePath());
+        if (log.isDebugEnabled()) {
+            log.debug("collectFunctionSourceCode roots sample={}", sampleForLog(rootSignatures, 5));
+        }
+
         StringBuilder sb = new StringBuilder();
+        int missLookup = 0;
+        int missFile = 0;
+        int missFilter = 0;
         for (Map.Entry<String, Set<String>> entry : classToMethodSigs.entrySet()) {
             String className = entry.getKey();
             Set<String> methodSigs = entry.getValue();
             String classFilePath = lookupClassFilePath(taskId, className);
-            if (classFilePath == null) continue;
+            if (classFilePath == null) {
+                missLookup++;
+                log.warn("collectFunctionSourceCode: 无 filePath 映射 class={} taskId={}", className, taskId);
+                continue;
+            }
             File classFile = new File(projectDir, classFilePath);
-            if (!classFile.exists()) continue;
+            if (!classFile.exists()) {
+                missFile++;
+                log.warn("collectFunctionSourceCode: 源文件不存在 class={} rel={} abs={}",
+                        className, classFilePath, classFile.getAbsolutePath());
+                continue;
+            }
             String filteredContent = filterClassToMethods(classFile, methodSigs);
-            if (!StringUtils.hasText(filteredContent)) continue;
+            if (!StringUtils.hasText(filteredContent)) {
+                missFilter++;
+                log.warn("collectFunctionSourceCode: 方法截取为空 class={} methods={}",
+                        className, sampleForLog(methodSigs, 8));
+                continue;
+            }
             sb.append("// === Class: ").append(className).append(" ===\n");
             sb.append(filteredContent).append("\n\n");
+        }
+        if (!StringUtils.hasText(sb.toString())) {
+            log.warn("collectFunctionSourceCode: 组装结果为空 taskId={} function={} roots={} reachable={} missLookup={} missFile={} missFilter={}",
+                    taskId, funcName, rootSignatures.size(), reachableMethods.size(),
+                    missLookup, missFile, missFilter);
         }
         return sb.toString();
     }
 
     /**
-     * 反查某功能的 BFS 根方法集合（"className#methodSignature(ParamTypes)" 格式）。
+     * 反查某功能的 BFS 根方法集合（"短类名#methodSignature(ParamTypes)" 格式）。
      * <p>优先级：</p>
      * <ol>
      *   <li>主路径：从 {@code ci_method_function_binding} 反查该 function_node_id 下的全部方法绑定，
-     *       每条 (class, sig) → "className#sig"，天然多类支持（一个功能可有来自多 Controller 的入口方法）</li>
+     *       每条 (class, sig) → "短类名#sig"。binding.class_name 可能是 AI 输出的 FQ，
+     *       而 {@code ci_method_call.caller_signature} 落库为短类名，必须截短后才能命中 BFS。</li>
      *   <li>回退路径：当反向绑定表为空（AI 没输出 method_bindings、或老任务）时，回退到
-     *       {@code fn.methodSignatures × fn.classPaths[0]} 的笛卡尔积（保持旧行为，标 deprecation）</li>
+     *       {@code fn.methodSignatures × fn.classPaths[0]} 的笛卡尔积（同样截短类名）</li>
      * </ol>
      */
     private Set<String> loadFunctionRootSignatures(Long taskId,
                                                    com.company.codeinsight.modules.hierarchy.model.FunctionDto fn) {
         Set<String> roots = new LinkedHashSet<>();
+        int bindingRows = 0;
         if (taskId != null && fn != null
                 && methodFunctionBindingMapper != null
                 && StringUtils.hasText(fn.getId())) {
             List<MethodFunctionBinding> bindings =
                     methodFunctionBindingMapper.selectByTaskAndFunction(taskId, fn.getId());
             if (bindings != null) {
+                bindingRows = bindings.size();
                 for (MethodFunctionBinding b : bindings) {
                     if (!StringUtils.hasText(b.getClassName())
                             || !StringUtils.hasText(b.getMethodSignature())) {
                         continue;
                     }
-                    roots.add(b.getClassName() + "#" + b.getMethodSignature());
+                    String key = toCallerSignatureKey(b.getClassName(), b.getMethodSignature());
+                    if (key != null) {
+                        roots.add(key);
+                    }
                 }
             }
         }
@@ -611,11 +693,63 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             if (StringUtils.hasText(classPath)) {
                 for (String sig : fn.getMethodSignatures()) {
                     if (!StringUtils.hasText(sig)) continue;
-                    roots.add(classPath + "#" + sig);
+                    String key = toCallerSignatureKey(classPath, sig);
+                    if (key != null) {
+                        roots.add(key);
+                    }
                 }
             }
+            if (!roots.isEmpty()) {
+                log.info("loadFunctionRootSignatures: binding 为空，回退 methodSignatures×classPaths taskId={} functionId={} roots={}",
+                        taskId, fn.getId(), roots.size());
+            }
+        }
+        if (roots.isEmpty()) {
+            log.warn("loadFunctionRootSignatures: 根签名为空 taskId={} functionId={} bindingRows={} methodSigs={} classPaths={}",
+                    taskId,
+                    fn != null ? fn.getId() : null,
+                    bindingRows,
+                    fn != null && fn.getMethodSignatures() != null ? fn.getMethodSignatures().size() : 0,
+                    fn != null && fn.getClassPaths() != null ? fn.getClassPaths().size() : 0);
         }
         return roots;
+    }
+
+    /**
+     * 拼装与 {@code ci_method_call.caller_signature} 一致的键：短类名#method(args)。
+     * binding / AI class_paths 常为 FQ，必须截短。
+     */
+    private static String toCallerSignatureKey(String classNameOrFq, String methodSignature) {
+        if (!StringUtils.hasText(classNameOrFq) || !StringUtils.hasText(methodSignature)) {
+            return null;
+        }
+        return stripPackage(classNameOrFq) + "#" + methodSignature.trim();
+    }
+
+    /** 去掉包前缀，已是短名则原样返回。 */
+    private static String stripPackage(String fqOrShortClassName) {
+        if (fqOrShortClassName == null) {
+            return null;
+        }
+        int dotIdx = fqOrShortClassName.lastIndexOf('.');
+        return dotIdx >= 0 ? fqOrShortClassName.substring(dotIdx + 1) : fqOrShortClassName;
+    }
+
+    private static String sampleForLog(java.util.Collection<String> items, int limit) {
+        if (items == null || items.isEmpty()) {
+            return "[]";
+        }
+        StringBuilder sb = new StringBuilder("[");
+        int i = 0;
+        for (String s : items) {
+            if (i > 0) sb.append(", ");
+            sb.append(s);
+            if (++i >= limit) {
+                sb.append(", ...(+").append(items.size() - limit).append(")");
+                break;
+            }
+        }
+        return sb.append("]").toString();
     }
 
     /** 构建 Function-scoped hierarchy JSON（仅保留该 Function 所在路径） */
@@ -836,7 +970,10 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 for (MethodFunctionBinding b : bindings) {
                     if (StringUtils.hasText(b.getClassName())
                             && StringUtils.hasText(b.getMethodSignature())) {
-                        rootSignatures.add(b.getClassName() + "#" + b.getMethodSignature());
+                        String key = toCallerSignatureKey(b.getClassName(), b.getMethodSignature());
+                        if (key != null) {
+                            rootSignatures.add(key);
+                        }
                     }
                 }
             }
@@ -856,23 +993,34 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
         // BFS 调用链反查
         Set<String> reachableMethods = methodCallGraphService.resolveReachableMethods(taskId, rootSignatures);
-        log.info("阶段 2 文档生成 taskId={} module={} roots={} reachable={}",
-                taskId, moduleDto.getModuleName(), rootSignatures.size(), reachableMethods.size());
+        log.info("阶段 2 文档生成 taskId={} module={} roots={} reachable={} projectDir={}",
+                taskId, moduleDto.getModuleName(), rootSignatures.size(), reachableMethods.size(),
+                projectDir == null ? null : projectDir.getAbsolutePath());
 
         Map<String, Set<String>> classToMethodSigs = groupByClass(reachableMethods);
 
         StringBuilder sb = new StringBuilder();
+        int missFile = 0;
         for (Map.Entry<String, Set<String>> entry : classToMethodSigs.entrySet()) {
             String className = entry.getKey();
             Set<String> methodSigs = entry.getValue();
             String classFilePath = lookupClassFilePath(taskId, className);
             if (classFilePath == null) continue;
             File classFile = new File(projectDir, classFilePath);
-            if (!classFile.exists()) continue;
+            if (!classFile.exists()) {
+                missFile++;
+                log.warn("模块源码收集：文件不存在 class={} rel={} abs={}",
+                        className, classFilePath, classFile.getAbsolutePath());
+                continue;
+            }
             String filteredContent = filterClassToMethods(classFile, methodSigs);
             if (!StringUtils.hasText(filteredContent)) continue;
             sb.append("// === Class: ").append(className).append(" ===\n");
             sb.append(filteredContent).append("\n\n");
+        }
+        if (!StringUtils.hasText(sb.toString()) && missFile > 0) {
+            log.warn("模块 {} 源码组装为空（missFile={}），请检查 NAS workspace 与 filePath",
+                    moduleDto.getModuleName(), missFile);
         }
         return sb.toString();
     }
@@ -908,15 +1056,15 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     }
 
     /**
-     * 拼装完整方法签名：classPath#methodName(ParamType1, ParamType2)
-     * classPath 取 function.classPaths 的第一个元素
+     * 拼装完整方法签名：短类名#methodName(ParamType1, ParamType2)
+     * classPath 取 function.classPaths 的第一个元素（FQ 会截短，对齐 ci_method_call）
      */
     private String buildFullMethodSignature(com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
                                            String methodSig) {
         if (fn == null || !StringUtils.hasText(methodSig)) return null;
         String classPath = fn.getClassPaths().stream().findFirst().orElse(null);
         if (!StringUtils.hasText(classPath)) return null;
-        return classPath + "#" + methodSig;
+        return toCallerSignatureKey(classPath, methodSig);
     }
 
     /**
@@ -972,10 +1120,35 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     }
 
     /**
-     * 从 ci_method_call 反查类的物理文件路径
-     * 兜底：用 ci_code_file_snapshot 或包路径推断（暂不实现）
+     * 从 ci_method_call 反查类的物理文件路径。
+     * <p>{@code ci_method_call.class_name} 为短类名；入参可能是 FQ（binding / hierarchy classPaths），
+     * 需同时尝试短名，否则会落到错误的 {@code src/main/java/...} 推断路径（多模块 NAS 下几乎必挂）。</p>
      */
     private String lookupClassFilePath(Long taskId, String className) {
+        if (!StringUtils.hasText(className)) {
+            return null;
+        }
+        String fromDb = lookupClassFilePathExact(taskId, className);
+        if (fromDb != null) {
+            return fromDb;
+        }
+        String shortName = stripPackage(className);
+        if (StringUtils.hasText(shortName) && !shortName.equals(className)) {
+            fromDb = lookupClassFilePathExact(taskId, shortName);
+            if (fromDb != null) {
+                return fromDb;
+            }
+        }
+        // 兜底：用包路径推断（单模块约定；多模块应以 DB filePath 为准）
+        if (className.contains(".")) {
+            String pkgPath = className.substring(0, className.lastIndexOf('.')).replace('.', '/');
+            String simple = className.substring(className.lastIndexOf('.') + 1);
+            return "src/main/java/" + pkgPath + "/" + simple + ".java";
+        }
+        return "src/main/java/" + className + ".java";
+    }
+
+    private String lookupClassFilePathExact(Long taskId, String className) {
         try {
             List<com.company.codeinsight.modules.callchain.entity.MethodCall> calls = methodCallMapper.selectList(
                     new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.company.codeinsight.modules.callchain.entity.MethodCall>()
@@ -989,13 +1162,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         } catch (Exception e) {
             log.warn("lookupClassFilePath failed for {}: {}", className, e.getMessage());
         }
-        // 兜底：用包路径推断
-        if (className.contains(".")) {
-            String pkgPath = className.substring(0, className.lastIndexOf('.')).replace('.', '/');
-            String simple = className.substring(className.lastIndexOf('.') + 1);
-            return "src/main/java/" + pkgPath + "/" + simple + ".java";
-        }
-        return "src/main/java/" + className + ".java";
+        return null;
     }
 
     /**
@@ -1380,15 +1547,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
         String callStage = callMeta != null && StringUtils.hasText(callMeta.getCallStage()) ? callMeta.getCallStage() : "PROMPT";
 
-        String debugTarget = callMeta != null && StringUtils.hasText(callMeta.getClassPath())
-                ? callMeta.getClassPath() : "-";
-
         if (shouldMock) {
             log.info("Mock 模式已开启 (aiMock={}, apiKey={})，对 task {} / stage {} 跳过真实 AI 调用",
                     this.aiMock, maskKey(activeApiKey), taskId, callStage);
-            // TEMP: 排查空响应根因，确认后删除
-            logAiCallTemp(taskId, callStage, debugTarget, "MOCK",
-                    "aiMock=" + this.aiMock + " apiKey=" + maskKey(activeApiKey) + " → return {}");
             saveCallRecordAndAudit(systemId, taskId, resolvePromptId(task, callStage), null,
                     null, modelToUse, currentEstimate, 2, "{}", true, "mock-mode", 100, callStage);
             return "{}";
@@ -1431,19 +1592,10 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 String rawBody = response.body();
                 JsonNode root = objectMapper.readTree(rawBody);
                 JsonNode choices = root.path("choices");
-                int choicesSize = choices.isArray() ? choices.size() : -1;
-                String finishReason = choicesSize > 0 ? choices.get(0).path("finish_reason").asText("") : "";
-                String rawContent = choicesSize > 0
-                        ? choices.get(0).path("message").path("content").asText(null)
-                        : null;
-                String aiText = normalizeModelContent(rawContent != null ? rawContent : "");
-                // TEMP: 排查空响应根因，确认后删除
-                logAiCallTemp(taskId, callStage, debugTarget, "HTTP_200",
-                        String.format("durationMs=%d choices=%d finish_reason=%s rawContentLen=%d normalizedLen=%d rawContent=\n%s",
-                                duration, choicesSize, finishReason,
-                                rawContent == null ? -1 : rawContent.length(),
-                                aiText.length(),
-                                rawContent == null ? "<null>" : rawContent));
+                String rawContent = choices.isArray() && choices.size() > 0
+                        ? choices.get(0).path("message").path("content").asText("")
+                        : "";
+                String aiText = normalizeModelContent(rawContent);
                 int inTokens = root.path("usage").path("prompt_tokens").asInt(currentEstimate);
                 int outTokens = root.path("usage").path("completion_tokens").asInt(aiText.length() / 3);
                 saveCallRecordAndAudit(systemId, taskId, null, null,
@@ -1452,11 +1604,6 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             } else {
                 String errMsg = "HTTP " + response.statusCode() + ": " + response.body();
                 log.error("真实 AI 调用失败 task={} stage={} model={}: {}", taskId, callStage, modelToUse, errMsg);
-                // TEMP: 排查空响应根因，确认后删除
-                logAiCallTemp(taskId, callStage, debugTarget, "HTTP_ERROR",
-                        String.format("durationMs=%d status=%d body=\n%s → return {}",
-                                duration, response.statusCode(),
-                                truncateAiDebugBody(response.body())));
                 saveCallRecordAndAudit(systemId, taskId, null, null,
                         null, modelToUse, currentEstimate, 0, "{}", false, errMsg, duration, callStage);
                 return "{}";
@@ -1464,11 +1611,6 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
             log.error("真实 AI 调用异常 task={} stage={} model={}: {}", taskId, callStage, modelToUse, e.getMessage());
-            String kind = classifyAiCallFailure(e);
-            // TEMP: 排查空响应根因，确认后删除
-            logAiCallTemp(taskId, callStage, debugTarget, kind,
-                    String.format("durationMs=%d ex=%s msg=%s → return {}",
-                            duration, e.getClass().getName(), e.getMessage()));
             saveCallRecordAndAudit(systemId, taskId, resolvePromptId(task, callStage), null,
                     null, modelToUse, currentEstimate, 0, "{}", false, e.getMessage(), duration, callStage);
             return "{}";
@@ -1513,42 +1655,6 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         }
         String t = text.replace('\n', ' ').trim();
         return t.length() <= 200 ? t : t.substring(0, 200) + "...";
-    }
-
-    /** TEMP: 排查空响应根因，确认后删除 */
-    private void logAiCallTemp(Long taskId, String stage, String target, String kind, String detail) {
-        String msg = String.format("[AI-CALL-TEMP] stage=%s target=%s kind=%s %s",
-                stage, target, kind, detail);
-        log.warn(msg);
-        if (taskId != null) {
-            execLog.log(taskId, msg);
-        }
-    }
-
-    /** TEMP: 排查空响应根因，确认后删除 */
-    private static String classifyAiCallFailure(Exception e) {
-        Throwable cur = e;
-        while (cur != null) {
-            String name = cur.getClass().getName();
-            String msg = cur.getMessage() != null ? cur.getMessage() : "";
-            if (cur instanceof java.net.http.HttpTimeoutException
-                    || name.contains("Timeout")
-                    || msg.toLowerCase().contains("timed out")
-                    || msg.toLowerCase().contains("timeout")) {
-                return "TIMEOUT";
-            }
-            cur = cur.getCause();
-        }
-        return "EXCEPTION";
-    }
-
-    /** TEMP: 排查空响应根因，确认后删除 */
-    private static String truncateAiDebugBody(String body) {
-        if (body == null) {
-            return "<null>";
-        }
-        String t = body.trim();
-        return t.length() <= 2000 ? t : t.substring(0, 2000) + "...(truncated)";
     }
 
     private void logAiBlock(Long taskId, AiCallMeta callMeta, String reason) {

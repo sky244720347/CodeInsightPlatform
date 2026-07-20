@@ -1121,13 +1121,6 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
 
             String businessKnowledge = businessKnowledgeService.getContentBySystemId(task.getSystemId());
             String hierarchyJson = serializeHierarchyForPrompt(existingHierarchy);
-            log.warn("[AI-HIERARCHY-TEMP] target={} len={} module_hierarchy.json=\n{}",
-                    entryLabel, hierarchyJson == null ? -1 : hierarchyJson.length(), hierarchyJson);
-            execLog.log(taskId, String.format(
-                    "[AI-HIERARCHY-TEMP] target=%s len=%d module_hierarchy.json=\n%s",
-                    entryLabel,
-                    hierarchyJson == null ? -1 : hierarchyJson.length(),
-                    hierarchyJson == null ? "null" : hierarchyJson));
             String promptInput = promptTemplateLoader.render(promptTemplate, javaCode, businessKnowledge, hierarchyJson);
             if (promptTemplateLoader.hasUnresolvedPlaceholders(promptInput)) {
                 log.warn("Prompt 仍有未替换占位符，跳过入口 {}", entryLabel);
