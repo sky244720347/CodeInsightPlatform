@@ -6,6 +6,7 @@ import com.github.javaparser.ParseProblemException;
 import lombok.extern.slf4j.Slf4j;
 
 import java.io.File;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -50,7 +51,39 @@ public class FallbackJavaParserService implements JavaParserService {
 
     @Override
     public List<ParsedClassInfo> parseDirectory(File directory) {
-        // 目录扫描统一委托给 AST；失败时逐文件 parseFile 已自带回退
-        return primary.parseDirectory(directory);
+        // 逐文件走本类 parseFile（含 AST→REGEX），避免 AstJavaParserService.parseDirectory
+        // 遇单文件 ParseProblemException 中断整目录（入口识别会因此得到空列表）。
+        List<ParsedClassInfo> out = new ArrayList<>();
+        if (directory == null || !directory.exists()) {
+            return out;
+        }
+        walk(directory, directory, out);
+        return out;
+    }
+
+    private void walk(File root, File current, List<ParsedClassInfo> out) {
+        if (current.isDirectory()) {
+            File[] children = current.listFiles();
+            if (children == null) {
+                return;
+            }
+            for (File child : children) {
+                walk(root, child, out);
+            }
+            return;
+        }
+        if (!current.isFile() || !current.getName().endsWith(".java")) {
+            return;
+        }
+        try {
+            ParsedClassInfo info = parseFile(current);
+            if (info != null && info.getClassName() != null) {
+                String rel = root.toURI().relativize(current.toURI()).getPath();
+                info.setSourceRelativePath(rel.replace('\\', '/'));
+                out.add(info);
+            }
+        } catch (RuntimeException ex) {
+            log.warn("parseDirectory skip file {}: {}", current.getAbsolutePath(), ex.toString());
+        }
     }
 }

@@ -1,5 +1,6 @@
 package com.company.codeinsight.modules.parser.service.impl;
 
+import com.company.codeinsight.modules.parser.config.JavaParserLanguageConfig;
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo;
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo.MethodCallInfo;
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo.MethodInfo;
@@ -34,6 +35,7 @@ import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.ReflectionTypeSolver;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.util.StringUtils;
 
 import java.io.File;
@@ -67,6 +69,7 @@ import java.util.stream.Stream;
  *
  * <p>本类不直接暴露为 Spring Bean，由 ParserEngineConfig 按配置装配。</p>
  */
+@Slf4j
 public class AstJavaParserService implements JavaParserService {
 
     // 任务级缓存：与 RegexJavaParserService 兼容的 key 形式，复用下游 hit 率
@@ -94,6 +97,7 @@ public class AstJavaParserService implements JavaParserService {
 
     @Override
     public ParsedClassInfo parseFile(File file) {
+        JavaParserLanguageConfig.ensureStaticJavaParserConfigured();
         if (file == null || !file.exists() || !file.getName().endsWith(".java")) {
             return null;
         }
@@ -156,6 +160,7 @@ public class AstJavaParserService implements JavaParserService {
 
     @Override
     public List<ParsedClassInfo> parseDirectory(File directory) {
+        JavaParserLanguageConfig.ensureStaticJavaParserConfigured();
         List<ParsedClassInfo> list = new ArrayList<>();
         if (directory == null || !directory.exists()) return list;
         walkAndParse(directory, directory, list);
@@ -169,11 +174,18 @@ public class AstJavaParserService implements JavaParserService {
             return;
         }
         if (!current.getName().endsWith(".java")) return;
-        ParsedClassInfo info = parseFile(current);
-        if (info != null && info.getClassName() != null) {
-            String rel = root.toURI().relativize(current.toURI()).getPath();
-            info.setSourceRelativePath(rel.replace('\\', '/'));
-            out.add(info);
+        try {
+            ParsedClassInfo info = parseFile(current);
+            if (info != null && info.getClassName() != null) {
+                String rel = root.toURI().relativize(current.toURI()).getPath();
+                info.setSourceRelativePath(rel.replace('\\', '/'));
+                out.add(info);
+            }
+        } catch (ParseProblemException ex) {
+            log.warn("AST parseDirectory skip file {}: {}", current.getAbsolutePath(), ex.getMessage());
+        } catch (RuntimeException ex) {
+            log.warn("AST parseDirectory skip file {} due to runtime error: {}",
+                    current.getAbsolutePath(), ex.toString());
         }
     }
 
@@ -648,7 +660,8 @@ public class AstJavaParserService implements JavaParserService {
             CombinedTypeSolver combined = new CombinedTypeSolver();
             combined.add(new ReflectionTypeSolver());
             JavaSymbolSolver ss = new JavaSymbolSolver(combined);
-            ParserConfiguration parserConfig = new ParserConfiguration().setSymbolResolver(ss);
+            ParserConfiguration parserConfig = JavaParserLanguageConfig.apply(
+                    new ParserConfiguration().setSymbolResolver(ss));
             JavaParserTypeSolver jpts = new JavaParserTypeSolver(root, parserConfig);
             combined.add(jpts);
             return ss;
@@ -690,6 +703,7 @@ public class AstJavaParserService implements JavaParserService {
     /** 单文件 subtype 收集。错就跳过，不抛。 */
     private void indexOneFile(Path p, File root, JavaSymbolSolver symbolSolver, Map<String, List<String>> index) {
         try {
+            JavaParserLanguageConfig.ensureStaticJavaParserConfigured();
             CompilationUnit cu = StaticJavaParser.parse(p.toFile());
             String pkg = cu.getPackageDeclaration().map(d -> d.getNameAsString()).orElse("");
             for (TypeDeclaration<?> td : cu.getTypes()) {
