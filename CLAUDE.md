@@ -202,7 +202,7 @@ DRAFT
 - Leader 选举：`ci:leader:task-dispatcher` / `ci:leader:schedule-executor`。
 - 任务认领：`SELECT … FOR UPDATE SKIP LOCKED` + `claimed_by` / `lease_until` 预留 `PENDING` 行。
 - Redis 并发：全局 `ci:permits:task:global` + 每系统 `ci:permits:task:sys:{id}`。
-- AI 并发：JVM `Semaphore` → Redis Set `ci:permits:ai:global`，配置变更通过 Pub/Sub `ci:config:refresh` 广播。
+- AI 并发：JVM `Semaphore` → Redis Set `ci:permits:ai:global`；系统配置值缓存 Redis `ci:config:kv:*`（读穿 PG、写后 DEL，无 Pub/Sub）。
 - 共享存储：所有节点挂载同一 `runtimeRoot`（含 data/ 与 workspaces/）与 `releasesRoot`（`EnvStorageResolver` 统一解析；详见 [docs/cluster-storage-runtime-root-plan.md](./docs/cluster-storage-runtime-root-plan.md)）。
 
 ### 存储边界（不要把正文塞进数据库）

@@ -1,7 +1,6 @@
 package com.company.codeinsight.modules.quotacontrol.controller;
 
 import com.company.codeinsight.common.auth.OperatorContext;
-import com.company.codeinsight.common.cluster.ConfigRefreshPublisher;
 import com.company.codeinsight.common.response.ApiResponse;
 import com.company.codeinsight.modules.quotacontrol.dto.SystemConfigUpdateRequest;
 import com.company.codeinsight.modules.quotacontrol.entity.SystemConfig;
@@ -29,9 +28,6 @@ public class SystemConfigController {
     @Autowired
     private TaskConcurrencyLimiter taskConcurrencyLimiter;
 
-    @Autowired
-    private ConfigRefreshPublisher configRefreshPublisher;
-
     @Operation(summary = "列出所有配置")
     @GetMapping
     public ApiResponse<List<SystemConfig>> list() {
@@ -51,7 +47,9 @@ public class SystemConfigController {
         // 保留旧 description：调用方没传时不覆盖
         if (desc == null) {
             SystemConfig old = systemConfigService.getById(key);
-            if (old != null) desc = old.getDescription();
+            if (old != null) {
+                desc = old.getDescription();
+            }
         }
         systemConfigService.putString(key, body.getValue(), desc, OperatorContext.get());
         if ("ai.concurrency".equals(key)) {
@@ -66,7 +64,6 @@ public class SystemConfigController {
             } catch (NumberFormatException ignored) {
             }
         }
-        configRefreshPublisher.publish(key);
         return ApiResponse.success();
     }
 }

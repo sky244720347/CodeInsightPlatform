@@ -1,8 +1,9 @@
 # `ci_system_config` → Apollo 迁移方案
 
 > 目标：运行期系统配置从 PostgreSQL `ci_system_config` 迁到 Apollo；**页面仍可改配置**；集群多节点靠 **Apollo 变更监听** 同步；**删除 Redis Pub/Sub 配置广播**（`ci:config:refresh`）。  
-> 关联：[`dual-team-migration-plan.html`](./dual-team-migration-plan.html) §4 Apollo；现状代码 `SystemConfigController` / `ConfigRefreshPublisher` / `ConfigRefreshListener`。  
-> 状态：**方案待确认**（未实施）。
+> 关联：[`dual-team-migration-plan.html`](./dual-team-migration-plan.html) §4 Apollo；现状代码 `SystemConfigController` / `SystemConfigServiceImpl`。  
+> 状态：**方案待确认**（未实施）。  
+> **前置已完成**（2026-07）：公司环境不支持 Redis Pub/Sub，已按 [`system-config-redis-cache-plan.md`](./system-config-redis-cache-plan.md) 下线 `ConfigRefreshPublisher` / `ConfigRefreshListener`，改为 Redis 值缓存 `ci:config:kv:*`。本 Apollo 方案若推进，在该基线上改权威源即可，**无需再恢复 Pub/Sub**。
 
 ---
 

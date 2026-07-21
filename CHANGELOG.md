@@ -6,6 +6,14 @@
 
 ## [Unreleased]
 
+### 系统配置：Redis 值缓存，下线 Pub/Sub
+
+详见 [docs/system-config-redis-cache-plan.md](./docs/system-config-redis-cache-plan.md)。
+
+- **读**：`SystemConfigService` 走 Redis `ci:config:kv:{key}` → miss 回源 `ci_system_config` → 回填（TTL 1h）；去掉 JVM `ConcurrentHashMap`
+- **写**：写 PG 成功后 `DEL` Redis key；写节点仍本机 rebuild `ai.concurrency` / `task.concurrency`
+- **删除**：`ConfigRefreshPublisher` / `ConfigRefreshListener` / `RedisClusterConfig`（公司环境不支持 Redis Pub/Sub）
+
 ### ⚠️ BREAKING：全表审计字段统一
 
 详见 [docs/schema-audit-fields-rename-plan.md](./docs/schema-audit-fields-rename-plan.md)。

@@ -172,7 +172,7 @@ dev：
 | Leader | `ci:leader:task-dispatcher` |
 | 任务认领 | SKIP LOCKED + `claimed_by` / `lease_until` |
 | 并发 | Redis `ci:permits:task:*` / `ci:permits:ai:*` |
-| 配置广播 | `ci:config:refresh` |
+| 系统配置缓存 | Redis `ci:config:kv:{key}`（读穿 PG、写后 DEL；无 Pub/Sub） |
 | 断点亲和 | 工作区目录在共享盘上则任意节点可续跑 |
 
 单节点非 dev：上述逻辑仍跑，无功能阻碍，仅多依赖 Redis。

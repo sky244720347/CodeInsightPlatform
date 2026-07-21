@@ -73,7 +73,7 @@ AI 只负责归纳和建议。模块 ID、类路径绑定、Schema 校验、状�
 - **审计**：Token 明细与趋势、额度策略、操作日志和异常追踪。
 - **AI 模型管理**：自定义模型、预设模型、指标与试跑。
 - **扫描窗口 + 定时调度**（v0.1.5）：`scanwindow` 模块定义允许扫描的时间窗口；`ScheduleExecutor` 仅在窗口内由 Leader 节点拉起；前端 `ScanWindowHeatmap` 可视化。
-- **集群 / 分布式就绪**（v0.1.5+）：由 `CODE_INSIGHT_ENV` 推导（`dev` 单机，非 `dev` 一律集群；已删除 `CLUSTER_ENABLED`）；Leader 选举（`ci:leader:*`）、`SELECT … FOR UPDATE SKIP LOCKED` 任务认领、Redis Set `ci:permits:*` 并发控制、Pub/Sub 配置广播、共享存储卷。详见 [docs/cluster-shared-storage-design.md](./docs/cluster-shared-storage-design.md)。
+- **集群 / 分布式就绪**（v0.1.5+）：由 `CODE_INSIGHT_ENV` 推导（`dev` 单机，非 `dev` 一律集群；已删除 `CLUSTER_ENABLED`）；Leader 选举（`ci:leader:*`）、`SELECT … FOR UPDATE SKIP LOCKED` 任务认领、Redis Set `ci:permits:*` 并发控制、系统配置 Redis 值缓存（`ci:config:kv:*`，无 Pub/Sub）、共享存储卷。详见 [docs/cluster-shared-storage-design.md](./docs/cluster-shared-storage-design.md)。
 
 ## 快速开始
 

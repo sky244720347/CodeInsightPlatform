@@ -2,8 +2,8 @@
 
 > 目标：运行期配置改为 **PostgreSQL 权威 + Redis 值缓存（读穿 / 写后失效）**；**去掉** 对 Redis Pub/Sub（`ci:config:refresh`）的依赖。  
 > 背景：公司环境不支持 Redis 消息发布，现有集群配置广播不可用。  
-> 关联：现状 `SystemConfigServiceImpl` / `ConfigRefreshPublisher` / `ConfigRefreshListener`；远期可选 [`system-config-apollo-migration-plan.md`](./system-config-apollo-migration-plan.md)。  
-> 状态：**方案已确认，待实施**。
+> 关联：实施代码 `SystemConfigServiceImpl`；远期可选 [`system-config-apollo-migration-plan.md`](./system-config-apollo-migration-plan.md)。  
+> 状态：**已实施**（2026-07-21）。
 
 ---
 
