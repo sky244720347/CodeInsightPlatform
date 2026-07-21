@@ -27,6 +27,7 @@ CREATE TABLE IF NOT EXISTS ci_system (
     name_cn VARCHAR(200),
     description VARCHAR(500),
     owner VARCHAR(50) NOT NULL,
+    component VARCHAR(100) DEFAULT '' NOT NULL,
     modularize_prompt_id BIGINT,
     document_prompt_id BIGINT,
     max_concurrent_tasks INT DEFAULT 1 NOT NULL,
@@ -36,6 +37,10 @@ CREATE TABLE IF NOT EXISTS ci_system (
     created_by VARCHAR(100) DEFAULT 'sys' NOT NULL,
     updated_by VARCHAR(100) DEFAULT 'sys' NOT NULL
 );
+
+CREATE UNIQUE INDEX IF NOT EXISTS uk_system_name_component_active
+    ON ci_system (name, component)
+    WHERE is_deleted = 0;
 
 COMMENT ON COLUMN ci_system.created_date IS '创建时间';
 COMMENT ON COLUMN ci_system.updated_date IS '更新时间';
@@ -50,6 +55,7 @@ COMMENT ON COLUMN ci_system.owner IS '系统负责人';
 COMMENT ON COLUMN ci_system.modularize_prompt_id IS '已废弃：模块提取提示词 ID（运行时未设置则回退到 ci_prompt.is_default=1）';
 COMMENT ON COLUMN ci_system.document_prompt_id IS '已废弃：文档生成提示词 ID（运行时未设置则回退到 ci_prompt.is_default=1）';
 COMMENT ON COLUMN ci_system.max_concurrent_tasks IS '同时在跑任务上限（系统级并发闸门），默认 1';
+COMMENT ON COLUMN ci_system.component IS '组件标识；与 name 联合构成业务身份；空串表示无组件';
 
 -- ============================================================
 -- 2. ci_repository — 代码库配置表

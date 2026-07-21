@@ -61,7 +61,7 @@ public class SystemApplicationServiceImpl extends ServiceImpl<SystemApplicationM
     }
 
     /**
-     * 新建系统。
+     * 新建系统。按 name + component 查重，重复则拒绝插入。
      */
     @Override
     public SystemApplication createSystemDraft(SystemApplication system) {
@@ -74,9 +74,72 @@ public class SystemApplicationServiceImpl extends ServiceImpl<SystemApplicationM
         if (!StringUtils.hasText(system.getOwner())) {
             throw new BusinessException("负责人(owner)必填");
         }
+        system.setName(system.getName().trim());
+        system.setComponent(normalizeComponent(system.getComponent()));
+        assertUniqueNameComponent(system.getName(), system.getComponent(), null);
         system.setId(null);
         this.save(system);
         return system;
+    }
+
+    /**
+     * 更新系统基本信息。按 name + component 查重（排除自身）。
+     */
+    @Override
+    public SystemApplication updateSystemBasicInfo(Long id, SystemApplication patch) {
+        if (id == null) {
+            throw new BusinessException("系统 ID 不能为空");
+        }
+        if (patch == null) {
+            throw new BusinessException("系统数据不能为空");
+        }
+        SystemApplication existing = this.getById(id);
+        if (existing == null) {
+            throw new BusinessException("系统不存在");
+        }
+        if (!StringUtils.hasText(patch.getName())) {
+            throw new BusinessException("系统名称(name)必填");
+        }
+        if (!StringUtils.hasText(patch.getOwner())) {
+            throw new BusinessException("负责人(owner)必填");
+        }
+        String name = patch.getName().trim();
+        String component = normalizeComponent(patch.getComponent());
+        assertUniqueNameComponent(name, component, id);
+
+        existing.setName(name);
+        existing.setComponent(component);
+        existing.setNameCn(patch.getNameCn());
+        existing.setOwner(patch.getOwner().trim());
+        existing.setDescription(patch.getDescription());
+        this.updateById(existing);
+        return existing;
+    }
+
+    /** null / blank → 空串，避免唯一索引上 NULL 歧义。 */
+    public static String normalizeComponent(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return "";
+        }
+        return raw.trim();
+    }
+
+    /**
+     * 未删除行中 (name, component) 必须唯一。
+     * {@code excludeId} 非空时排除自身（更新场景）。
+     */
+    private void assertUniqueNameComponent(String name, String component, Long excludeId) {
+        LambdaQueryWrapper<SystemApplication> qw = new LambdaQueryWrapper<SystemApplication>()
+                .eq(SystemApplication::getName, name)
+                .eq(SystemApplication::getComponent, component);
+        if (excludeId != null) {
+            qw.ne(SystemApplication::getId, excludeId);
+        }
+        Long count = this.count(qw);
+        if (count != null && count > 0) {
+            String label = StringUtils.hasText(component) ? name + " / " + component : name;
+            throw new BusinessException("系统+组件已存在：" + label);
+        }
     }
 
     /**

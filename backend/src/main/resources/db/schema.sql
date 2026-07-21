@@ -41,6 +41,7 @@ ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS name_cn VARCHAR(200);
 ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS modularize_prompt_id BIGINT;
 ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS document_prompt_id BIGINT;
 ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS max_concurrent_tasks INT DEFAULT 1 NOT NULL;
+ALTER TABLE ci_system ADD COLUMN IF NOT EXISTS component VARCHAR(100) NOT NULL DEFAULT '';
 ALTER TABLE ci_system DROP COLUMN IF EXISTS state;
 ALTER TABLE ci_system DROP COLUMN IF EXISTS status;
 
@@ -61,6 +62,12 @@ COMMENT ON COLUMN ci_system.is_deleted   IS '逻辑删除：0=未删除 1=已删
 COMMENT ON COLUMN ci_system.created_by   IS '创建人';
 COMMENT ON COLUMN ci_system.updated_by   IS '最后修改人';
 -- AUDIT_FIELDS_END ci_system
+
+-- 未删除行上 (name, component) 唯一：系统+组件作为业务身份（须在 is_deleted 列就绪后）
+CREATE UNIQUE INDEX IF NOT EXISTS uk_system_name_component_active
+    ON ci_system (name, component)
+    WHERE is_deleted = 0;
+
 COMMENT ON TABLE ci_system IS '业务系统管理表（多业务系统隔离的根）';
 COMMENT ON COLUMN ci_system.name IS '系统名称';
 COMMENT ON COLUMN ci_system.name_cn IS '系统中文名称';
@@ -69,6 +76,7 @@ COMMENT ON COLUMN ci_system.owner IS '系统负责人';
 COMMENT ON COLUMN ci_system.modularize_prompt_id IS '已废弃：模块提取提示词 ID（运行时未设置则回退到 ci_prompt.is_default=1）';
 COMMENT ON COLUMN ci_system.document_prompt_id IS '已废弃：文档生成提示词 ID（运行时未设置则回退到 ci_prompt.is_default=1）';
 COMMENT ON COLUMN ci_system.max_concurrent_tasks IS '同时在跑任务上限（系统级并发闸门），默认 1';
+COMMENT ON COLUMN ci_system.component IS '组件标识；与 name 联合构成业务身份；空串表示无组件';
 
 
 -- ============================================================

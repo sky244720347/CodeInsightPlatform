@@ -38,13 +38,12 @@ public class SystemApplicationController {
         return ApiResponse.success(created);
     }
 
-    @Operation(summary = "编辑系统（基本信息 / 提示词绑定）")
+    @Operation(summary = "编辑系统基本信息（name + component 查重）")
     @PutMapping("/{id}")
     public ApiResponse<SystemApplication> updateSystem(@PathVariable Long id, @Valid @RequestBody SystemApplication system) {
-        system.setId(id);
-        systemApplicationService.updateById(system);
-        operationLogService.logOperation(id, null, "UPDATE_SYSTEM", "更新系统: " + system.getName(), null, true);
-        return ApiResponse.success(system);
+        SystemApplication updated = systemApplicationService.updateSystemBasicInfo(id, system);
+        operationLogService.logOperation(id, null, "UPDATE_SYSTEM", "更新系统: " + updated.getName(), null, true);
+        return ApiResponse.success(updated);
     }
 
     @Operation(summary = "系统详情")

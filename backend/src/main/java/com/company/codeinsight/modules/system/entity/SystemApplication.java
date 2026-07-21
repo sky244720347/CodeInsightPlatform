@@ -34,6 +34,12 @@ public class SystemApplication extends BaseEntity {
     private String nameCn;
 
     /**
+     * 组件标识；与 {@link #name} 联合构成业务身份（查重键）。
+     * <p>空串表示无组件 / 默认组件；勿存 null。</p>
+     */
+    private String component;
+
+    /**
      * 业务系统的描述说明
      */
     private String description;

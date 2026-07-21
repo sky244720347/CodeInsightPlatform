@@ -1,6 +1,7 @@
 package com.company.codeinsight.modules.system;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
+import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.modules.system.entity.SystemApplication;
 import com.company.codeinsight.modules.system.vo.SystemSummaryVO;
 import com.company.codeinsight.modules.system.service.SystemApplicationService;
@@ -68,5 +69,62 @@ public class SystemApplicationServiceTests {
         Assertions.assertNull(systemApplicationService.getById(system.getId()));
         Page<SystemSummaryVO> after = systemApplicationService.listSystemsPage(1, 10, system.getName(), null, null);
         Assertions.assertEquals(0, after.getTotal());
+    }
+
+    @Test
+    public void createSystem_rejectsDuplicateNameComponent() {
+        String name = "dup-sys-" + System.nanoTime();
+        SystemApplication first = new SystemApplication();
+        first.setName(name);
+        first.setComponent("billing");
+        first.setOwner("Tester");
+        systemApplicationService.createSystemDraft(first);
+        Assertions.assertNotNull(first.getId());
+        Assertions.assertEquals("billing", first.getComponent());
+
+        SystemApplication dup = new SystemApplication();
+        dup.setName(name);
+        dup.setComponent("billing");
+        dup.setOwner("Tester");
+        BusinessException ex = Assertions.assertThrows(
+                BusinessException.class,
+                () -> systemApplicationService.createSystemDraft(dup));
+        Assertions.assertTrue(ex.getMessage().contains("系统+组件已存在"));
+    }
+
+    @Test
+    public void createSystem_allowsSameNameDifferentComponent() {
+        String name = "multi-comp-" + System.nanoTime();
+        SystemApplication a = new SystemApplication();
+        a.setName(name);
+        a.setComponent("api");
+        a.setOwner("Tester");
+        systemApplicationService.createSystemDraft(a);
+
+        SystemApplication b = new SystemApplication();
+        b.setName(name);
+        b.setComponent("worker");
+        b.setOwner("Tester");
+        systemApplicationService.createSystemDraft(b);
+
+        Assertions.assertNotEquals(a.getId(), b.getId());
+    }
+
+    @Test
+    public void createSystem_blankComponentNormalizesToEmpty() {
+        String name = "blank-comp-" + System.nanoTime();
+        SystemApplication a = new SystemApplication();
+        a.setName(name);
+        a.setComponent("  ");
+        a.setOwner("Tester");
+        systemApplicationService.createSystemDraft(a);
+        Assertions.assertEquals("", a.getComponent());
+
+        SystemApplication dupEmpty = new SystemApplication();
+        dupEmpty.setName(name);
+        dupEmpty.setOwner("Tester");
+        Assertions.assertThrows(
+                BusinessException.class,
+                () -> systemApplicationService.createSystemDraft(dupEmpty));
     }
 }

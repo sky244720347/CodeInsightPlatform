@@ -64,6 +64,7 @@ interface Props {
 
 interface SystemFormValues {
   name: string;
+  component?: string;
   nameCn?: string;
   owner: string;
   description?: string;
@@ -314,16 +315,23 @@ const SystemWizardModal: React.FC<Props> = ({
     const values = await systemForm.validateFields();
     setSubmitting(true);
     try {
+      const payload = {
+        ...values,
+        component: values.component?.trim() || '',
+      };
       let sys: System;
       if (systemId) {
-        sys = await updateSystem(systemId, values);
+        sys = await updateSystem(systemId, payload);
       } else {
-        sys = await createSystem(values);
+        sys = await createSystem(payload);
         setSystemId(sys.id);
       }
       setSystemId(sys.id);
       // 同步记录系统名称,后续 Step 4 创建自定义提示词时用作命名前缀
-      setSystemName(sys.name ?? values.name ?? '');
+      const label = payload.component
+        ? `${sys.name ?? payload.name} / ${payload.component}`
+        : (sys.name ?? values.name ?? '');
+      setSystemName(label);
       message.success('基本信息已保存');
       setCurrentStep(1);
       // 阶段性保存:通知父页面刷新列表,使用户关闭向导后能看到新建的系统草稿
@@ -471,6 +479,13 @@ const SystemWizardModal: React.FC<Props> = ({
           >
             <Form.Item name="name" label="系统名称" rules={[{ required: true, message: '请输入系统标识（如 order-service）' }]}>
               <Input placeholder="order-service" />
+            </Form.Item>
+            <Form.Item
+              name="component"
+              label="组件"
+              extra="与系统名称联合唯一；可不填表示无组件。重复的「系统+组件」将无法创建。"
+            >
+              <Input placeholder="billing（可选）" allowClear />
             </Form.Item>
             <Form.Item name="nameCn" label="中文名称">
               <Input placeholder="订单服务系统" />

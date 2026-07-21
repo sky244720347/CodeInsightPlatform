@@ -1,6 +1,8 @@
 export interface System {
   id: number;
   name: string;
+  /** 组件标识；与 name 联合唯一；空表示无组件 */
+  component?: string;
   nameCn?: string;
   description: string;
   owner: string;

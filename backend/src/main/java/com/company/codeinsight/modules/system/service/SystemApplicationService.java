@@ -20,8 +20,15 @@ public interface SystemApplicationService extends IService<SystemApplication> {
 
     /**
      * 新建系统（向导 Step 1）。必填：name、owner。
+     * <p>{@code name + component} 在未删除行中唯一；component 空/空白归一为空串。</p>
      */
     SystemApplication createSystemDraft(SystemApplication system);
+
+    /**
+     * 更新系统基本信息。必填：name、owner。
+     * <p>{@code name + component} 查重（排除自身）；component 空/空白归一为空串。</p>
+     */
+    SystemApplication updateSystemBasicInfo(Long id, SystemApplication patch);
 
     /**
      * 软删除系统。强校验活跃任务，并级联软删除该系统下所有未删除的代码库。

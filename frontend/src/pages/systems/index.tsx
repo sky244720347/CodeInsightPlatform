@@ -61,6 +61,7 @@ const Systems: React.FC = () => {
       setEditingSystem(record);
       editForm.setFieldsValue({
         name: record.name,
+        component: record.component || undefined,
         nameCn: record.nameCn,
         owner: record.owner,
         description: record.description,
@@ -75,7 +76,10 @@ const Systems: React.FC = () => {
     try {
       const values = await editForm.validateFields();
       setEditSubmitting(true);
-      await updateSystem(editingSystem.id, values);
+      await updateSystem(editingSystem.id, {
+        ...values,
+        component: values.component?.trim() || '',
+      });
       message.success('系统信息已更新');
       setEditModalOpen(false);
       setEditingSystem(null);

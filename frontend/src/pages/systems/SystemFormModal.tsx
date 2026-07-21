@@ -4,6 +4,8 @@ import type { FormInstance } from 'antd';
 
 export interface SystemFormValues {
   name: string;
+  /** 组件标识；与系统名称联合查重；可空 */
+  component?: string;
   nameCn?: string;
   owner: string;
   description?: string;
@@ -49,6 +51,15 @@ const SystemFormModal: React.FC<Props> = ({
             rules={[{ required: true, message: '请输入系统标识（如 order-service）' }]}
           >
             <Input placeholder="order-service" />
+          </Form.Item>
+        </Col>
+        <Col span={12}>
+          <Form.Item
+            name="component"
+            label="组件"
+            extra="与系统名称联合唯一；可不填表示无组件"
+          >
+            <Input placeholder="billing（可选）" allowClear />
           </Form.Item>
         </Col>
         <Col span={12}>

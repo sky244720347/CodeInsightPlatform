@@ -2,7 +2,7 @@
 
 > **管什么**：在「系统与仓库」下为业务系统增加 **组件** 维度；以「系统 + 组件」作为业务身份做查重；对外隔离键仍是 **单个 `system_id`**。  
 > **不管什么**：新建 `ci_component` 表 / `component_id` FK；跨组件共享业务知识、并发配额、统一父级分组树；仓库侧（`ci_repository`）结构变更。  
-> **状态**：待实施。  
+> **状态**：实施中（2026-07-21：schema / 查重接口 / 「系统与仓库」页面表单与列表已落地；其它页系统下拉文案未改）。  
 > **设计原则**：最小改动 —— 把「系统+组件」编码成一条 `ci_system`，沿用现有 `system_id` 贯穿任务 / 并发 / 业务知识 / 前端筛选。
 
 ---
@@ -113,54 +113,88 @@ DB 唯一索引作最终兜底；服务层校验给前端可读错误。
 
 ---
 
-## 四、前端（「系统与仓库」为主）
+## 四、前端改动细节（已落地）
 
-### 4.1 必改
+> API 层仍走现有 `createSystem` / `updateSystem` / `listSystems`（`frontend/src/api/system.ts` 方法签名未改）；类型与页面消费 `component`。  
+> 查重错误由后端 `BusinessException` 经 `request` 拦截器抛出，前端用既有 `message` / 控制台处理，**未单独做前端预查重**。
 
-| 位置 | 改动 |
+### 4.1 类型
+
+| 文件 | 改动 |
 |---|---|
-| `api/system.ts`（或等价类型） | `System` 增加 `component?: string` |
-| `SystemFormModal` / `SystemWizardModal` | 增加「组件」表单项（可选）；提交前 trim |
-| `columns.tsx` / 列表 | 展示 `name` + `component`（或统一 `displayLabel`） |
-| `SystemFilterBar` | 支持按系统名 / 组件关键字过滤（可先简单 `includes`） |
+| `frontend/src/types/index.ts` | `System` 增加可选字段 `component?: string`（注释：与 `name` 联合唯一；空表示无组件） |
 
-### 4.2 展示策略
+`api/system.ts` 使用 `Partial<System>`，无需改方法签名；创建/更新请求体自然带上 `component`。
 
-- 下拉选系统（任务、知识、草稿等页）：选项文案改为「系统 / 组件」，**value 仍是 `systemId`**。
-- 本期可不做「先选系统再选组件」两级联动（因为组件不是子表，每一行已是完整身份）。
+### 4.2 新建向导 `SystemWizardModal.tsx`
 
-### 4.3 明确可不改（本期）
+| 点 | 细节 |
+|---|---|
+| 表单类型 | 本地 `SystemFormValues` 增加 `component?: string` |
+| Step 1 UI | 「系统名称」下方增加「组件」`Form.Item`：可选、`allowClear`；`extra` 文案说明与系统名联合唯一、重复无法创建 |
+| 提交归一 | `handleStep1Submit`：`component: values.component?.trim() \|\| ''` 后再 `createSystem` / `updateSystem` |
+| 展示名 | 保存成功后 `setSystemName`：有组件用 `{name} / {component}`，无组件仍用 `name`（供后续步骤命名前缀） |
+| 查重失败 | 依赖后端报错（如「系统+组件已存在」）；向导不本地拦截 |
 
-- 仓库抽屉内部逻辑（仍是某 `systemId` 下的仓库列表）
-- 任务流水线、知识发布路径
+### 4.3 编辑弹窗 `SystemFormModal.tsx` + `index.tsx`
 
-若其它页系统下拉仍只显示 `name`，会出现「同系统不同组件看起来像重复」—— **建议同步改展示文案**（改动面是文案层，不是数据模型层）。
+| 点 | 细节 |
+|---|---|
+| 表单 | 「系统名称」旁增加「组件」输入；`extra`：与系统名称联合唯一；可不填 |
+| 回填 | `handleEdit`：`component: record.component \|\| undefined`（空串不占位） |
+| 提交 | `handleEditSubmit`：同样 `trim() \|\| ''` 后 `updateSystem(id, payload)` |
+| 错误 | 重复时后端拒绝，现有 catch 打日志；表单校验错误（`errorFields`）不弹额外提示 |
+
+### 4.4 列表 `columns.tsx`
+
+| 列 / 交互 | 行为 |
+|---|---|
+| 「系统」列 | 有 `component` 时链接文案为 `` `${name} / ${component}` ``，否则仅 `name` |
+| 新增「组件」列 | 有值 → `<Tag>`；无值 → 次要色 `—` |
+| 删除确认 | Popconfirm 标题用「系统 / 组件」或仅系统名，与列表一致 |
+
+### 4.5 展示约定（与方案 §一 对齐）
+
+- 有组件：`{name} / {component}`
+- 无组件：`{name}`
+- **value / 路由 / 业务请求仍只用 `systemId`**，不做「先选系统再选组件」两级联动
+
+### 4.6 本期未改（明确）
+
+| 项 | 说明 |
+|---|---|
+| `SystemFilterBar` | 仍只按系统名 / 负责人筛；未加组件关键字 |
+| 任务 / 知识 / 草稿等页的系统下拉 | 仍可能只显示 `name`；同名多组件时文案可能撞车——**后续按需改文案层** |
+| `RepositoryDrawer` 等仓库侧 | 仍挂当前选中行的 `systemId`，逻辑不变 |
+| 前端本地查重 | 不做；以接口为准 |
 
 ---
 
 ## 五、改动清单（实施用）
 
-| # | 文件 / 区域 | 内容 |
-|---|---|---|
-| A1 | `backend/.../db/schema.sql` | `component` 列 + 部分唯一索引 |
-| A2 | `SystemApplication.java` | 字段 `component` |
-| A3 | `SystemApplicationServiceImpl` | normalize + 创建/更新查重 |
-| A4 | 单测 | 同名同组件拒绝；同名不同组件允许；空组件互斥；软删后可重建 |
-| B1 | `frontend/src/api/system.ts` | 类型字段 |
-| B2 | `SystemFormModal` / `SystemWizardModal` | 组件输入 |
-| B3 | `columns.tsx` + 系统下拉展示 | `name / component` |
-| B4 | （建议）任务 / 知识等 `systemId` 选择器 | 同步展示文案 |
+| # | 文件 / 区域 | 内容 | 状态 |
+|---|---|---|---|
+| A1 | `schema.sql` / `schema-fresh.sql` | `component` 列 + 部分唯一索引 | 已做 |
+| A2 | `SystemApplication.java` | 字段 `component` | 已做 |
+| A3 | `SystemApplicationServiceImpl` + Controller | normalize + 创建/更新查重 | 已做 |
+| A4 | `SystemApplicationNameComponentUniqueTest` | 重复拒绝 / 空串归一 / 更新撞车 | 已做 |
+| B1 | `frontend/src/types/index.ts` | `System.component?` | 已做 |
+| B2 | `SystemFormModal` / `SystemWizardModal` / `index.tsx` | 组件输入 + 提交 trim | 已做 |
+| B3 | `columns.tsx` | 系统列拼接 + 组件列 + 删除文案 | 已做 |
+| B4 | 任务 / 知识等 `systemId` 选择器文案 | 同步 `name / component` | **未做（建议后续）** |
+| B5 | `SystemFilterBar` 按组件过滤 | 可选增强 | **未做** |
 
 ---
 
 ## 六、验收
 
-- [ ] 新建：`(name=A, component=B)` 成功；再新建同对 → 业务错误，不落库
-- [ ] 新建：`(A, B)` 与 `(A, C)`、`(A, '')` 可并存，三条不同 `system_id`
-- [ ] 更新：把组件改成已占用对 → 失败；改成空闲对 → 成功
-- [ ] 软删后再建同名同组件 → 成功
-- [ ] 存量系统（`component=''`）列表 / 下拉行为与改前一致
-- [ ] 该系统下建仓库、跑任务、业务知识仍只依赖其 `system_id`，无需新参数
+- [x] 新建：`(name=A, component=B)` 成功；再新建同对 → 业务错误，不落库（单测 + 接口）
+- [x] 新建：`(A, B)` 与 `(A, C)`、`(A, '')` 可并存（后端逻辑；空串归一单测）
+- [x] 更新：把组件改成已占用对 → 失败（单测）
+- [ ] 软删后再建同名同组件 → 成功（依赖集成环境）
+- [x] 存量系统（`component=''`）列表无组件时展示与改前一致（仅 `name`）
+- [x] 该系统下建仓库、跑任务、业务知识仍只依赖其 `system_id`，无需新参数
+- [x] 向导 / 编辑页可填组件；列表可见「系统 / 组件」
 
 ---
 

@@ -30,9 +30,17 @@ export const getSystemColumns = (handlers: SystemColumnHandlers) => [
     fixed: 'left' as const,
     render: (text: string, record: System) => (
       <Button type="link" className="ci-table-link" onClick={() => handlers.onOpenDetail(record)}>
-        {text}
+        {record.component ? `${text} / ${record.component}` : text}
       </Button>
     ),
+  },
+  {
+    title: '组件',
+    dataIndex: 'component',
+    key: 'component',
+    width: 140,
+    render: (component?: string) =>
+      component ? <Tag>{component}</Tag> : <Text type="secondary">—</Text>,
   },
   {
     title: '中文名称',
@@ -104,7 +112,7 @@ export const getSystemColumns = (handlers: SystemColumnHandlers) => [
           业务知识
         </Button>
         <Popconfirm
-          title={`删除系统【${record.name}】？`}
+          title={`删除系统【${record.component ? `${record.name} / ${record.component}` : record.name}】？`}
           description="将级联软删除该系统下所有代码库，存在未完成任务时会拒绝。"
           okText="确认删除"
           cancelText="取消"
