@@ -94,15 +94,15 @@
 | 字段 | 类型 | 约束 |
 | --- | --- | --- |
 | `modules[].id` | string | 5 位 Base62，`m` 前缀，仅新增模块时生成 |
-| `modules[].module_name` | string | 业务领域/场景名，禁止具体功能点 |
+| `modules[].module_name` | string | **必填非空**：业务领域/场景名，禁止具体功能点 |
 | `modules[].keywords` | string[] | 3–5 个，**只含名词**，偏向业务/框架 |
 | `modules[].sub_modules` | object[] | 子模块列表；新增时整段输出（ID 复用见后） |
 | `sub_modules[].id` | string | 5 位 Base62，`s` 前缀 |
-| `sub_modules[].sub_module_name` | string | 具体业务功能名，可使用动词 |
+| `sub_modules[].sub_module_name` | string | **必填非空**：具体业务功能名，可使用动词 |
 | `sub_modules[].keywords` | string[] | 3–5 个，允许动词/形容词 |
 | `sub_modules[].functions` | object[] | 功能列表 |
 | `functions[].id` | string | 5 位 Base62，`f` 前缀 |
-| `functions[].function_name` | string | 业务功能名（动词短语） |
+| `functions[].function_name` | string | **必填非空**：业务功能名（动词短语） |
 | `functions[].class_paths` | string[] | **必填**：入口类全限定名列表（AI 根据代码自行判断，不再由程序兜底） |
 | `functions[].method_signatures` | string[] | **必填**：仅填**直接实现该功能**的方法，格式 `methodName(ParamType1, ParamType2)`（不含返回类型）。**允许**同一功能挂多个相关方法；**禁止**把入口类方法全集复制到每个功能。细则见下节。 |
 

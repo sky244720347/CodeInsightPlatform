@@ -335,6 +335,7 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         if (hierarchy.getModules().isEmpty()) {
             return;
         }
+        assertHierarchyNamesPresent(hierarchy);
         Set<String> existingNodeIds = new HashSet<>();
         List<ModuleHierarchyNode> existingRows = nodeMapper.selectList(
                 new LambdaQueryWrapper<ModuleHierarchyNode>().eq(ModuleHierarchyNode::getTaskId, taskId));
@@ -1637,29 +1638,38 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         for (JsonNode modNode : modulesNode) {
             String rawModId = modNode.path("id").asText("").trim();
             if (!StringUtils.hasText(rawModId)) continue;
-            String modName = modNode.path("module_name").asText("").trim();
+            String modName = readAiName(modNode, "module_name", "moduleName", "name");
+            if (!StringUtils.hasText(modName)) {
+                log.warn("SKIP_MODULE_EMPTY_NAME aiId={} keywords={}",
+                        rawModId, modNode.path("keywords"));
+                continue;
+            }
             String candidateId = normalizeAiNodeId(rawModId, 'm', existingModuleIds);
 
             ModuleDto module = resolveModuleForMerge(
                     hierarchy, existingModuleIds, candidateId, rawModId, modName, reservedDeletedNodeIds);
-            if (StringUtils.hasText(modName)) {
-                module.setModuleName(modName);
-            }
+            module.setModuleName(modName);
             mergeKeywords(module.getKeywords(), modNode.path("keywords"));
 
             JsonNode subsNode = modNode.path("sub_modules");
+            if (!subsNode.isArray()) {
+                // 兼容 AI 偶发 camelCase
+                subsNode = modNode.path("subModules");
+            }
             if (!subsNode.isArray()) continue;
             for (JsonNode subNode : subsNode) {
                 String rawSubId = subNode.path("id").asText("").trim();
                 if (!StringUtils.hasText(rawSubId)) continue;
-                String subName = subNode.path("sub_module_name").asText("").trim();
+                String subName = readAiName(subNode, "sub_module_name", "subModuleName", "name");
+                if (!StringUtils.hasText(subName)) {
+                    log.warn("SKIP_SUB_MODULE_EMPTY_NAME aiId={} moduleId={}", rawSubId, module.getId());
+                    continue;
+                }
                 String candidateSubId = normalizeAiNodeId(rawSubId, 's', existingSubModuleIds);
 
                 SubModuleDto sub = resolveSubModuleForMerge(
                         module, existingSubModuleIds, candidateSubId, rawSubId, subName, reservedDeletedNodeIds);
-                if (StringUtils.hasText(subName)) {
-                    sub.setSubModuleName(subName);
-                }
+                sub.setSubModuleName(subName);
                 mergeKeywords(sub.getKeywords(), subNode.path("keywords"));
 
                 JsonNode fnsNode = subNode.path("functions");
@@ -1669,10 +1679,14 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     if (!StringUtils.hasText(rawFnId)) continue;
                     if (filterByEntrypointDiff && shouldSkipAiFunctionForUnchangedOnly(fnNode, methodDiffBySig)) {
                         log.info("SKIP_AI_FUNCTION_UNCHANGED sigs-only-unchanged fnId={} name={}",
-                                rawFnId, fnNode.path("function_name").asText(""));
+                                rawFnId, readAiName(fnNode, "function_name", "functionName", "name"));
                         continue;
                     }
-                    String fnName = fnNode.path("function_name").asText("").trim();
+                    String fnName = readAiName(fnNode, "function_name", "functionName", "name");
+                    if (!StringUtils.hasText(fnName)) {
+                        log.warn("SKIP_FUNCTION_EMPTY_NAME aiId={} subModuleId={}", rawFnId, sub.getId());
+                        continue;
+                    }
                     String candidateFnId = normalizeAiNodeId(rawFnId, 'f', existingFunctionIds);
 
                     FunctionDto fn = resolveFunctionForMerge(
@@ -1681,11 +1695,68 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     if (!knownFunctionIdsAtStart.contains(fn.getId())) {
                         newlyCreatedFunctionIds.add(fn.getId());
                     }
-                    if (StringUtils.hasText(fnName)) {
-                        fn.setFunctionName(fnName);
-                    }
+                    fn.setFunctionName(fnName);
                     mergeClassPaths(fn, fnNode.path("class_paths"));
+                    if (fnNode.path("class_paths").isMissingNode() || fnNode.path("class_paths").isNull()) {
+                        mergeClassPaths(fn, fnNode.path("classPaths"));
+                    }
                     mergeMethodSignatures(fn, fnNode.path("method_signatures"));
+                    if (fnNode.path("method_signatures").isMissingNode() || fnNode.path("method_signatures").isNull()) {
+                        mergeMethodSignatures(fn, fnNode.path("methodSignatures"));
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * 从 AI JSON 节点读取名称：按候选字段顺序取第一个非空文本（兼容 snake / camel / 简写 name）。
+     */
+    public static String readAiName(JsonNode node, String... fieldNames) {
+        if (node == null || fieldNames == null) {
+            return "";
+        }
+        for (String field : fieldNames) {
+            if (!StringUtils.hasText(field)) {
+                continue;
+            }
+            JsonNode v = node.get(field);
+            if (v == null || v.isNull() || !v.isValueNode()) {
+                continue;
+            }
+            String text = v.asText("").trim();
+            if (StringUtils.hasText(text)) {
+                return text;
+            }
+        }
+        return "";
+    }
+
+    /**
+     * 落库前硬校验：任一模块/子模块/功能名为空则抛业务异常，避免撞 PG NOT NULL。
+     */
+    public void assertHierarchyNamesPresent(ModuleHierarchy hierarchy) {
+        if (hierarchy == null || hierarchy.getModules() == null) {
+            return;
+        }
+        for (ModuleDto m : hierarchy.getModules().values()) {
+            if (!StringUtils.hasText(m.getModuleName())) {
+                throw new BusinessException("模块名称不能为空, id=" + m.getId());
+            }
+            if (m.getSubModules() == null) {
+                continue;
+            }
+            for (SubModuleDto sm : m.getSubModules().values()) {
+                if (!StringUtils.hasText(sm.getSubModuleName())) {
+                    throw new BusinessException("子模块名称不能为空, id=" + sm.getId());
+                }
+                if (sm.getFunctions() == null) {
+                    continue;
+                }
+                for (FunctionDto fn : sm.getFunctions().values()) {
+                    if (!StringUtils.hasText(fn.getFunctionName())) {
+                        throw new BusinessException("功能名称不能为空, id=" + fn.getId());
+                    }
                 }
             }
         }
@@ -2325,6 +2396,7 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         if (hierarchy.getModules().isEmpty()) {
             return;
         }
+        assertHierarchyNamesPresent(hierarchy);
         LocalDateTime now = LocalDateTime.now();
         List<ModuleHierarchyNode> rows = new ArrayList<>();
         for (ModuleDto m : hierarchy.getModules().values()) {
