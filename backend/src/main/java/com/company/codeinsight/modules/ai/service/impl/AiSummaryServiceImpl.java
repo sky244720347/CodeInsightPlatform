@@ -1069,7 +1069,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             draft.setContentUri(contentUri);
             draft.setHash(hash);
             draft.setStatus(initialStatus);          // AI 重生成 → 需重新复核
-            draft.setBaselineTaskId(null);           // AI 重生成 → 不再是基线继承，标记为 modified
+            draft.setBaselineTaskId(null);           // AI 重生成 → 不再是基线继承，标记为 modified（需 FieldStrategy.ALWAYS）
             draft.setUpdatedDate(LocalDateTime.now());
             knowledgeDraftMapper.updateById(draft);
         }
@@ -1484,6 +1484,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             draft.setStatus(initialStatus);
             draft.setModuleName(moduleName);
             draft.setContentUri(storePath.toAbsolutePath().toUri().toString());
+            draft.setBaselineTaskId(null); // 覆盖继承草稿时清标记（需 FieldStrategy.ALWAYS）
             draft.setUpdatedDate(LocalDateTime.now());
             knowledgeDraftMapper.updateById(draft);
         }

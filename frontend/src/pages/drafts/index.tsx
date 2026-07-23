@@ -23,6 +23,13 @@ import { listSystems } from '../../api/system';
 import type { System, Task } from '../../types';
 import PageHelpHint from '../../components/PageHelpHint';
 import { draftReviewHelp } from '../../constants/reviewPageHelp';
+import {
+  filterSystemSelectOption,
+  renderComponentCell,
+  renderSystemSelectLabel,
+  renderSystemSelectOption,
+  toSystemSelectOptions,
+} from '../../utils/systemSelect';
 
 const { Text } = Typography;
 
@@ -97,8 +104,16 @@ const DraftReviewListPage: React.FC = () => {
       title: '系统',
       dataIndex: 'systemId',
       key: 'systemName',
-      width: 180,
+      width: 160,
       render: (sysId: number) => systems.find((s) => s.id === sysId)?.name ?? `系统 #${sysId}`,
+    },
+    {
+      title: '组件',
+      dataIndex: 'systemId',
+      key: 'component',
+      width: 120,
+      render: (sysId: number) =>
+        renderComponentCell(systems.find((s) => s.id === sysId)?.component),
     },
     {
       title: '类型',
@@ -180,11 +195,15 @@ const DraftReviewListPage: React.FC = () => {
           <Space wrap>
             <Select
               allowClear
+              showSearch
               placeholder="按系统筛选"
-              style={{ width: 200 }}
+              style={{ width: 240 }}
               value={systemFilter}
               onChange={(v) => setSystemFilter(v)}
-              options={systems.map((s) => ({ value: s.id, label: s.name }))}
+              filterOption={filterSystemSelectOption}
+              optionRender={renderSystemSelectOption}
+              labelRender={(props) => renderSystemSelectLabel(props, systems)}
+              options={toSystemSelectOptions(systems)}
             />
             <Button icon={<ReloadOutlined />} loading={loading} onClick={fetchTasks}>
               刷新

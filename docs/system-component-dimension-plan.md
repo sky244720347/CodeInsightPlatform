@@ -2,8 +2,8 @@
 
 > **管什么**：在「系统与仓库」下为业务系统增加 **组件** 维度；以「系统 + 组件」作为业务身份做查重；对外隔离键仍是 **单个 `system_id`**。  
 > **不管什么**：新建 `ci_component` 表 / `component_id` FK；跨组件共享业务知识、并发配额、统一父级分组树；仓库侧（`ci_repository`）结构变更。  
-> **状态**：实施中（2026-07-21：schema / 查重接口 / 「系统与仓库」页面表单与列表已落地；其它页系统下拉文案未改）。  
-> **设计原则**：最小改动 —— 把「系统+组件」编码成一条 `ci_system`，沿用现有 `system_id` 贯穿任务 / 并发 / 业务知识 / 前端筛选。
+> **状态**：已落地（2026-07-22：schema / 查重 / 「系统与仓库」表单列表 / 其它页分字段展示与筛选 / DTO 独立 `component`）。  
+> **设计原则**：最小改动 —— 把「系统+组件」编码成一条 `ci_system`，沿用现有 `system_id` 贯穿任务 / 并发 / 业务知识 / 前端筛选。API 与列表分字段展示；仅强校验提示语拼接。
 
 ---
 
@@ -47,10 +47,12 @@
 | `nameCn` | 展示用中文名 | 可选；可不参与查重 |
 | `id` / `system_id` | 平台隔离主键 | 不变 |
 
-**展示文案（建议统一）：**
+**展示约定：**
 
-- 有组件：`{name} / {component}`（中文可用 `nameCn`，旁注组件）
-- 无组件：仍显示 `{name}`（兼容存量）
+- 列表 / 详情：**系统**与**组件**分字段 / 分列展示；组件空显示 `—`
+- 下拉：`value` 仍为 `systemId`；选项用 `optionRender` 分开展示系统名与组件 Tag
+- API：**禁止**返回 `name / component` 拼接串；`systemName` 仅为纯名称
+- 强校验提示语（查重等）才拼接：`{name} / {component}`
 
 **查重规则：**
 
@@ -85,7 +87,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_system_name_component_active
 |---|---|
 | `SystemApplication` | 新增 `component` 字段 |
 | 创建 / 更新 DTO 或实体入参 | 接收 `component`；空 / blank → 归一 `''` |
-| 列表 / 详情响应 | 带回 `component`；可选派生 `displayLabel`（也可前端拼） |
+| 列表 / 详情 / 聚合响应 | 带回独立 `component`；**不**派生 `displayLabel` / 拼接 `systemName` |
 
 ---
 
@@ -96,18 +98,22 @@ CREATE UNIQUE INDEX IF NOT EXISTS uk_system_name_component_active
 在 `SystemApplicationServiceImpl`：
 
 1. `normalizeComponent(raw)`：`null` / blank → `""`；trim。
-2. `assertUniqueNameComponent(name, component, excludeId)`：查 `is_deleted=0` 且 `(name, component)` 命中且 `id != excludeId` → `BusinessException`（文案明确：系统+组件已存在）。
+2. `assertUniqueNameComponent(name, component, excludeId)`：查 `is_deleted=0` 且 `(name, component)` 命中且 `id != excludeId` → `BusinessException`（文案可拼接：`name / component`）。
 3. `createSystemDraft`：校验 `name`/`owner` 后 → normalize → assertUnique → insert。
-4. `updateSystem`：同路径；允许改 `component`，但撞唯一则失败。
+4. `updateSystemBasicInfo`：同路径；允许改 `component`，但撞唯一则失败。
 
 DB 唯一索引作最终兜底；服务层校验给前端可读错误。
 
-### 3.2 明确不改
+### 3.2 列表筛选
+
+`listSystemsPage` / `listSystemsWithSummary` 支持可选 `component` 模糊过滤（与 `name` 模糊、`owner` 精确并列）。
+
+### 3.3 明确不改
 
 | 模块 | 原因 |
 |---|---|
 | `TaskConcurrencyLimiter` | 仍按 `system_id` → `maxConcurrentTasks` |
-| 任务创建 / 队列 / 知识 / 推送 / 日志筛选 | 仍传 `systemId` |
+| 任务创建 / 队列 / 知识 / 推送 / 日志筛选 | 仍传 `systemId`（不新增 component 筛选参数） |
 | `ci_repository` 创建逻辑 | 仍挂在所选系统（即某一「系统+组件」行）下 |
 | 存储路径 `releases/{systemId}/...` | 不变 |
 
@@ -115,74 +121,165 @@ DB 唯一索引作最终兜底；服务层校验给前端可读错误。
 
 ## 四、前端改动细节（已落地）
 
-> API 层仍走现有 `createSystem` / `updateSystem` / `listSystems`（`frontend/src/api/system.ts` 方法签名未改）；类型与页面消费 `component`。  
-> 查重错误由后端 `BusinessException` 经 `request` 拦截器抛出，前端用既有 `message` / 控制台处理，**未单独做前端预查重**。
+> 查重错误由后端 `BusinessException` 经 `request` 拦截器抛出，前端用既有 `message` / 控制台处理，**未单独做前端预查重**。  
+> 列表与下拉：**系统**、**组件**分字段展示；仅删除确认等强提示可拼接。
 
-### 4.1 类型
+### 4.1 类型与 API 包装
 
 | 文件 | 改动 |
 |---|---|
-| `frontend/src/types/index.ts` | `System` 增加可选字段 `component?: string`（注释：与 `name` 联合唯一；空表示无组件） |
+| `frontend/src/types/index.ts` | `System.component?`；`KnowledgeBrowseItem.component?`；`KnowledgeBrowseTreeResult.component?` |
+| `frontend/src/api/system.ts` | `listSystems` 增加可选 `component?: string` |
+| `frontend/src/api/draft.ts` | `PreviewSystemDto.component?` |
+| `frontend/src/api/dashboard.ts` | `SystemCoverageItem.component?` |
+| `frontend/src/api/knowledge-query.ts` | `KnowledgeContextView.component?` |
+| `frontend/src/api/mock/drafts.mock.ts` | mock `PreviewSystemDto` 补 `component` |
 
-`api/system.ts` 使用 `Partial<System>`，无需改方法签名；创建/更新请求体自然带上 `component`。
+### 4.2 「系统与仓库」页
 
-### 4.2 新建向导 `SystemWizardModal.tsx`
-
-| 点 | 细节 |
+| 文件 | 改动 |
 |---|---|
-| 表单类型 | 本地 `SystemFormValues` 增加 `component?: string` |
-| Step 1 UI | 「系统名称」下方增加「组件」`Form.Item`：可选、`allowClear`；`extra` 文案说明与系统名联合唯一、重复无法创建 |
-| 提交归一 | `handleStep1Submit`：`component: values.component?.trim() \|\| ''` 后再 `createSystem` / `updateSystem` |
-| 展示名 | 保存成功后 `setSystemName`：有组件用 `{name} / {component}`，无组件仍用 `name`（供后续步骤命名前缀） |
-| 查重失败 | 依赖后端报错（如「系统+组件已存在」）；向导不本地拦截 |
+| `frontend/src/pages/systems/SystemWizardModal.tsx` | Step1「组件」表单项；提交 `trim\|\|''`；`setSystemName` 仅纯 `name` |
+| `frontend/src/pages/systems/SystemFormModal.tsx` | 编辑「组件」表单项 |
+| `frontend/src/pages/systems/index.tsx` | 编辑回填 / 提交带 `component`；FilterBar 透传 `searchComponent` |
+| `frontend/src/pages/systems/columns.tsx` | 「系统」列仅 `name`；「组件」列 Tag；删除确认可拼接 |
+| `frontend/src/pages/systems/SystemFilterBar.tsx` | 增加「搜索组件」输入 |
+| `frontend/src/pages/systems/hooks.ts` | `searchComponent` 状态并传给 `listSystems` |
 
-### 4.3 编辑弹窗 `SystemFormModal.tsx` + `index.tsx`
+### 4.3 共享下拉 / 单元格
 
-| 点 | 细节 |
+| 文件 | 改动 |
 |---|---|
-| 表单 | 「系统名称」旁增加「组件」输入；`extra`：与系统名称联合唯一；可不填 |
-| 回填 | `handleEdit`：`component: record.component \|\| undefined`（空串不占位） |
-| 提交 | `handleEditSubmit`：同样 `trim() \|\| ''` 后 `updateSystem(id, payload)` |
-| 错误 | 重复时后端拒绝，现有 catch 打日志；表单校验错误（`errorFields`）不弹额外提示 |
+| `frontend/src/utils/systemSelect.tsx` | **新增**：`toSystemSelectOptions` / `renderSystemSelectOption` / `renderSystemSelectLabel` / `filterSystemSelectOption` / `renderComponentCell` |
 
-### 4.4 列表 `columns.tsx`
+### 4.4 其它页：系统下拉 + 列表「组件」列
 
-| 列 / 交互 | 行为 |
+| 文件 | 改动 |
 |---|---|
-| 「系统」列 | 有 `component` 时链接文案为 `` `${name} / ${component}` ``，否则仅 `name` |
-| 新增「组件」列 | 有值 → `<Tag>`；无值 → 次要色 `—` |
-| 删除确认 | Popconfirm 标题用「系统 / 组件」或仅系统名，与列表一致 |
-
-### 4.5 展示约定（与方案 §一 对齐）
-
-- 有组件：`{name} / {component}`
-- 无组件：`{name}`
-- **value / 路由 / 业务请求仍只用 `systemId`**，不做「先选系统再选组件」两级联动
-
-### 4.6 本期未改（明确）
-
-| 项 | 说明 |
-|---|---|
-| `SystemFilterBar` | 仍只按系统名 / 负责人筛；未加组件关键字 |
-| 任务 / 知识 / 草稿等页的系统下拉 | 仍可能只显示 `name`；同名多组件时文案可能撞车——**后续按需改文案层** |
-| `RepositoryDrawer` 等仓库侧 | 仍挂当前选中行的 `systemId`，逻辑不变 |
-| 前端本地查重 | 不做；以接口为准 |
+| `frontend/src/pages/tasks/TaskListTab.tsx` | 系统 Select 走 helper；列表增「组件」列 |
+| `frontend/src/pages/tasks/queue.tsx` | 同上 |
+| `frontend/src/pages/tasks/dispatch.tsx` | 系统 Select 走 helper |
+| `frontend/src/pages/tasks/entrypoint-review.tsx` | Select + 列表「组件」列 |
+| `frontend/src/pages/tasks/hierarchy-review.tsx` | Select + 列表「组件」列 |
+| `frontend/src/pages/drafts/index.tsx` | Select + 列表「组件」列 |
+| `frontend/src/pages/push/index.tsx` | 系统 Select 走 helper |
+| `frontend/src/pages/knowledge/KnowledgeContextBar.tsx` | 系统 Select 走 helper（入口/层级页共用） |
+| `frontend/src/pages/knowledge/index.tsx` | 系统 Select；列表「组件」列；树预览带 `component` |
+| `frontend/src/pages/logs/index.tsx` | 系统 Select 走 helper |
+| `frontend/src/pages/token-audit/index.tsx` | 系统 Select 走 helper |
+| `frontend/src/pages/dashboard/ai-usage.tsx` | 系统 Select 走 helper |
+| `frontend/src/pages/dashboard/system-coverage.tsx` | 明细表增「组件」列 |
+| `frontend/src/pages/basic/orchestration.tsx` | `sysMap`/`componentMap` 按 repositoryId；列表增系统/组件列 |
+| `frontend/src/pages/basic/ScanWindowHeatmap.tsx` | 抽屉表增「组件」列；`componentMap` prop |
 
 ---
 
-## 五、改动清单（实施用）
+## 五、改动文件清单（完整）
 
-| # | 文件 / 区域 | 内容 | 状态 |
-|---|---|---|---|
-| A1 | `schema.sql` / `schema-fresh.sql` | `component` 列 + 部分唯一索引 | 已做 |
-| A2 | `SystemApplication.java` | 字段 `component` | 已做 |
-| A3 | `SystemApplicationServiceImpl` + Controller | normalize + 创建/更新查重 | 已做 |
-| A4 | `SystemApplicationNameComponentUniqueTest` | 重复拒绝 / 空串归一 / 更新撞车 | 已做 |
-| B1 | `frontend/src/types/index.ts` | `System.component?` | 已做 |
-| B2 | `SystemFormModal` / `SystemWizardModal` / `index.tsx` | 组件输入 + 提交 trim | 已做 |
-| B3 | `columns.tsx` | 系统列拼接 + 组件列 + 删除文案 | 已做 |
-| B4 | 任务 / 知识等 `systemId` 选择器文案 | 同步 `name / component` | **未做（建议后续）** |
-| B5 | `SystemFilterBar` 按组件过滤 | 可选增强 | **未做** |
+> 路径相对仓库根；状态均为 **已做**。不含 `backend/target/**` 等构建产物。
+
+### 5.1 文档
+
+| 文件 | 内容 |
+|---|---|
+| `docs/system-component-dimension-plan.md` | 本方案（含完整文件清单与展示约定修订） |
+
+### 5.2 后端 · Schema
+
+| 文件 | 内容 |
+|---|---|
+| `backend/src/main/resources/db/schema.sql` | `ci_system.component` 列 + 部分唯一索引 `uk_system_name_component_active` |
+| `backend/src/main/resources/db/schema-fresh.sql` | 同上（全新库建表定义） |
+
+### 5.3 后端 · 系统模块（字段 / 查重 / 列表筛选）
+
+| 文件 | 内容 |
+|---|---|
+| `backend/src/main/java/com/company/codeinsight/modules/system/entity/SystemApplication.java` | 实体字段 `component` |
+| `backend/src/main/java/com/company/codeinsight/modules/system/service/SystemApplicationService.java` | `listSystemsPage(..., component, ...)`；创建/更新查重契约注释 |
+| `backend/src/main/java/com/company/codeinsight/modules/system/service/impl/SystemApplicationServiceImpl.java` | normalize + assertUnique；列表传 `component`；查重错误文案可拼接 |
+| `backend/src/main/java/com/company/codeinsight/modules/system/controller/SystemApplicationController.java` | `GET /systems` 增加 `component` 请求参数 |
+| `backend/src/main/java/com/company/codeinsight/modules/system/mapper/SystemApplicationMapper.java` | `listSystemsWithSummary` 增加 `@Param("component")` |
+| `backend/src/main/resources/mapper/SystemApplicationMapper.xml` | SQL：`s.component LIKE` 模糊条件 |
+| `backend/src/main/java/com/company/codeinsight/modules/system/vo/SystemSummaryVO.java` | **未改文件**：继承 `SystemApplication`，列表响应 naturally 含 `component` |
+
+### 5.4 后端 · 其它模块 DTO / 赋值（分字段，不拼接）
+
+| 文件 | 内容 |
+|---|---|
+| `backend/src/main/java/com/company/codeinsight/modules/draft/dto/PreviewSystemDto.java` | 新增 `component` |
+| `backend/src/main/java/com/company/codeinsight/modules/draft/service/impl/DraftServiceImpl.java` | `setComponent(sys.getComponent())`；`systemName` 仍为纯 `name` |
+| `backend/src/main/java/com/company/codeinsight/modules/knowledge/browse/dto/KnowledgeBrowseItem.java` | 新增 `component` |
+| `backend/src/main/java/com/company/codeinsight/modules/knowledge/browse/dto/KnowledgeBrowseTreeResult.java` | 新增 `component` |
+| `backend/src/main/java/com/company/codeinsight/modules/knowledge/browse/KnowledgeBrowseServiceImpl.java` | 填充 `component`；keyword 可匹配 component |
+| `backend/src/main/java/com/company/codeinsight/modules/knowledge/browse/KnowledgeBrowseTreeService.java` | `setComponent`；`formatSystemName` 仍只返回 name/nameCn |
+| `backend/src/main/java/com/company/codeinsight/modules/knowledge/query/dto/KnowledgeContextView.java` | 新增 `component` |
+| `backend/src/main/java/com/company/codeinsight/modules/knowledge/query/service/KnowledgeQueryServiceImpl.java` | `setComponent`；`formatSystemName` 不拼接 |
+| `backend/src/main/java/com/company/codeinsight/modules/dashboard/DashboardServiceImpl.java` | 覆盖率条目 `entry.put("component", ...)` |
+
+### 5.5 后端 · 测试
+
+| 文件 | 内容 |
+|---|---|
+| `backend/src/test/java/com/company/codeinsight/modules/system/SystemApplicationNameComponentUniqueTest.java` | name+component 查重 / 空串归一 / 更新撞车 |
+| `backend/src/test/java/com/company/codeinsight/modules/system/SystemApplicationServiceTests.java` | `listSystemsPage` 签名对齐（增加 `component` 参数位） |
+
+### 5.6 前端 · 类型 / API / 工具
+
+| 文件 | 内容 |
+|---|---|
+| `frontend/src/types/index.ts` | `System` / `KnowledgeBrowseItem` / `KnowledgeBrowseTreeResult` 的 `component?` |
+| `frontend/src/api/system.ts` | `listSystems` 参数 `component?` |
+| `frontend/src/api/draft.ts` | `PreviewSystemDto.component?` |
+| `frontend/src/api/dashboard.ts` | `SystemCoverageItem.component?` |
+| `frontend/src/api/knowledge-query.ts` | `KnowledgeContextView.component?` |
+| `frontend/src/api/mock/drafts.mock.ts` | mock 预览系统补 `component` |
+| `frontend/src/utils/systemSelect.tsx` | **新增**共享系统 Select / 组件单元格工具 |
+
+### 5.7 前端 · 「系统与仓库」
+
+| 文件 | 内容 |
+|---|---|
+| `frontend/src/pages/systems/SystemWizardModal.tsx` | 组件表单项 + 提交归一；命名前缀用纯 name |
+| `frontend/src/pages/systems/SystemFormModal.tsx` | 组件表单项 |
+| `frontend/src/pages/systems/index.tsx` | 回填/提交/`SystemFilterBar` 透传 |
+| `frontend/src/pages/systems/columns.tsx` | 系统列纯 name；组件列；删除确认可拼接 |
+| `frontend/src/pages/systems/SystemFilterBar.tsx` | 「搜索组件」 |
+| `frontend/src/pages/systems/hooks.ts` | `searchComponent` → `listSystems` |
+
+### 5.8 前端 · 任务 / 草稿 / 推送 / 知识 / 审计 / 仪表盘 / 编排
+
+| 文件 | 内容 |
+|---|---|
+| `frontend/src/pages/tasks/TaskListTab.tsx` | Select helper + 「组件」列 |
+| `frontend/src/pages/tasks/queue.tsx` | Select helper + 「组件」列 |
+| `frontend/src/pages/tasks/dispatch.tsx` | Select helper |
+| `frontend/src/pages/tasks/entrypoint-review.tsx` | Select helper + 「组件」列 |
+| `frontend/src/pages/tasks/hierarchy-review.tsx` | Select helper + 「组件」列 |
+| `frontend/src/pages/drafts/index.tsx` | Select helper + 「组件」列 |
+| `frontend/src/pages/push/index.tsx` | Select helper |
+| `frontend/src/pages/knowledge/KnowledgeContextBar.tsx` | Select helper（入口/层级共享） |
+| `frontend/src/pages/knowledge/index.tsx` | Select helper + 列表「组件」列 + 树预览 `component` |
+| `frontend/src/pages/logs/index.tsx` | Select helper |
+| `frontend/src/pages/token-audit/index.tsx` | Select helper |
+| `frontend/src/pages/dashboard/ai-usage.tsx` | Select helper |
+| `frontend/src/pages/dashboard/system-coverage.tsx` | 明细「组件」列 |
+| `frontend/src/pages/basic/orchestration.tsx` | repo→系统名/组件 map；列表系统+组件列 |
+| `frontend/src/pages/basic/ScanWindowHeatmap.tsx` | `componentMap`；抽屉「组件」列 |
+
+### 5.9 文件计数（便于核对）
+
+| 分区 | 数量 |
+|---|---|
+| 文档 | 1 |
+| 后端 Schema | 2 |
+| 后端系统模块（实际改动） | 6（不含仅继承、未改文件的 `SystemSummaryVO`） |
+| 后端其它 DTO/Service | 9 |
+| 后端测试 | 2 |
+| 前端类型/API/工具 | 7（含新增 `systemSelect.tsx`） |
+| 前端系统页 | 6 |
+| 前端其它页 | 15 |
+| **合计（实际改动路径）** | **48** |
 
 ---
 
@@ -194,7 +291,8 @@ DB 唯一索引作最终兜底；服务层校验给前端可读错误。
 - [ ] 软删后再建同名同组件 → 成功（依赖集成环境）
 - [x] 存量系统（`component=''`）列表无组件时展示与改前一致（仅 `name`）
 - [x] 该系统下建仓库、跑任务、业务知识仍只依赖其 `system_id`，无需新参数
-- [x] 向导 / 编辑页可填组件；列表可见「系统 / 组件」
+- [x] 向导 / 编辑页可填组件；列表可见独立「系统」「组件」列
+- [x] 其它页系统下拉 / 列表分字段展示组件；API 不返回拼接串
 
 ---
 

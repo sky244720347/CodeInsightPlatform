@@ -280,6 +280,7 @@ public class DashboardServiceImpl implements DashboardService {
             Map<String, Object> entry = new LinkedHashMap<>();
             entry.put("systemId", sys.getId());
             entry.put("systemName", sys.getName());
+            entry.put("component", sys.getComponent());
             entry.put("taskCount", taskCount);
             entry.put("draftCount", draftCount);
             entry.put("versionCount", versionCount);

@@ -53,6 +53,7 @@ public class KnowledgeQueryServiceImpl implements KnowledgeQueryService {
 
         SystemApplication system = systemMapper.selectById(repo.getSystemId());
         view.setSystemName(formatSystemName(system));
+        view.setComponent(system != null ? system.getComponent() : null);
 
         Optional<ActiveKnowledgeContext> active = activeKnowledgeResolver.resolve(repositoryId);
         if (active.isPresent()) {

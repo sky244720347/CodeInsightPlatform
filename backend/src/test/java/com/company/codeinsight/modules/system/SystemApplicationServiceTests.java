@@ -39,8 +39,8 @@ public class SystemApplicationServiceTests {
         Assertions.assertEquals("测试系统", fetched.getName());
         Assertions.assertEquals("Tester", fetched.getOwner());
 
-        // Page list（仅按 name / owner 过滤）
-        Page<SystemSummaryVO> page = systemApplicationService.listSystemsPage(1, 10, "测试", null, null);
+        // Page list（按 name / component / owner 过滤）
+        Page<SystemSummaryVO> page = systemApplicationService.listSystemsPage(1, 10, "测试", null, null, null);
         Assertions.assertTrue(page.getTotal() > 0);
 
         // Update
@@ -61,13 +61,13 @@ public class SystemApplicationServiceTests {
         system.setOwner("Tester");
         systemApplicationService.save(system);
 
-        Page<SystemSummaryVO> before = systemApplicationService.listSystemsPage(1, 10, system.getName(), null, null);
+        Page<SystemSummaryVO> before = systemApplicationService.listSystemsPage(1, 10, system.getName(), null, null, null);
         Assertions.assertEquals(1, before.getTotal());
 
         systemApplicationService.softDeleteSystem(system.getId());
 
         Assertions.assertNull(systemApplicationService.getById(system.getId()));
-        Page<SystemSummaryVO> after = systemApplicationService.listSystemsPage(1, 10, system.getName(), null, null);
+        Page<SystemSummaryVO> after = systemApplicationService.listSystemsPage(1, 10, system.getName(), null, null, null);
         Assertions.assertEquals(0, after.getTotal());
     }
 

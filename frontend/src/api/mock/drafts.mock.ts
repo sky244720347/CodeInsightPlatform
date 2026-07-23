@@ -551,6 +551,7 @@ export async function mockListPreviewSystems(): Promise<PreviewSystemDto[]> {
       sys = {
         systemId: t.systemId,
         systemName: '',
+        component: '',
         owner: '',
         status: 1,
         pendingReviewCount: 0,

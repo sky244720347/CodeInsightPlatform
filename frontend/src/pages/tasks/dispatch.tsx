@@ -33,6 +33,12 @@ import {
 import { listPrompts } from '../../api/prompt';
 import { listRepositories, getRepository } from '../../api/repository';
 import { listSystems } from '../../api/system';
+import {
+  filterSystemSelectOption,
+  renderSystemSelectLabel,
+  renderSystemSelectOption,
+  toSystemSelectOptions,
+} from '../../utils/systemSelect';
 import { listModels } from '../../api/model';
 import {
   buildScanConfigWithDefaults,
@@ -366,12 +372,11 @@ const TaskDispatchPage: React.FC = () => {
                   <Select
                     placeholder="请选择已配置代码库的系统"
                     showSearch
-                    optionFilterProp="label"
+                    filterOption={filterSystemSelectOption}
+                    optionRender={renderSystemSelectOption}
+                    labelRender={(props) => renderSystemSelectLabel(props, taskSourceSystems)}
                     notFoundContent="暂无已配置代码库的系统"
-                    options={taskSourceSystems.map((s) => ({
-                      value: s.id,
-                      label: s.name,
-                    }))}
+                    options={toSystemSelectOptions(taskSourceSystems)}
                   />
                 </Form.Item>
               </Col>

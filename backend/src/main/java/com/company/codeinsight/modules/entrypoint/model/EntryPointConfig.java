@@ -1,5 +1,6 @@
 package com.company.codeinsight.modules.entrypoint.model;
 
+import com.fasterxml.jackson.annotation.JsonIgnore;
 import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
@@ -160,18 +161,22 @@ public class EntryPointConfig implements Serializable {
         return r != null ? r : new TypeIncludeRules();
     }
 
+    @JsonIgnore
     public List<String> getEffectiveExcludeClasspaths() {
         return excludeClasspaths == null ? List.of() : excludeClasspaths;
     }
 
+    @JsonIgnore
     public List<String> getEffectiveExcludePackages() {
         return excludePackages == null ? List.of() : excludePackages;
     }
 
+    @JsonIgnore
     public List<String> getEffectiveExcludeAnnotations() {
         return excludeAnnotations == null ? List.of() : excludeAnnotations;
     }
 
+    @JsonIgnore
     public List<ExcludeTarget> getEffectiveExcludeTargets() {
         return excludeTargets == null ? List.of() : excludeTargets;
     }

@@ -16,9 +16,14 @@ public class PreviewSystemDto {
     private Long systemId;
 
     /**
-     * 业务系统名称
+     * 业务系统名称（纯 name，不含组件拼接）
      */
     private String systemName;
+
+    /**
+     * 组件标识；空串/null 表示无组件
+     */
+    private String component;
 
     /**
      * 系统负责人

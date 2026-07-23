@@ -2,7 +2,7 @@
 
 > **管什么**：INCREMENTAL 任务的基线文档继承（从 releases 目录复制）、知识文档重生成裁剪、草稿复核页的文档 DIFF（树级 4 桶 + 正文左右对照）、以及修复已有推送/版本/ZIP 缺陷。
 > **不管什么**：模块层级结构 DIFF（见 [module-hierarchy-id-reuse-fix.md](./module-hierarchy-id-reuse-fix.md)）；入口 DIFF（见 [entrypoint-review-diff-design.md](./entrypoint-review-diff-design.md)）；知识版本发布后的 diff。
-> **关联**：[incremental-baseline-design.md](./incremental-baseline-design.md)、[module-hierarchy-review-diff-design.md](./module-hierarchy-review-diff-design.md)。
+> **关联**：[incremental-baseline-design.md](./incremental-baseline-design.md)、[module-hierarchy-review-diff-design.md](./module-hierarchy-review-diff-design.md)、[incremental-knowledge-prune-and-push-design.md](./incremental-knowledge-prune-and-push-design.md)（删除失效继承 + 增量全量推送）。
 > **状态：已实施**（2026-07）。
 
 ---
@@ -61,7 +61,7 @@
 
 | # | 决策 | 选项 | 理由 |
 |---|---|---|---|
-| 1 | modified 判定 | `baselineTaskId` 字段 + `baselineModuleNames` 集合 | inherited = `baselineTaskId != null`；modified = `baselineTaskId == null` 且 moduleName 在基线中；new = 其余 |
+| 1 | modified 判定 | `baselineTaskId` + status + `baselineModuleNames` | inherited = `baselineTaskId != null` 且 status∈{CONFIRMED,PUSHED}；modified = 基线有同名且非未触碰继承（含 AI 重生成、含 baseline 残留脏数据）；new = 其余 |
 | 2 | 正文 diff 实现 | Monaco DiffEditor 左右只读对照 | v1 简单可用；后续可加 AI 提炼 |
 | 3 | `getDocumentDiff` 返回 | 一次返回 `{ baselineContent, currentContentUri, currentDraftId, ... }`，基线正文内联返回 | 基线 draft 物理文件已删，不能二次 `getDraftContent(baselineDraftId)`；直接从 releases 读内容内联返回 |
 | 4 | `DraftTreeDiffDto` 改造 | 加 `modifiedRows`；`deletedRows` 归正为真「删除」 | 兼容现有类型，语义清晰 |
@@ -80,7 +80,7 @@
 | 17 | **DIFF/全量 tab 语义** | **DIFF = 默认页，只展示变更文档（modified+new+deleted）；全量 = 展示全部** | 增量复核只需关注变化部分；无变化的继承文档默认通过，不占用复核人注意力 |
 | 18 | **文档树变更类型 Badge** | **树节点 + 文档标题区均展示变更类型 Tag**（新增/修改/继承/删除） | 复核人需要一眼区分哪些是基线继承的、哪些是本次修改的、哪些是新增的 |
 | 19 | **模块层级小窗 DIFF** | **接入 `getModuleHierarchyDiff`，树节点展示新增/删除/修改/继承 Badge + 追加已删除模块节点** | 模块层级小窗需要让复核人感知哪些模块是新增的、哪些被删除了 |
-| 20 | **工具栏 DIFF 按钮类型感知** | **移出 Segmented，独立渲染：modified→"DIFF"可点击；new→"新增"Tag 不可点击；inherited→"继承"Tag 不可点击** | 复核人需一眼区分当前文档是新增/修改/继承，而非笼统的"DIFF"按钮 |
+| 20 | **工具栏比对按钮类型感知** | **移出 Segmented，独立渲染：modified→"比对"可点击；new→"新增"Tag 不可点击；inherited→"继承"Tag 不可点击** | 复核人需一眼区分当前文档是新增/修改/继承，并可对修改篇打开左右正文比对 |
 | 21 | **"通过"按钮文案** | **CONFIRMED/PUSHED 时改为"已通过" + `CheckOutlined` 图标 + disabled** | 全量+DIFF 一致，明确告知复核人该文档已审核通过 |
 | 22 | **全量流水线隐藏「基线复制」** | **`INITIAL` 任务 `flowStepItems` 不渲染该步；`INCREMENTAL` 才展示** | 全量不经过 `BASELINE_DOC_INHERIT`，展示灰色「仅增量」占位易误导；隐藏后需对 Steps `current` 做索引偏移 |
 
@@ -1307,7 +1307,7 @@ const VIEW_MODE_OPTIONS = [
 
 | 文档变更类型 | 展示 | 可点击 | 行为 |
 |---|---|---|---|
-| `modified` | "DIFF" Button（`type=primary` 当 viewMode='diff'） | ✅ | 点击切换 `viewMode` 为 `'diff'` / `'preview'` |
+| `modified` | "比对" Button（`type=primary` 当 viewMode='diff'） | ✅ | 点击切换 `viewMode` 为 `'diff'` / `'preview'` |
 | `new` | "新增" Tag（`color=green`） | ❌ | Tooltip: "本次新增文档，无基线版本可对比" |
 | `inherited` | "继承" Tag（`color=default`） | ❌ | Tooltip: "基线继承文档，内容与已发布版本一致" |
 | 非增量 / 无 diffType | 不展示 | — | — |
@@ -1319,14 +1319,14 @@ const diffIndicator = (() => {
   if (!isIncremental || !selectedDraftId) return null;
   if (currentDraftDiffType === 'modified') {
     return (
-      <Tooltip title="与基线版本左右对比">
+      <Tooltip title="与基线版本左右比对">
         <Button
           size="small"
           type={viewMode === 'diff' ? 'primary' : 'default'}
           icon={<EyeOutlined />}
           onClick={() => setViewMode(viewMode === 'diff' ? 'preview' : 'diff')}
         >
-          DIFF
+          比对
         </Button>
       </Tooltip>
     );
@@ -1629,7 +1629,7 @@ rules: {
 | `getModuleHierarchyDiff` 失败 | 层级 DIFF 接口异常时模块小窗无 Badge | `.catch(() => null)` 静默降级，树仍可正常展示（无 Badge） |
 | `react-hooks/immutability` lint 规则 | `effectiveHierarchyTree` 浅拷贝返回触发此规则 | 已在 `eslint.config.js` 中禁用此规则（与 `exhaustive-deps` 同级处理） |
 | **TDZ：`effectiveHierarchyTree` before initialization** | `draftDiffTypeMap → effectiveHierarchyTree → treeNodes → documentLeaves` 整段定义在约 1041 行，但 `documentLeaves` / `useEffect` 在约 367 行就引用了它 | **已修复**：将整段 useMemo 挪到 `isEditorReadOnly` 之后、`flatLeaves` / `currentLeafIndex` / `useEffect` 之前（约 376–516 行）。设计文档 §8.3.8 已标注声明顺序约束 |
-| **DIFF 视图文档错误标记为"继承"** | `inheritDrafts` 用扁平 `filePath`（`task_{id}/flat.md`）创建继承草稿，AI 用嵌套 `filePath`（`task_{id}/M/S/F.md`）查询 → AI 找不到继承草稿 → 创建第二份草稿 → `indexDrafts` 的 `byModuleName` Map 后者覆盖前者 → 若继承草稿排在后面，树节点指向继承草稿（`baselineTaskId != null`）→ `draftDiffTypeMap` 标为 "inherited" | **已修复（两端）**：①后端 `upsertFunctionDraft` 增加 `moduleName` 回退查询 — `filePath` 未命中时按 `moduleName` 查找继承草稿并覆盖，同时 `setBaselineTaskId(null)` + `setStatus(initialStatus)` + `setFilePath(嵌套路径)`；②前端 `indexDrafts` 同名草稿优先保留非继承的（`baselineTaskId == null`）|
+| **DIFF 视图文档错误标记为"继承"** | `inheritDrafts` 用扁平 `filePath` 创建继承草稿，AI 用嵌套 `filePath` 查询 → 可能建第二份；或 AI 覆盖后 `setBaselineTaskId(null)` 因 MyBatis-Plus 默认忽略 null **未落库** → `getWorkspaceTreeDiff` 仍进 inherited | **已修复（三端）**：①`KnowledgeDraft.baselineTaskId` 加 `updateStrategy=FieldStrategy.ALWAYS`；②`getWorkspaceTreeDiff` 仅 CONFIRMED/PUSHED+baseline 进 inherited，AI_GENERATED 等重生成态归 modified；③前端 `indexDrafts` 同名优先非继承；④工具栏 modified 展示可点「比对」 |
 
 ---
 

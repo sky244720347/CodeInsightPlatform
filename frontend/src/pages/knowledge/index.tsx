@@ -65,6 +65,13 @@ import type {
   KnowledgeBrowseTreeResult,
   Task,
 } from '../../types';
+import {
+  filterSystemSelectOption,
+  renderComponentCell,
+  renderSystemSelectLabel,
+  renderSystemSelectOption,
+  toSystemSelectOptions,
+} from '../../utils/systemSelect';
 
 const { Text, Paragraph } = Typography;
 const { RangePicker } = DatePicker;
@@ -355,6 +362,7 @@ const KnowledgeBrowse: React.FC = () => {
       contentUri: node.contentUri,
       systemId: treeResult?.systemId,
       systemName: treeResult?.systemName,
+      component: treeResult?.component,
       repositoryId: treeResult?.repositoryId,
       repositoryName: treeResult?.repositoryName,
       versionId: treeResult?.versionId,
@@ -585,6 +593,13 @@ const KnowledgeBrowse: React.FC = () => {
       render: (v: string | undefined) => v ?? '-',
     },
     {
+      title: '组件',
+      dataIndex: 'component',
+      key: 'component',
+      width: 120,
+      render: (v: string | undefined) => renderComponentCell(v),
+    },
+    {
       title: '仓库',
       dataIndex: 'repositoryName',
       key: 'repositoryName',
@@ -689,10 +704,12 @@ const KnowledgeBrowse: React.FC = () => {
                   setSystemId(v);
                   setListPage(1);
                 }}
-                style={{ width: 200 }}
+                style={{ width: 240 }}
                 showSearch
-                optionFilterProp="label"
-                options={systems.map((s) => ({ value: s.id, label: s.name }))}
+                filterOption={filterSystemSelectOption}
+                optionRender={renderSystemSelectOption}
+                labelRender={(props) => renderSystemSelectLabel(props, systems)}
+                options={toSystemSelectOptions(systems)}
                 allowClear={viewMode !== 'tree'}
               />
             </Space>

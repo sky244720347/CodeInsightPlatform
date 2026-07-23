@@ -27,6 +27,13 @@ import { Link, useNavigate } from 'react-router-dom';
 import { cancelQueuedTask, getQueueSummary, listQueuedTasks, setTaskPriority } from '../../api/task';
 import { listSystems } from '../../api/system';
 import type { System, Task } from '../../types';
+import {
+  filterSystemSelectOption,
+  renderComponentCell,
+  renderSystemSelectLabel,
+  renderSystemSelectOption,
+  toSystemSelectOptions,
+} from '../../utils/systemSelect';
 const { Text } = Typography;
 /**
  * 「任务队列」页面
@@ -189,11 +196,19 @@ const TaskQueuePage: React.FC = () => {
       title: '系统',
       dataIndex: 'systemId',
       key: 'systemName',
-      width: 180,
+      width: 160,
       render: (sysId: number) =>
         systems.find((s) => s.id === sysId)?.name ?? (
           <Text type="secondary">系统 #{sysId}</Text>
         ),
+    },
+    {
+      title: '组件',
+      dataIndex: 'systemId',
+      key: 'component',
+      width: 120,
+      render: (sysId: number) =>
+        renderComponentCell(systems.find((s) => s.id === sysId)?.component),
     },
     {
       title: '类型',
@@ -311,17 +326,18 @@ const TaskQueuePage: React.FC = () => {
         <Space wrap size={12}>
           <Select
             allowClear
+            showSearch
             placeholder="按系统过滤"
-            style={{ width: 200 }}
+            style={{ width: 240 }}
             value={filterSystemId}
+            filterOption={filterSystemSelectOption}
+            optionRender={renderSystemSelectOption}
+            labelRender={(props) => renderSystemSelectLabel(props, systems)}
             onChange={(v) => {
               setFilterSystemId(v);
               setCurrent(1);
             }}
-            options={systems.map((s) => ({
-              label: s.name,
-              value: s.id,
-            }))}
+            options={toSystemSelectOptions(systems)}
           />
           <Button icon={<ReloadOutlined />} onClick={() => { fetchQueue(); fetchSummary(); }}>
             刷新

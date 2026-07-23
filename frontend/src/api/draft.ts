@@ -156,6 +156,8 @@ export interface DraftSourceReference {
 export interface PreviewSystemDto {
   systemId: number;
   systemName: string;
+  /** 组件标识；空表示无组件 */
+  component?: string;
   owner: string;
   status: number; // 1=启用, 0=停用
   pendingReviewCount: number;

@@ -333,8 +333,10 @@ const Systems: React.FC = () => {
       <Card className="ci-filter-card">
         <SystemFilterBar
           searchName={list.searchName}
+          searchComponent={list.searchComponent}
           searchOwner={list.searchOwner}
           onSearchNameChange={list.setSearchName}
+          onSearchComponentChange={list.setSearchComponent}
           onSearchOwnerChange={list.setSearchOwner}
           onSearch={list.handleSearch}
           onReset={list.handleReset}

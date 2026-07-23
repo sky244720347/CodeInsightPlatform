@@ -167,6 +167,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     private com.company.codeinsight.modules.scanner.service.BaselineInheritanceService baselineInheritanceService;
 
     @Autowired
+    private com.company.codeinsight.modules.draft.service.DraftWorkspacePruneService draftWorkspacePruneService;
+
+    @Autowired
     private AiCallRecordMapper aiCallRecordMapper;
 
     @Autowired
@@ -903,6 +906,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                         decompilePromptService.requireTaskPromptContent(task,
                                 com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
                         incrementalCtx, impact);
+                int pruned = draftWorkspacePruneService.pruneStaleDrafts(id, ws.getId());
+                execLog.log(id, "  裁剪失效草稿 " + pruned + " 份");
                 stateMachineService.transitTo(id, TaskStatus.PENDING_REVIEW, null);
                 execLog.log(id, "<<< 重新继承基线文档完成 → PENDING_REVIEW");
             } catch (Exception e) {
@@ -1294,6 +1299,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 decompilePromptService.requireTaskPromptContent(task,
                         com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
                 incrementalCtx, impact);
+        // ③ 按当前 hierarchy 裁掉失效草稿（含已删功能的继承文档），使 workspace = 最终发布集
+        int pruned = draftWorkspacePruneService.pruneStaleDrafts(taskId, ws.getId());
+        execLog.log(taskId, "  裁剪失效草稿 " + pruned + " 份");
         stateMachineService.transitTo(taskId, TaskStatus.PENDING_REVIEW, null);
         execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
     }
@@ -1394,6 +1402,14 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 decompilePromptService.requireTaskPromptContent(task,
                         com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
                 incrementalCtx);
+        if ("INCREMENTAL".equals(task.getType())) {
+            DraftWorkspace ws = draftWorkspaceMapper.selectOne(
+                    new LambdaQueryWrapper<DraftWorkspace>().eq(DraftWorkspace::getTaskId, taskId));
+            if (ws != null) {
+                int pruned = draftWorkspacePruneService.pruneStaleDrafts(taskId, ws.getId());
+                execLog.log(taskId, "  裁剪失效草稿 " + pruned + " 份");
+            }
+        }
         stateMachineService.transitTo(taskId, TaskStatus.PENDING_REVIEW, null);
         execLog.log(taskId, "<<< 纠错流水线完成 → PENDING_REVIEW");
     }

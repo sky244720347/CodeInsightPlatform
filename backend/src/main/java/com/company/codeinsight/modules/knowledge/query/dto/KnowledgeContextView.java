@@ -9,7 +9,10 @@ import lombok.Data;
 public class KnowledgeContextView {
 
     private Long systemId;
+    /** 系统名称（纯 name/nameCn，不含组件拼接） */
     private String systemName;
+    /** 组件标识；空串/null 表示无组件 */
+    private String component;
     private Long repositoryId;
     private String repositoryName;
     private Long versionId;

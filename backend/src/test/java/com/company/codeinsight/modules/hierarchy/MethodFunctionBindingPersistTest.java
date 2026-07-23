@@ -279,4 +279,45 @@ public class MethodFunctionBindingPersistTest {
         Assertions.assertEquals(1, queryBindings("com.demo.AnyService").size(),
                 "调用图为空时应跳过交叉校验，AI 输出直接落 binding");
     }
+
+    /**
+     * 同 (class, sig) 被两个 function 声明 → 去重后只落 1 行（last-wins），不撞 UK。
+     */
+    @Test
+    public void testDedupeSameClassMethodAcrossFunctions() throws Exception {
+        // 空调用图 → 跳过交叉校验，两份声明都会进入 rows，再由去重收成 1 行
+        EntryPoint entry = buildEntry("com.demo.OrderController");
+        String json = "{\n" +
+                "  \"modules\": [{\n" +
+                "    \"id\": \"m00001\",\n" +
+                "    \"module_name\": \"订单模块\",\n" +
+                "    \"sub_modules\": [{\n" +
+                "      \"id\": \"s00001\",\n" +
+                "      \"sub_module_name\": \"下单\",\n" +
+                "      \"functions\": [\n" +
+                "        {\n" +
+                "          \"id\": \"f00001\",\n" +
+                "          \"function_name\": \"创建订单\",\n" +
+                "          \"class_paths\": [\"com.demo.OrderController\"],\n" +
+                "          \"method_signatures\": [\"createOrder(OrderDTO)\"]\n" +
+                "        },\n" +
+                "        {\n" +
+                "          \"id\": \"f00002\",\n" +
+                "          \"function_name\": \"提交订单\",\n" +
+                "          \"class_paths\": [\"com.demo.OrderController\"],\n" +
+                "          \"method_signatures\": [\"createOrder(OrderDTO)\"]\n" +
+                "        }\n" +
+                "      ]\n" +
+                "    }]\n" +
+                "  }]\n" +
+                "}";
+        invokePersist(TASK_ID, SYS_ID, entry, MAPPER.readTree(json));
+
+        List<MethodFunctionBinding> rows = queryBindings("com.demo.OrderController");
+        Assertions.assertEquals(1, rows.size(),
+                "同 (class,sig) 多功能声明应去重为 1 行，避免 uk_mfb_task_class_method_active");
+        Assertions.assertEquals("createOrder(OrderDTO)", rows.get(0).getMethodSignature());
+        Assertions.assertEquals("f00002", rows.get(0).getFunctionNodeId(),
+                "last-wins：保留后出现的 function");
+    }
 }

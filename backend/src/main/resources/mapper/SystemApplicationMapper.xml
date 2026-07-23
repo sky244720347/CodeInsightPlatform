@@ -29,6 +29,9 @@
             <if test="name != null and name != ''">
                 AND s.name LIKE '%' || #{name,jdbcType=VARCHAR} || '%'
             </if>
+            <if test="component != null and component != ''">
+                AND s.component LIKE '%' || #{component,jdbcType=VARCHAR} || '%'
+            </if>
             <if test="owner != null and owner != ''">
                 AND s.owner = #{owner}
             </if>

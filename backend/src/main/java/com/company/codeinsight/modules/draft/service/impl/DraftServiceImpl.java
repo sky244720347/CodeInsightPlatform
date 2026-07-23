@@ -79,6 +79,9 @@ public class DraftServiceImpl implements DraftService {
     private SystemApplicationMapper systemMapper;
 
     @Autowired
+    private com.company.codeinsight.modules.draft.service.DraftWorkspacePruneService draftWorkspacePruneService;
+
+    @Autowired
     private com.company.codeinsight.modules.prompt.service.DecompilePromptService decompilePromptService;
 
     @Autowired
@@ -226,16 +229,17 @@ public class DraftServiceImpl implements DraftService {
             }
         }
 
-        // v2 分类（按 baselineTaskId 字段区分）：
-        //   new       = baselineTaskId == null 且 module_name 不在基线中
-        //   modified  = baselineTaskId == null 且 module_name 在基线中（AI 重生成覆盖）
-        //   inherited = baselineTaskId != null（直接从基线 release 复制，未重跑）
+        // v2 分类：
+        //   inherited = baselineTaskId != null 且仍为基线确认态（CONFIRMED/PUSHED，未重跑）
+        //   modified  = module_name 在基线中，且非「未触碰继承」（含 AI 重生成；
+        //               兼容 baseline_task_id 因 MP 忽略 null 未清掉的历史脏数据）
+        //   new       = 其余（基线无此 module_name）
         List<KnowledgeDraft> newDrafts = new java.util.ArrayList<>();
         List<KnowledgeDraft> modifiedDrafts = new java.util.ArrayList<>();
         List<KnowledgeDraft> inheritedDrafts = new java.util.ArrayList<>();
         for (KnowledgeDraft d : currentDrafts) {
             if (d.getModuleName() == null) continue;
-            if (d.getBaselineTaskId() != null) {
+            if (isUntouchedInheritedDraft(d)) {
                 inheritedDrafts.add(d);
             } else if (baselineModuleNames.contains(d.getModuleName())) {
                 modifiedDrafts.add(d);
@@ -268,6 +272,19 @@ public class DraftServiceImpl implements DraftService {
                 workspaceId, ws.getRepositoryId(),
                 newDrafts.size(), modifiedDrafts.size(), inheritedDrafts.size(), deletedNodes.size());
         return result;
+    }
+
+    /**
+     * 未触碰的基线继承草稿：仍带 baselineTaskId，且状态保持发布确认态。
+     * <p>AI 重生成后应为 AI_GENERATED/EDITING/… 并清掉 baselineTaskId；
+     * 若因 update 忽略 null 导致 baseline 残留，不能再进 inherited 桶。</p>
+     */
+    private boolean isUntouchedInheritedDraft(KnowledgeDraft d) {
+        if (d.getBaselineTaskId() == null) {
+            return false;
+        }
+        String status = d.getStatus();
+        return "CONFIRMED".equals(status) || "PUSHED".equals(status);
     }
 
     /** 解析 module-map.yaml，返回所有模块名 */
@@ -731,6 +748,8 @@ public class DraftServiceImpl implements DraftService {
                         + " 尚未确认（当前: " + st + "），无法创建版本或推送");
             }
         }
+        // INCREMENTAL：最终集须与 hierarchy 对齐（防止未裁剪的失效继承文档进入正式知识）
+        draftWorkspacePruneService.assertWorkspaceMatchesHierarchy(taskId);
     }
 
     /**
@@ -920,6 +939,7 @@ public class DraftServiceImpl implements DraftService {
             PreviewSystemDto dto = new PreviewSystemDto();
             dto.setSystemId(sysId);
             dto.setSystemName(sys.getName());
+            dto.setComponent(sys.getComponent());
             dto.setOwner(sys.getOwner());
             dto.setPendingReviewCount(statusCount.getOrDefault("PENDING_REVIEW", 0L));
             dto.setReviewingCount(statusCount.getOrDefault("REVIEWING", 0L));

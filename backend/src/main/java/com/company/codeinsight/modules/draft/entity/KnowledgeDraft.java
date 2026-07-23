@@ -1,5 +1,6 @@
 package com.company.codeinsight.modules.draft.entity;
 
+import com.baomidou.mybatisplus.annotation.FieldStrategy;
 import com.baomidou.mybatisplus.annotation.IdType;
 import com.baomidou.mybatisplus.annotation.TableField;
 import com.baomidou.mybatisplus.annotation.TableId;
@@ -70,7 +71,9 @@ public class KnowledgeDraft extends BaseEntity {
 
     /**
      * v1: INCREMENTAL 任务基线继承（NULL=本次生成；非空=从该基线任务继承）
+     * <p>AI 重生成覆盖继承草稿时必须显式置 null 落库，故 updateStrategy=ALWAYS
+     * （MyBatis-Plus 默认忽略 null，会导致 DIFF 仍分桶为「继承」）。</p>
      */
-    @TableField("baseline_task_id")
+    @TableField(value = "baseline_task_id", updateStrategy = FieldStrategy.ALWAYS)
     private Long baselineTaskId;
 }

@@ -328,10 +328,7 @@ const SystemWizardModal: React.FC<Props> = ({
       }
       setSystemId(sys.id);
       // 同步记录系统名称,后续 Step 4 创建自定义提示词时用作命名前缀
-      const label = payload.component
-        ? `${sys.name ?? payload.name} / ${payload.component}`
-        : (sys.name ?? values.name ?? '');
-      setSystemName(label);
+      setSystemName(sys.name ?? payload.name);
       message.success('基本信息已保存');
       setCurrentStep(1);
       // 阶段性保存:通知父页面刷新列表,使用户关闭向导后能看到新建的系统草稿

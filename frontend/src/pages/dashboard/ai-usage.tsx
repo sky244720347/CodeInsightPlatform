@@ -10,6 +10,12 @@ import ReactECharts from 'echarts-for-react';
 import { getAiUsageStats, type AiUsageStats } from '../../api/dashboard';
 import { listSystems } from '../../api/system';
 import type { System } from '../../types';
+import {
+  filterSystemSelectOption,
+  renderSystemSelectLabel,
+  renderSystemSelectOption,
+  toSystemSelectOptions,
+} from '../../utils/systemSelect';
 
 const { Text, Title } = Typography;
 
@@ -73,8 +79,12 @@ const AiUsage: React.FC = () => {
           value={systemId}
           onChange={(v) => setSystemId(v)}
           allowClear
-          style={{ width: 240 }}
-          options={systems.map((s) => ({ value: s.id, label: s.name }))}
+          showSearch
+          style={{ width: 260 }}
+          filterOption={filterSystemSelectOption}
+          optionRender={renderSystemSelectOption}
+          labelRender={(props) => renderSystemSelectLabel(props, systems)}
+          options={toSystemSelectOptions(systems)}
         />
       </Space>
 

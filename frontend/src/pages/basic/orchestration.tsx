@@ -7,6 +7,7 @@ import { listSystems } from '../../api/system';
 import type { ScanWindow } from '../../types';
 import ScanWindowModal from '../systems/ScanWindowModal';
 import ScanWindowHeatmap from './ScanWindowHeatmap';
+import { renderComponentCell } from '../../utils/systemSelect';
 
 const { Text, Title } = Typography;
 
@@ -27,7 +28,10 @@ const TaskOrchestration: React.FC = () => {
   const [windows, setWindows] = useState<ScanWindow[]>([]);
   const [loading, setLoading] = useState(false);
   const [repoMap, setRepoMap] = useState<Map<number, string>>(new Map());
+  /** repositoryId → 系统名 */
   const [sysMap, setSysMap] = useState<Map<number, string>>(new Map());
+  /** repositoryId → 组件 */
+  const [componentMap, setComponentMap] = useState<Map<number, string>>(new Map());
   const [editId, setEditId] = useState<number | null>(null);
   const [editOpen, setEditOpen] = useState(false);
 
@@ -48,7 +52,20 @@ const TaskOrchestration: React.FC = () => {
         getSchedulerCron().catch(() => null),
       ]);
       setRepoMap(new Map(repos.records.map((r) => [r.id, r.gitUrl ?? `#${r.id}`])));
-      setSysMap(new Map(systems.records.map((s) => [s.id, s.name])));
+      const systemById = new Map(systems.records.map((s) => [s.id, s]));
+      setSysMap(
+        new Map(
+          repos.records.map((r) => [r.id, systemById.get(r.systemId)?.name ?? `系统 #${r.systemId}`]),
+        ),
+      );
+      setComponentMap(
+        new Map(
+          repos.records.map((r) => {
+            const c = systemById.get(r.systemId)?.component?.trim();
+            return [r.id, c ?? ''];
+          }),
+        ),
+      );
       setWindows(wins);
       if (cronData) { setCron(cronData.cron); setEnabled(cronData.enabled); setNextRuns(cronData.nextRuns ?? []); }
     } finally { setLoading(false); }
@@ -113,7 +130,13 @@ const TaskOrchestration: React.FC = () => {
         />
 
         {viewMode === 'heatmap' ? (
-          <ScanWindowHeatmap data={windows} repoMap={repoMap} sysMap={sysMap} onRefresh={fetch} />
+          <ScanWindowHeatmap
+            data={windows}
+            repoMap={repoMap}
+            sysMap={sysMap}
+            componentMap={componentMap}
+            onRefresh={fetch}
+          />
         ) : (
           <Table
             dataSource={windows}
@@ -121,8 +144,12 @@ const TaskOrchestration: React.FC = () => {
             loading={loading}
             pagination={{ pageSize: 20, showSizeChanger: true }}
             columns={[
-              { title: '仓库', dataIndex: 'repositoryId', key: 'repo', ellipsis: true, width: 260,
+              { title: '仓库', dataIndex: 'repositoryId', key: 'repo', ellipsis: true, width: 240,
                 render: (id: number) => <Text code style={{ fontSize: 12 }}>{repoMap.get(id) ?? `#${id}`}</Text> },
+              { title: '系统', dataIndex: 'repositoryId', key: 'sys', width: 140,
+                render: (id: number) => sysMap.get(id) ?? '-' },
+              { title: '组件', dataIndex: 'repositoryId', key: 'component', width: 120,
+                render: (id: number) => renderComponentCell(componentMap.get(id)) },
               { title: '周几', dataIndex: 'weekDays', key: 'weekDays', width: 180,
                 render: (v: number) => <Text>{bitsToLabel(v)}</Text> },
               { title: '时间', key: 'time', width: 90,

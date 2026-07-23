@@ -20,6 +20,12 @@ import type { Repository, System, Task } from '../../types';
 import { getCurrentOperator } from '../../api/auth';
 import PageHelpHint from '../../components/PageHelpHint';
 import { knowledgePushHelp } from '../../constants/pushPageHelp';
+import {
+  filterSystemSelectOption,
+  renderSystemSelectLabel,
+  renderSystemSelectOption,
+  toSystemSelectOptions,
+} from '../../utils/systemSelect';
 
 const { Text } = Typography;
 
@@ -441,7 +447,7 @@ const Push: React.FC = () => {
         extra={
           <Space wrap>
             <Select
-              style={{ width: 220 }}
+              style={{ width: 260 }}
               placeholder="筛选系统"
               value={selectedSystemId}
               onChange={(v) => {
@@ -450,7 +456,11 @@ const Push: React.FC = () => {
                 setCurrent(1);
               }}
               allowClear
-              options={systems.map((system) => ({ value: system.id, label: system.name }))}
+              showSearch
+              filterOption={filterSystemSelectOption}
+              optionRender={renderSystemSelectOption}
+              labelRender={(props) => renderSystemSelectLabel(props, systems)}
+              options={toSystemSelectOptions(systems)}
             />
             <Select
               style={{ width: 240 }}

@@ -72,6 +72,7 @@ public class KnowledgeBrowseTreeService {
 
         SystemApplication system = systemMapper.selectById(systemId);
         result.setSystemName(formatSystemName(system));
+        result.setComponent(system != null ? system.getComponent() : null);
 
         CodeRepository repo = repositoryMapper.selectById(repositoryId);
         result.setRepositoryName(formatRepositoryName(repo));

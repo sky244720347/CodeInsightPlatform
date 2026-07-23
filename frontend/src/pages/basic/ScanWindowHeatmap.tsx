@@ -5,17 +5,21 @@ import ReactECharts from 'echarts-for-react';
 import { upsertScanWindow, deleteScanWindow } from '../../api/scan-window';
 import type { ScanWindow } from '../../types';
 import ScanWindowModal from '../systems/ScanWindowModal';
+import { renderComponentCell } from '../../utils/systemSelect';
 
 const WEEK_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
 
 interface Props {
   data: ScanWindow[];
   repoMap: Map<number, string>;
+  /** repositoryId → 系统名 */
   sysMap: Map<number, string>;
+  /** repositoryId → 组件 */
+  componentMap: Map<number, string>;
   onRefresh: () => void;
 }
 
-const ScanWindowHeatmap: React.FC<Props> = ({ data, repoMap, sysMap, onRefresh }) => {
+const ScanWindowHeatmap: React.FC<Props> = ({ data, repoMap, sysMap, componentMap, onRefresh }) => {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [drawerSlot, setDrawerSlot] = useState<{ weekDay: number; hour: number; minute: number } | null>(null);
   const [editOpen, setEditOpen] = useState(false);
@@ -125,11 +129,9 @@ const ScanWindowHeatmap: React.FC<Props> = ({ data, repoMap, sysMap, onRefresh }
             { title: '仓库', dataIndex: 'repositoryId', key: 'repo', ellipsis: true,
               render: (id: number) => <Typography.Text code style={{ fontSize: 12 }}>{repoMap.get(id) ?? `#${id}`}</Typography.Text> },
             { title: '系统', dataIndex: 'repositoryId', key: 'sys', width: 120,
-              render: (id: number) => {
-                // find sysId from data
-                const w = data.find((x) => x.repositoryId === id);
-                return w ? sysMap.get(w.repositoryId) ?? '-' : '-';
-              }},
+              render: (id: number) => sysMap.get(id) ?? '-' },
+            { title: '组件', dataIndex: 'repositoryId', key: 'component', width: 100,
+              render: (id: number) => renderComponentCell(componentMap.get(id)) },
             {
               title: '启用', dataIndex: 'enabled', key: 'enabled', width: 70,
               render: (v: boolean, r: ScanWindow) => (

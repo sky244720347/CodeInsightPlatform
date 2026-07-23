@@ -239,6 +239,7 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
         CodeRepository repo = repositoryMapper.selectById(ctx.getRepositoryId());
         for (KnowledgeBrowseItem item : items) {
             item.setSystemName(KnowledgeBrowseTreeService.formatSystemName(sys));
+            item.setComponent(sys != null ? sys.getComponent() : null);
             item.setRepositoryName(KnowledgeBrowseTreeService.formatRepositoryName(repo));
         }
 
@@ -298,6 +299,7 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
             if (task.getSystemId() != null) {
                 SystemApplication sys = systemCache.computeIfAbsent(task.getSystemId(), id -> systemMapper.selectById(id));
                 item.setSystemName(KnowledgeBrowseTreeService.formatSystemName(sys));
+                item.setComponent(sys != null ? sys.getComponent() : null);
             }
             if (task.getRepositoryId() != null) {
                 CodeRepository repo = repoCache.computeIfAbsent(task.getRepositoryId(), id -> repositoryMapper.selectById(id));
@@ -440,9 +442,10 @@ public class KnowledgeBrowseServiceImpl implements KnowledgeBrowseService {
                 String name = it.getName() == null ? "" : it.getName().toLowerCase(Locale.ROOT);
                 String path = it.getFilePath() == null ? "" : it.getFilePath().toLowerCase(Locale.ROOT);
                 String sys = it.getSystemName() == null ? "" : it.getSystemName().toLowerCase(Locale.ROOT);
+                String component = it.getComponent() == null ? "" : it.getComponent().toLowerCase(Locale.ROOT);
                 String repo = it.getRepositoryName() == null ? "" : it.getRepositoryName().toLowerCase(Locale.ROOT);
                 if (!name.contains(keyword) && !path.contains(keyword)
-                        && !sys.contains(keyword) && !repo.contains(keyword)) {
+                        && !sys.contains(keyword) && !component.contains(keyword) && !repo.contains(keyword)) {
                     return false;
                 }
             }

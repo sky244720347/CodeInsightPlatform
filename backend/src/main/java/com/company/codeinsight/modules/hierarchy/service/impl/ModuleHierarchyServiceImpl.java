@@ -1441,6 +1441,8 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
             }
             return;
         }
+        int beforeDedupe = rows.size();
+        rows = dedupeBindingsByClassMethod(rows, entryClassName);
         // 方案 B：plain INSERT 前逻辑删 — 同 function 旧行 + 即将写入的 (class,sig) 活行键
         java.util.Set<String> functionIds = new java.util.LinkedHashSet<>();
         for (MethodFunctionBinding r : rows) {
@@ -1453,8 +1455,43 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         }
         methodFunctionBindingMapper.deleteByTaskIdAndClassMethodKeys(taskId, rows);
         int inserted = methodFunctionBindingMapper.batchInsertBindings(rows);
-        log.info("入口 {} binding 入库: 笛卡尔+交叉校验后 {} 行, insert {} 行 (call-graph 不存在 {} 条)",
-                entryClassName, rows.size(), inserted, skippedNotExisting);
+        log.info("入口 {} binding 入库: 笛卡尔+交叉校验后 {} 行, 去重后 {} 行, insert {} 行 (call-graph 不存在 {} 条)",
+                entryClassName, beforeDedupe, rows.size(), inserted, skippedNotExisting);
+    }
+
+    /**
+     * 按活行 UK {@code (class_name, method_signature)} 去重，避免同 batch 撞
+     * {@code uk_mfb_task_class_method_active}。后写覆盖先写（last-wins），并 warn 被丢弃的归属。
+     */
+    private List<MethodFunctionBinding> dedupeBindingsByClassMethod(List<MethodFunctionBinding> rows,
+                                                                    String entryClassName) {
+        if (rows == null || rows.size() <= 1) {
+            return rows == null ? List.of() : rows;
+        }
+        Map<String, MethodFunctionBinding> byKey = new LinkedHashMap<>();
+        int dropped = 0;
+        for (MethodFunctionBinding row : rows) {
+            if (row == null || !StringUtils.hasText(row.getClassName())
+                    || !StringUtils.hasText(row.getMethodSignature())) {
+                continue;
+            }
+            String key = row.getClassName().trim() + "\0" + row.getMethodSignature().trim();
+            MethodFunctionBinding prev = byKey.put(key, row);
+            if (prev != null) {
+                dropped++;
+                log.warn("binding 同键多归属，保留后者 (entry={}, class={}, sig={}, dropFunction={}, keepFunction={})",
+                        entryClassName,
+                        row.getClassName(),
+                        row.getMethodSignature(),
+                        prev.getFunctionNodeId(),
+                        row.getFunctionNodeId());
+            }
+        }
+        if (dropped > 0) {
+            log.warn("入口 {} binding 去重: 原 {} 行 → {} 行 (丢弃 {} 条重复 UK 键)",
+                    entryClassName, rows.size(), byKey.size(), dropped);
+        }
+        return new ArrayList<>(byKey.values());
     }
 
     /** 收集 JSON 数组节点的文本值到 Set（trim 后非空） */

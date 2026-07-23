@@ -59,9 +59,10 @@ public class SystemApplicationController {
             @RequestParam(defaultValue = "1") int current,
             @RequestParam(defaultValue = "10") int size,
             @RequestParam(required = false) String name,
+            @RequestParam(required = false) String component,
             @RequestParam(required = false) String owner,
             @RequestParam(required = false) Boolean hasPublished) {
-        Page<SystemSummaryVO> page = systemApplicationService.listSystemsPage(current, size, name, owner, hasPublished);
+        Page<SystemSummaryVO> page = systemApplicationService.listSystemsPage(current, size, name, component, owner, hasPublished);
         PageResult<SystemSummaryVO> result = new PageResult<>(page.getTotal(), page.getSize(), page.getCurrent(), page.getRecords());
         return ApiResponse.success(result);
     }

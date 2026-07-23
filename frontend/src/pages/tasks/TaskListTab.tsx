@@ -45,6 +45,13 @@ import {
 import { listSystems } from '../../api/system';
 import type { System, Task } from '../../types';
 import { isTaskDeletable } from '../../utils/taskActions';
+import {
+  filterSystemSelectOption,
+  renderComponentCell,
+  renderSystemSelectLabel,
+  renderSystemSelectOption,
+  toSystemSelectOptions,
+} from '../../utils/systemSelect';
 
 const { Text } = Typography;
 const { RangePicker } = DatePicker;
@@ -293,8 +300,16 @@ const TaskListTab: React.FC = () => {
       title: '系统',
       dataIndex: 'systemId',
       key: 'systemName',
-      width: 180,
+      width: 160,
       render: (sysId: number) => systems.find((system) => system.id === sysId)?.name ?? `系统 #${sysId}`,
+    },
+    {
+      title: '组件',
+      dataIndex: 'systemId',
+      key: 'component',
+      width: 120,
+      render: (sysId: number) =>
+        renderComponentCell(systems.find((system) => system.id === sysId)?.component),
     },
     {
       title: '类型',
@@ -521,15 +536,14 @@ const TaskListTab: React.FC = () => {
               placeholder="简单搜索：选择系统"
               style={{ width: '100%' }}
               value={filterSystemId}
-              optionFilterProp="label"
+              filterOption={filterSystemSelectOption}
+              optionRender={renderSystemSelectOption}
+              labelRender={(props) => renderSystemSelectLabel(props, systems)}
               onChange={(v) => {
                 setFilterSystemId(v);
                 setCurrent(1);
               }}
-              options={systems.map((s) => ({
-                value: s.id,
-                label: s.nameCn ? `${s.name}（${s.nameCn}）` : s.name,
-              }))}
+              options={toSystemSelectOptions(systems, { withNameCn: true })}
             />
           </Col>
           <Col xs={24} md={14}>

@@ -301,6 +301,8 @@ export interface KnowledgeBrowseItem {
   contentUri?: string;
   systemId?: number;
   systemName?: string;
+  /** 组件标识；空表示无组件 */
+  component?: string;
   repositoryId?: number;
   repositoryName?: string;
 }
@@ -338,6 +340,8 @@ export interface KnowledgeBrowseTreeNode {
 export interface KnowledgeBrowseTreeResult {
   systemId: number;
   systemName?: string;
+  /** 组件标识；空表示无组件 */
+  component?: string;
   repositoryId: number;
   repositoryName?: string;
   versionId?: number;

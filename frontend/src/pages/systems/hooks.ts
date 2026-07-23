@@ -18,6 +18,7 @@ export function useSystemsList() {
 
   // 搜索条件
   const [searchName, setSearchName] = useState('');
+  const [searchComponent, setSearchComponent] = useState('');
   const [searchOwner, setSearchOwner] = useState('');
 
   const fetch = useCallback(
@@ -28,6 +29,7 @@ export function useSystemsList() {
           current: page,
           size: pageSize,
           name: searchName || undefined,
+          component: searchComponent || undefined,
           owner: searchOwner || undefined,
         });
         setSystems(data.records);
@@ -36,7 +38,7 @@ export function useSystemsList() {
         setLoading(false);
       }
     },
-    [current, searchName, searchOwner, size],
+    [current, searchComponent, searchName, searchOwner, size],
   );
 
   // 任意依赖变化都自动重新拉取
@@ -51,6 +53,7 @@ export function useSystemsList() {
 
   const handleReset = useCallback(() => {
     setSearchName('');
+    setSearchComponent('');
     setSearchOwner('');
     setCurrent(1);
     setTimeout(() => fetch(1), 0);
@@ -68,8 +71,10 @@ export function useSystemsList() {
     setSize,
     // 搜索
     searchName,
+    searchComponent,
     searchOwner,
     setSearchName,
+    setSearchComponent,
     setSearchOwner,
     // 操作
     fetch,

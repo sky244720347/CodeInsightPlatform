@@ -4,6 +4,8 @@ import type { EntrypointReviewItem, ModuleHierarchy } from '../types';
 export interface KnowledgeContextView {
   systemId?: number;
   systemName?: string;
+  /** 组件标识；空表示无组件 */
+  component?: string;
   repositoryId?: number;
   repositoryName?: string;
   versionId?: number;

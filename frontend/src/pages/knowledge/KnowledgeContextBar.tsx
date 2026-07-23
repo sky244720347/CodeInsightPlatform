@@ -4,6 +4,12 @@ import { ReloadOutlined, ToolOutlined } from '@ant-design/icons';
 import type { KnowledgeContextView } from '../../api/knowledge-query';
 import type { Repository, System } from '../../types';
 import PageHelpHint from '../../components/PageHelpHint';
+import {
+  filterSystemSelectOption,
+  renderSystemSelectLabel,
+  renderSystemSelectOption,
+  toSystemSelectOptions,
+} from '../../utils/systemSelect';
 
 const { Text } = Typography;
 
@@ -41,7 +47,7 @@ const KnowledgeContextBar: React.FC<KnowledgeContextBarProps> = ({
   remediationEnabled = false,
   onRemediate,
 }) => {
-  const systemOptions = systems.map((s) => ({ value: s.id, label: s.name }));
+  const systemOptions = toSystemSelectOptions(systems);
   const repoOptions = repositories.map((r) => {
     const base = r.gitUrl?.split('/').pop()?.replace(/\.git$/, '') ?? `仓库 #${r.id}`;
     return { value: r.id, label: `${base} (${r.branch})` };
@@ -80,9 +86,11 @@ const KnowledgeContextBar: React.FC<KnowledgeContextBarProps> = ({
                 placeholder="请选择系统"
                 value={systemId}
                 onChange={onSystemChange}
-                style={{ width: 200 }}
+                style={{ width: 240 }}
                 showSearch
-                optionFilterProp="label"
+                filterOption={filterSystemSelectOption}
+                optionRender={renderSystemSelectOption}
+                labelRender={(props) => renderSystemSelectLabel(props, systems)}
                 options={systemOptions}
                 allowClear={!requireRepository}
               />

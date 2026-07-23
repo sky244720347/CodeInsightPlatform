@@ -56,6 +56,8 @@ export interface PipelineStageStat {
 export interface SystemCoverageItem {
   systemId: number;
   systemName: string;
+  /** 组件标识；空表示无组件 */
+  component?: string;
   taskCount: number;
   draftCount: number;
   versionCount: number;

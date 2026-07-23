@@ -5,6 +5,12 @@ import { useSearchParams } from 'react-router-dom';
 import { getLogDetail, listLogs, type OperationLog } from '../../api/log';
 import { listSystems } from '../../api/system';
 import type { System } from '../../types';
+import {
+  filterSystemSelectOption,
+  renderSystemSelectLabel,
+  renderSystemSelectOption,
+  toSystemSelectOptions,
+} from '../../utils/systemSelect';
 
 const { Text } = Typography;
 
@@ -153,12 +159,16 @@ const Logs: React.FC = () => {
         <Form layout="inline" className="ci-inline-form">
           <Form.Item label="系统">
             <Select
-              style={{ width: 180 }}
+              style={{ width: 240 }}
               placeholder="全部系统"
               value={selectedSystemId}
               onChange={setSelectedSystemId}
               allowClear
-              options={systems.map((system) => ({ value: system.id, label: system.name }))}
+              showSearch
+              filterOption={filterSystemSelectOption}
+              optionRender={renderSystemSelectOption}
+              labelRender={(props) => renderSystemSelectLabel(props, systems)}
+              options={toSystemSelectOptions(systems)}
             />
           </Form.Item>
           <Form.Item label="任务">

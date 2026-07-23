@@ -51,8 +51,11 @@ public class KnowledgeBrowseItem {
     /** 所属系统 ID（列表跨系统展示） */
     private Long systemId;
 
-    /** 所属系统名称 */
+    /** 所属系统名称（纯 name/nameCn，不含组件拼接） */
     private String systemName;
+
+    /** 所属系统组件标识；空串/null 表示无组件 */
+    private String component;
 
     /** 所属仓库 ID */
     private Long repositoryId;

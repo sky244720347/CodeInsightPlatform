@@ -1209,7 +1209,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     // Segmented 内部样式清零，让 label 与 .ci-action-group 内的按钮完全同尺寸
     //
     // v2: DIFF 按钮改为变更类型感知：
-    //   - 增量 + modified → "DIFF" 按钮，可点击切换到左右对比视图
+    //   - 增量 + modified → "比对" 按钮，可点击切换到左右对比视图
     //   - 增量 + new      → "新增" Tag，不可点击（无基线可对比）
     //   - 增量 + inherited → "继承" Tag，不可点击（与基线一致，无差异）
     //   - 非增量 / 无 diffType → 不展示
@@ -1218,14 +1218,14 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
       if (!isIncremental || !selectedDraftId) return null;
       if (currentDraftDiffType === 'modified') {
         return (
-          <Tooltip title="与基线版本左右对比">
+          <Tooltip title="与基线版本左右比对">
             <Button
               size="small"
               type={viewMode === 'diff' ? 'primary' : 'default'}
               icon={<EyeOutlined />}
               onClick={() => setViewMode(viewMode === 'diff' ? 'preview' : 'diff')}
             >
-              DIFF
+              比对
             </Button>
           </Tooltip>
         );
@@ -1249,7 +1249,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
         );
       }
       // deleted 类型不在编辑器中展示（已在树中标记）
-      // 无 diffType 但有 baselineTaskId（旧数据兼容）→ 也展示 DIFF
+      // 无 diffType 但有 baselineTaskId（旧数据兼容）→ 展示继承
       const dn = findNodeInTreeData(treeData, selectedDraftId);
       if (dn?.baselineTaskId) {
         return (

@@ -89,6 +89,7 @@ public interface DraftService {
 
     /**
      * 创建知识版本 / 入队推送前的任务级就绪校验：任务须为 CONFIRMED，且工作区内每篇草稿均为 CONFIRMED 或 PUSHED。
+     * <p>INCREMENTAL 任务额外校验：workspace 草稿集合须与当前模块层级一致（无多余/缺失）。</p>
      */
     void assertTaskReadyForKnowledgePublish(Long taskId);
 
@@ -163,8 +164,8 @@ public interface DraftService {
      * <p>INITIAL 任务或无基线时返回 4 个空 list；INCREMENTAL 任务返回 4 类：</p>
      * <ul>
      *   <li>newRows：本次新增（baselineTaskId == null 且 module_name 不在基线中）</li>
-     *   <li>modifiedRows：本次重生成覆盖基线（baselineTaskId == null 且 module_name 在基线中）</li>
-     *   <li>inheritedRows：基线继承（baselineTaskId != null，直接复制未重跑）</li>
+ *   <li>modifiedRows：本次重生成覆盖基线（module_name 在基线中，且非未触碰继承）</li>
+ *   <li>inheritedRows：未触碰基线继承（baselineTaskId != null 且 status∈{CONFIRMED,PUSHED}）</li>
      *   <li>deletedRows：本次删除（基线 workspace 有 + 本次 workspace 无）</li>
      * </ul>
      */

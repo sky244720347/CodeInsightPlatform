@@ -30,7 +30,7 @@ export const getSystemColumns = (handlers: SystemColumnHandlers) => [
     fixed: 'left' as const,
     render: (text: string, record: System) => (
       <Button type="link" className="ci-table-link" onClick={() => handlers.onOpenDetail(record)}>
-        {record.component ? `${text} / ${record.component}` : text}
+        {text}
       </Button>
     ),
   },

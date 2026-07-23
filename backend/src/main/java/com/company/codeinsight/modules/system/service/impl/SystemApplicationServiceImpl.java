@@ -45,12 +45,12 @@ public class SystemApplicationServiceImpl extends ServiceImpl<SystemApplicationM
 
     /**
      * 条件分页查询接入的业务系统列表（带聚合指标）
-     * <p>仅按 name / owner 模糊过滤。</p>
+     * <p>按 name / component 模糊过滤，按 owner 精确过滤。</p>
      * <p>当 {@code hasPublished} 为 true 时，仅返回至少存在一个已发布仓库（last_published_version_id IS NOT NULL）的系统。</p>
      */
     @Override
-    public Page<SystemSummaryVO> listSystemsPage(int current, int size, String name, String owner, Boolean hasPublished) {
-        List<SystemSummaryVO> all = baseMapper.listSystemsWithSummary(name, owner, hasPublished);
+    public Page<SystemSummaryVO> listSystemsPage(int current, int size, String name, String component, String owner, Boolean hasPublished) {
+        List<SystemSummaryVO> all = baseMapper.listSystemsWithSummary(name, component, owner, hasPublished);
         long total = all.size();
         int from = Math.max(0, (current - 1) * size);
         int to = Math.min(all.size(), from + size);

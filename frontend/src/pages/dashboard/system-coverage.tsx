@@ -6,6 +6,7 @@ import {
 } from '@ant-design/icons';
 import ReactECharts from 'echarts-for-react';
 import { getSystemCoverage, type SystemCoverageItem } from '../../api/dashboard';
+import { renderComponentCell } from '../../utils/systemSelect';
 
 const { Text, Title } = Typography;
 
@@ -39,6 +40,13 @@ const SystemCoverage: React.FC = () => {
 
   const columns = [
     { title: '系统', dataIndex: 'systemName', key: 'systemName', render: (v: string) => <Text strong>{v}</Text> },
+    {
+      title: '组件',
+      dataIndex: 'component',
+      key: 'component',
+      width: 140,
+      render: (v: string | undefined) => renderComponentCell(v),
+    },
     { title: '任务数', dataIndex: 'taskCount', key: 'taskCount', sorter: (a: SystemCoverageItem, b: SystemCoverageItem) => a.taskCount - b.taskCount },
     { title: '草稿数', dataIndex: 'draftCount', key: 'draftCount', sorter: (a: SystemCoverageItem, b: SystemCoverageItem) => a.draftCount - b.draftCount },
     { title: '推送版本数', dataIndex: 'versionCount', key: 'versionCount', sorter: (a: SystemCoverageItem, b: SystemCoverageItem) => a.versionCount - b.versionCount },

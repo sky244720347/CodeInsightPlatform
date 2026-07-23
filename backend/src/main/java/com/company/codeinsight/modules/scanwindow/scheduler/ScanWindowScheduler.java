@@ -53,14 +53,19 @@ public class ScanWindowScheduler {
 
     @PostConstruct
     public void init() {
-        // 从 Redis 恢复 cron + enabled
+        // 从 Redis 恢复 cron + enabled（Redis 短暂不可达时降级为本地默认值，不阻断启动）
         if (redisTemplate != null) {
-            String redisCron = redisTemplate.opsForValue().get(REDIS_KEY_CRON);
-            if (redisCron != null && !redisCron.isBlank()) currentCron = redisCron;
-            else currentCron = defaultCron;
+            try {
+                String redisCron = redisTemplate.opsForValue().get(REDIS_KEY_CRON);
+                if (redisCron != null && !redisCron.isBlank()) currentCron = redisCron;
+                else currentCron = defaultCron;
 
-            String redisEnabled = redisTemplate.opsForValue().get(REDIS_KEY_ENABLED);
-            if (redisEnabled != null) enabled = Boolean.parseBoolean(redisEnabled);
+                String redisEnabled = redisTemplate.opsForValue().get(REDIS_KEY_ENABLED);
+                if (redisEnabled != null) enabled = Boolean.parseBoolean(redisEnabled);
+            } catch (Exception e) {
+                log.warn("ScanWindowScheduler 从 Redis 恢复配置失败，使用默认 cron={} — {}", defaultCron, e.toString());
+                currentCron = defaultCron;
+            }
         } else {
             currentCron = defaultCron;
         }

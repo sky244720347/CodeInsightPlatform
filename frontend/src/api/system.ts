@@ -5,6 +5,7 @@ export const listSystems = (params: {
   current: number;
   size: number;
   name?: string;
+  component?: string;
   owner?: string;
   /** 仅返回含已发布仓库（last_published_version_id IS NOT NULL）的系统，默认 false */
   hasPublished?: boolean;
