@@ -117,12 +117,23 @@ function readStoredViewMode(): ViewMode {
   }
 }
 
-function PreviewContent({ text, type }: { text: string; type: KnowledgeBrowseFileType }) {
-  const lowerName = (text || '').toLowerCase();
-  if (type === 'DRAFT' || type === 'INDEX') {
+function PreviewContent({
+  text,
+  type,
+  filePath,
+}: {
+  text: string;
+  type: KnowledgeBrowseFileType;
+  filePath?: string;
+}) {
+  const pathLower = (filePath || '').toLowerCase();
+  const trimmed = (text || '').trimStart();
+  const isMarkdownManifest =
+    type === 'MANIFEST' && (pathLower.endsWith('.md') || trimmed.startsWith('#'));
+  if (type === 'DRAFT' || type === 'INDEX' || isMarkdownManifest) {
     return <MarkdownView content={text} />;
   }
-  if (lowerName.trimStart().startsWith('{') || lowerName.trimStart().startsWith('[')) {
+  if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
     return <MarkdownView content={'```json\n' + text + '\n```'} />;
   }
   return <MarkdownView content={'```yaml\n' + text + '\n```'} />;
@@ -1095,7 +1106,7 @@ const KnowledgeBrowse: React.FC = () => {
                 )}
               </Paragraph>
             )}
-            <PreviewContent text={previewText} type={previewItem.type} />
+            <PreviewContent text={previewText} type={previewItem.type} filePath={previewItem.filePath} />
           </>
         )}
       </Drawer>

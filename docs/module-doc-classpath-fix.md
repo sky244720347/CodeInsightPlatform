@@ -119,7 +119,8 @@ package com.example.service;
 
 1. `ci_method_function_binding` 中该类功能的 `class_name`（升 FQ）  
 2. 否则 `fn.classPaths`  
-3. 若仍空且能 BFS：可达类短名升 FQ（与源码收集同一根签名）  
+3. 若仍空且能 BFS：可达类短名升 FQ（与源码收集同一根签名）
+4. **（2026-07-23）binding / classPaths 非空时仍 union BFS 可达类**，避免清单锁死在入口 Controller  
 4. 去重、保序  
 
 `methods[]`：binding 行优先；否则 `classPaths[0] × methodSignatures` 笛卡尔积（兼容旧数据）。

@@ -227,7 +227,7 @@ const Systems: React.FC = () => {
     if (!selectedSystem) return;
     setEditingRepo(null);
     repoForm.resetFields();
-    repoForm.setFieldsValue({ branch: 'main', scanRoot: '/' });
+    repoForm.setFieldsValue({ branch: 'master', scanRoot: '/' });
     setRepoModalOpen(true);
   }, [repoForm, selectedSystem]);
 

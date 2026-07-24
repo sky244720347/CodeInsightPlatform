@@ -11,6 +11,7 @@ import com.company.codeinsight.modules.scanner.entity.CodeFileSnapshot;
 import com.company.codeinsight.modules.scanner.mapper.CodeFileSnapshotMapper;
 import com.company.codeinsight.modules.scanner.model.IncrementalContext;
 import com.company.codeinsight.modules.scanner.model.ScanResult;
+import com.company.codeinsight.modules.scanner.model.ScanScope;
 import com.company.codeinsight.modules.scanner.service.CodeScannerService;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
@@ -160,6 +161,13 @@ public class CodeScannerServiceImpl implements CodeScannerService {
         }
 
         if (gitPullSuccess) {
+            // 校验扫描根并构建两段过滤范围（整仓 clone 后逻辑隔离）
+            ScanScope scope = ScanScope.from(repo, targetDir);
+            log.info("ScanScope taskId={} scanRoot={} effectiveRoot={}",
+                    taskId,
+                    scope.getScanRootRel().isEmpty() ? "/" : scope.getScanRootRel(),
+                    scope.getEffectiveRoot().getAbsolutePath());
+
             // === 1. 计算本次扫描的文件范围（INITIAL / INCREMENTAL 严格分流，禁止任何降级） ===
             if (isIncremental) {
                 // INCREMENTAL 路径：任何条件不满足立即抛错让任务 FAIL（runPipeline 的 catch 会转 FAILED）
@@ -179,10 +187,15 @@ public class CodeScannerServiceImpl implements CodeScannerService {
                 }
                 try {
                     DiffOutcome diff = computeIncrementalDiff(gitHandle, repo.getLastCommitId(), "HEAD");
-                    changedPaths = diff.changed;
-                    deletedPaths = diff.deleted;
-                    log.info("增量扫描 — 变更 {} 个文件，删除 {} 个文件（基线 {} → HEAD {}）",
-                            changedPaths.size(), deletedPaths.size(), repo.getLastCommitId(), commitId);
+                    int rawChanged = diff.changed.size();
+                    int rawDeleted = diff.deleted.size();
+                    changedPaths = scope.filterPaths(diff.changed);
+                    deletedPaths = scope.filterPaths(diff.deleted);
+                    log.info("增量扫描 — 变更 {}→{} 个文件，删除 {}→{} 个文件（ScanScope 过滤后；基线 {} → HEAD {}）",
+                            rawChanged, changedPaths.size(), rawDeleted, deletedPaths.size(),
+                            repo.getLastCommitId(), commitId);
+                } catch (BusinessException be) {
+                    throw be;
                 } catch (Exception diffEx) {
                     // 基线 commit 在新 history 中不可解析（force-push / rebase）。禁止降级，直接 FAIL。
                     String msg = "增量基线 commit " + repo.getLastCommitId() + " 不可解析：" + diffEx.getMessage();
@@ -214,13 +227,13 @@ public class CodeScannerServiceImpl implements CodeScannerService {
                 }
             }
 
-            // === 3. 递归扫描目录，生成新 snapshot（批量缓冲写入） ===
+            // === 3. 从 effectiveRoot 递归扫描，生成新 snapshot（批量缓冲写入） ===
             List<CodeFileSnapshot> batchBuffer = new ArrayList<>();
             int[] totalInserted = {0};
             if (performFullScan) {
-                scanDirectory(targetDir, targetDir, repo, taskId, batchBuffer, null, totalInserted);
+                scanDirectory(targetDir, scope.getEffectiveRoot(), scope, taskId, batchBuffer, null, totalInserted);
             } else {
-                scanDirectory(targetDir, targetDir, repo, taskId, batchBuffer, changedPaths, totalInserted);
+                scanDirectory(targetDir, scope.getEffectiveRoot(), scope, taskId, batchBuffer, changedPaths, totalInserted);
             }
             // 刷出缓冲区剩余快照
             if (!batchBuffer.isEmpty()) {
@@ -368,11 +381,11 @@ public class CodeScannerServiceImpl implements CodeScannerService {
     }
 
     /**
-     * 递归遍历扫描文件夹，分析黑白名单规则过滤文件
+     * 递归遍历扫描文件夹（从 {@link ScanScope#getEffectiveRoot()} 起步）。
      *
-     * @param baseDir       任务临时存放根目录（作为计算相对路径的基准）
+     * @param baseDir       仓库根（相对路径基准，与 git diff 对齐）
      * @param currentDir    当前正在遍历的子目录
-     * @param repo          代码库配置实体（包含排除规则）
+     * @param scope         两段过滤范围
      * @param taskId        任务 ID
      * @param batchBuffer   快照批量写入缓冲区，攒满 {@link #SNAPSHOT_BATCH_SIZE} 条后触发批量 INSERT
      * @param pathFilter    非空时只处理相对路径命中该集合的文件（增量场景下使用）；
@@ -380,68 +393,39 @@ public class CodeScannerServiceImpl implements CodeScannerService {
      *                      传 null 表示不过滤（按全量行为走）。
      * @param totalInserted [0] 累计已写入的快照总数，由 {@link #flushSnapshotBatch} 回填
      */
-    private void scanDirectory(File baseDir, File currentDir, CodeRepository repo, Long taskId,
+    private void scanDirectory(File baseDir, File currentDir, ScanScope scope, Long taskId,
                                List<CodeFileSnapshot> batchBuffer, Set<String> pathFilter,
                                int[] totalInserted) {
         File[] files = currentDir.listFiles();
         if (files == null) return;
 
-        // 解析配置的排除文件夹（逗号隔开，转为数组）
-        String[] excludeDirs = StringUtils.hasText(repo.getExcludeDirs()) ? repo.getExcludeDirs().split(",") : new String[0];
-        // 解析排除的文件类型后缀
-        String[] excludeTypes = StringUtils.hasText(repo.getExcludeFileTypes()) ? repo.getExcludeFileTypes().split(",") : new String[0];
-
         for (File file : files) {
-            // 计算文件相对于扫描根目录的相对路径 (例如 src/main/java/com/demo/User.java)
+            // 相对仓库根（例如 a/b/c.java），非相对扫描根
             String relativePath = baseDir.toURI().relativize(file.toURI()).getPath();
-            // 去除末尾反斜杠
             if (relativePath.endsWith("/")) {
                 relativePath = relativePath.substring(0, relativePath.length() - 1);
             }
+            relativePath = relativePath.replace('\\', '/');
 
             if (file.isDirectory()) {
-                // 1. 判断是否被配置的排除文件夹排除
-                boolean isExcluded = false;
-                for (String exDir : excludeDirs) {
-                    String cleanEx = exDir.trim();
-                    if (StringUtils.hasText(cleanEx) && relativePath.toLowerCase().contains(cleanEx.toLowerCase())) {
-                        isExcluded = true;
-                        break;
-                    }
-                }
-                // 默认强制排除系统敏感目录与前端依赖包
-                if (file.getName().startsWith(".") || file.getName().equals("target") || file.getName().equals("node_modules")) {
-                    isExcluded = true;
-                }
-                if (isExcluded) {
+                if (!scope.acceptsDirectory(relativePath)) {
                     continue;
                 }
                 // 增量模式下：若该目录下没有任何命中 pathFilter 的文件，直接跳过整个子树
                 if (pathFilter != null && !subtreeHasMatch(pathFilter, relativePath)) {
                     continue;
                 }
-                // 递归向下进行目录扫描
-                scanDirectory(baseDir, file, repo, taskId, batchBuffer, pathFilter, totalInserted);
+                scanDirectory(baseDir, file, scope, taskId, batchBuffer, pathFilter, totalInserted);
             } else {
-                // 2. 检查文件类型后缀过滤
-                boolean isExcluded = false;
-                String ext = getFileExtension(file.getName());
-                for (String exType : excludeTypes) {
-                    String cleanEx = exType.trim().replace(".", "");
-                    if (StringUtils.hasText(cleanEx) && ext.equalsIgnoreCase(cleanEx)) {
-                        isExcluded = true;
-                        break;
-                    }
-                }
-                if (isExcluded) {
+                if (!scope.accepts(relativePath)) {
                     continue;
                 }
                 // 增量模式下：仅当文件相对路径命中 git diff 变更集时才落快照
                 if (pathFilter != null && !pathFilter.contains(relativePath)) {
                     continue;
                 }
-                // 如果未被排除，创建文件级别的物理快照与数据库记录
                 try {
+                    String ext = getFileExtension(file.getName());
                     createFileSnapshot(baseDir, file, relativePath, taskId, ext, batchBuffer, totalInserted);
                 } catch (Exception e) {
                     log.error("保存文件快照失败: {}", file.getAbsolutePath(), e);

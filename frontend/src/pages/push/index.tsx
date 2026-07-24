@@ -22,6 +22,7 @@ import PageHelpHint from '../../components/PageHelpHint';
 import { knowledgePushHelp } from '../../constants/pushPageHelp';
 import {
   filterSystemSelectOption,
+  renderComponentCell,
   renderSystemSelectLabel,
   renderSystemSelectOption,
   toSystemSelectOptions,
@@ -290,6 +291,21 @@ const Push: React.FC = () => {
           )}
         </Space>
       ),
+    },
+    {
+      title: '系统',
+      dataIndex: 'systemId',
+      key: 'systemName',
+      width: 160,
+      render: (sysId: number) => systems.find((s) => s.id === sysId)?.name ?? `系统 #${sysId}`,
+    },
+    {
+      title: '组件',
+      dataIndex: 'systemId',
+      key: 'component',
+      width: 120,
+      render: (sysId: number) =>
+        renderComponentCell(systems.find((s) => s.id === sysId)?.component),
     },
     {
       title: '版本状态',

@@ -158,6 +158,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             indexBuilder.append("## 文档导览\n");
             indexBuilder.append("- [架构概览](architecture-overview.md)\n");
             indexBuilder.append("- [模块索引](module-index.md)\n");
+            indexBuilder.append("- [知识文档索引](meta/document-index.md)\n");
             indexBuilder.append("- [接口索引](api-index.md)\n");
             indexBuilder.append("- [数据库索引](database-index.md)\n");
             indexBuilder.append("- [依赖与调用链路](dependency-index.md)\n");
@@ -172,23 +173,29 @@ public class KnowledgeServiceImpl implements KnowledgeService {
                 File draftFile = DraftFileUtil.resolve(draft.getContentUri(), storageResolver).toFile();
                 String content = draftFile.exists() ? Files.readString(draftFile.toPath()) : "# " + draft.getModuleName();
 
-                String cleanFileName = draft.getModuleName().replaceAll("[\\s/\\(\\)]", "_") + ".md";
+                String cleanFileName = KnowledgeIndexServiceImpl.flattenKnowledgeDocFileName(draft.getModuleName());
                 Files.writeString(modulesPath.resolve(cleanFileName), content);
 
                 yamlBuilder.append("  - name: \"").append(draft.getModuleName()).append("\"\n");
                 yamlBuilder.append("    path: \"docs/code-insight/modules/").append(cleanFileName).append("\"\n");
             }
 
-            // 加载 ModuleHierarchy DTO（项 2 产出），由 KnowledgeIndexService 生成三级索引
+            // 加载 ModuleHierarchy DTO，生成 module-index.md + meta/document-index.md
             try {
                 com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy hierarchy =
                         moduleHierarchyService.loadByTaskId(taskId);
                 knowledgeIndexService.generateModuleIndex(docsPath, hierarchy, drafts);
-                log.info("项 4 三级索引 module-index.md 生成完成（taskId={}）", taskId);
+                knowledgeIndexService.generateDocumentIndex(docsPath, hierarchy, drafts);
+                log.info("三级索引 module-index.md / meta/document-index.md 生成完成（taskId={}）", taskId);
             } catch (Exception e) {
                 // 索引生成失败不能影响主流程，降级为旧版两行列表（这里直接保留 fallback）
                 log.warn("KnowledgeIndexService 调用失败，写 fallback module-index.md: {}", e.getMessage());
                 writeFallbackModuleIndex(docsPath, drafts);
+                try {
+                    knowledgeIndexService.generateDocumentIndex(docsPath, null, drafts);
+                } catch (Exception ex) {
+                    log.warn("fallback document-index.md 生成失败: {}", ex.getMessage());
+                }
             }
 
             // 3. 构建架构整体设计大纲（architecture-overview.md）
@@ -496,7 +503,7 @@ public class KnowledgeServiceImpl implements KnowledgeService {
         sb.append("本知识库由代码洞察平台基于大模型及静态解析自动归纳生成。\n\n");
         sb.append("## 系统模块列表\n");
         for (KnowledgeDraft draft : drafts) {
-            String cleanFileName = draft.getModuleName().replaceAll("[\\s/\\(\\)]", "_") + ".md";
+            String cleanFileName = KnowledgeIndexServiceImpl.flattenKnowledgeDocFileName(draft.getModuleName());
             sb.append("- [").append(draft.getModuleName()).append("](modules/").append(cleanFileName).append(")\n");
         }
         Files.writeString(docsPath.resolve("module-index.md"), sb.toString());

@@ -151,7 +151,7 @@ public class ParsedClassInfo {
          */
         private String callerSignature;
         /**
-         * 被调方方法完整签名："methodName(ParamType1, ParamType2)"（MVP 阶段不带参数，等于 targetMethod）
+         * 被调方完整签名："短类名#methodName(ParamType1, ParamType2)"（阶段 3；旧数据可能仅为方法名）
          */
         private String targetSignature;
         /**

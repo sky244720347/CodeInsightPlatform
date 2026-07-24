@@ -22,3 +22,18 @@ export const putSystemConfig = (
 ): Promise<void> => {
   return request.put(`/system-config/${encodeURIComponent(key)}`, body);
 };
+
+export interface PermitClearResult {
+  pool: string;
+  removedBefore: number;
+}
+
+/** 清空任务 Redis 并发许可（运维） */
+export const clearTaskPermits = (): Promise<PermitClearResult> => {
+  return request.post('/system-config/permits/task/clear');
+};
+
+/** 清空 AI Redis 并发许可（运维） */
+export const clearAiPermits = (): Promise<PermitClearResult> => {
+  return request.post('/system-config/permits/ai/clear');
+};

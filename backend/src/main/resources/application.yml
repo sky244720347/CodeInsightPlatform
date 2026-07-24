@@ -16,6 +16,11 @@ code-insight:
     task-lease-hours: 2
     draft-edit-lock-ttl-seconds: 120
     draft-edit-lock-renew-seconds: 60
+    # 任务并发 Redis 许可：TTL + 续租；崩溃残留靠启动/周期 DB 对账清理
+    task-permit-ttl-seconds: 300
+    task-permit-renew-seconds: 60
+    task-permit-reconcile-interval-ms: 60000
+    instance-heartbeat-ttl-seconds: 90
   storage:
     # 非 dev 必填绝对路径；dev 写死 ./storage 并派生 ./storage/workspaces、./storage/releases，忽略下列配置
     runtime-root: ${STORAGE_RUNTIME_ROOT:}
@@ -32,6 +37,9 @@ code-insight:
       max-attempts: 3            # 单次逻辑 AI 调用最大尝试次数（模块提取 / 文档生成等）
       backoff-ms: 1000           # 重试退避基数（毫秒），实际等待 = backoff-ms × attempt
       concurrency-backoff-ms: 2000  # 并发槽位不足时退避基数（毫秒），实际等待 = concurrency-backoff-ms × attempt
+  review:
+    # true：知识复核允许未逐篇确认时直接「任务整体通过」（未确认草稿一并 CONFIRMED）
+    allow-partial-pass: ${REVIEW_ALLOW_PARTIAL_PASS:false}
   schedule:
     enabled: true             # 是否启用定时任务调度（false 时 ScheduleExecutor 不会装载）
     poll-interval-ms: 60000    # 主轮询间隔（毫秒），到点扫描到期 schedule

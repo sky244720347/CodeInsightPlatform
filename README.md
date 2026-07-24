@@ -315,6 +315,10 @@ DRAFT
   /modules
   /changes
   /meta
+    document-index.md
+    module-map.yaml
+    knowledge-version.json
+    prompt-used.json
 ```
 
 元数据包括 `knowledge-version.json`、`module-map.yaml` 和 `prompt-used.json`。仓库级已发布快照写在 `ci_repository_publish_snapshot`；生效版本指针 `ci_repository.last_published_version_id` 由推送成功 / 回滚更新，知识查看（`/knowledge/documents` 等三页）默认只读该 release 目录。知识查看的纠错流程（`POST /api/knowledge/remediation/*`）会把人工修订的内容批准后直写 NAS release 文件并打标 `contentOrigin: HUMAN_EDITED`。

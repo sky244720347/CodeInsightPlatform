@@ -29,6 +29,8 @@ import com.company.codeinsight.modules.hierarchy.entity.MethodFunctionBinding;
 import com.company.codeinsight.modules.hierarchy.mapper.MethodFunctionBindingMapper;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
+import com.company.codeinsight.modules.scanner.model.ScanScope;
+import com.company.codeinsight.modules.scanner.service.ScanScopeResolver;
 import com.company.codeinsight.modules.task.service.TaskExecutionLogger;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -141,6 +143,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
     @Autowired
     private com.company.codeinsight.modules.callchain.service.MethodCallGraphService methodCallGraphService;
+
+    @Autowired
+    private ScanScopeResolver scanScopeResolver;
 
     @Autowired
     private TaskWorkspacePaths taskWorkspacePaths;
@@ -565,6 +570,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         }
 
         Set<String> rootSignatures = loadFunctionRootSignatures(taskId, fn);
+        ScanScope scope = (projectOk && taskId != null)
+                ? scanScopeResolver.resolveBestEffort(taskId, projectDir)
+                : null;
         if (rootSignatures.isEmpty()) {
             // fallback：按 classPaths（兼容旧数据，且反向绑定表为空时不再做大杂烩 BFS）
             int classPathCount = fn != null && fn.getClassPaths() != null ? fn.getClassPaths().size() : 0;
@@ -578,6 +586,11 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     String classFilePath = lookupClassFilePath(taskId, cp);
                     if (classFilePath == null) {
                         missLookup++;
+                        continue;
+                    }
+                    if (scope != null && !scope.accepts(classFilePath)) {
+                        log.warn("collectFunctionSourceCode fallback 超出扫描范围，跳过: class={} path={}",
+                                cp, classFilePath);
                         continue;
                     }
                     File f = new File(projectDir, classFilePath);
@@ -625,6 +638,10 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             if (classFilePath == null) {
                 missLookup++;
                 log.warn("collectFunctionSourceCode: 无 filePath 映射 class={} taskId={}", className, taskId);
+                continue;
+            }
+            if (scope != null && !scope.accepts(classFilePath)) {
+                log.warn("collectFunctionSourceCode: 超出扫描范围，跳过 class={} path={}", className, classFilePath);
                 continue;
             }
             File classFile = new File(projectDir, classFilePath);
@@ -829,7 +846,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     }
 
     /**
-     * 文档生成权威类清单：binding.class_name → fn.classPaths → BFS 可达类（均升 FQ，去重保序）。
+     * 文档生成权威类清单：binding.class_name ∪ fn.classPaths ∪ BFS 可达类（均升 FQ，去重保序）。
      */
     public List<String> resolveAuthoritativeClasses(
             Long taskId,
@@ -848,7 +865,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 out.add(resolveFqClassName(taskId, b.getClassName(), projectDir, null));
             }
         }
-        if (out.isEmpty() && fn.getClassPaths() != null) {
+        if (fn.getClassPaths() != null) {
             for (String cp : fn.getClassPaths()) {
                 if (!StringUtils.hasText(cp)) {
                     continue;
@@ -856,10 +873,10 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 out.add(resolveFqClassName(taskId, cp, projectDir, null));
             }
         }
-        if (out.isEmpty()) {
-            Set<String> roots = loadFunctionRootSignatures(taskId, fn);
-            if (!roots.isEmpty()) {
-                Set<String> reachable = methodCallGraphService.resolveReachableMethods(taskId, roots);
+        Set<String> roots = loadFunctionRootSignatures(taskId, fn);
+        if (!roots.isEmpty() && methodCallGraphService != null) {
+            Set<String> reachable = methodCallGraphService.resolveReachableMethods(taskId, roots);
+            if (reachable != null) {
                 for (String shortOrFq : groupByClass(reachable).keySet()) {
                     out.add(resolveFqClassName(taskId, shortOrFq, projectDir, null));
                 }
@@ -1234,6 +1251,10 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
         Map<String, Set<String>> classToMethodSigs = groupByClass(reachableMethods);
 
+        ScanScope scope = (projectDir != null && projectDir.isDirectory() && taskId != null)
+                ? scanScopeResolver.resolveBestEffort(taskId, projectDir)
+                : null;
+
         StringBuilder sb = new StringBuilder();
         int missFile = 0;
         for (Map.Entry<String, Set<String>> entry : classToMethodSigs.entrySet()) {
@@ -1241,6 +1262,10 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             Set<String> methodSigs = entry.getValue();
             String classFilePath = lookupClassFilePath(taskId, className);
             if (classFilePath == null) continue;
+            if (scope != null && !scope.accepts(classFilePath)) {
+                log.warn("模块源码收集：超出扫描范围，跳过 class={} path={}", className, classFilePath);
+                continue;
+            }
             File classFile = new File(projectDir, classFilePath);
             if (!classFile.exists()) {
                 missFile++;

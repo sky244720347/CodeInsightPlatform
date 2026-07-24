@@ -472,8 +472,8 @@ public class RegexJavaParserService implements JavaParserService {
     }
 
     /**
-     * 分析方法体内部依赖的方法调用，建立调用关系元数据 MethodCallInfo
-     * 阶段 2 增强：同步记录 callerSignature（caller 方法完整签名，方法名 + 参数）和 targetSignature（target 端 MVP 简化为 targetMethod）
+     * 分析方法体内部依赖的方法调用，建立调用关系元数据 MethodCallInfo。
+     * targetSignature 尽量写成 {@code 短类名#methodName}（正则难以可靠推参数类型，完整参数由 AST 主路径负责）。
      */
     private void collectMethodCalls(String line, int lineNumber, String currentMethod, String currentMethodArgs, Map<String, String> dependencyVariables, ParsedClassInfo classInfo) {
         Matcher matcher = METHOD_CALL_PATTERN.matcher(line);
@@ -485,16 +485,67 @@ public class RegexJavaParserService implements JavaParserService {
                 MethodCallInfo callInfo = new MethodCallInfo();
                 callInfo.setCallerMethod(currentMethod);
                 callInfo.setCallerSignature(buildMethodSignature(currentMethod, currentMethodArgs));
-                callInfo.setDependencyName(dependencyVariables.get(variable));
+                String depType = dependencyVariables.get(variable);
+                callInfo.setDependencyName(depType);
                 callInfo.setTargetMethod(targetMethod);
-                // MVP 简化：target 端仅同名，不带参数（同名重载取第一个匹配）
-                // 阶段 3 升级：跨文件 MethodInfo 关联 + 按行号 + 参数数量精确定位
-                callInfo.setTargetSignature(targetMethod);
+                callInfo.setTargetSignature(buildRegexTargetSignature(depType, targetMethod, line, matcher.end() - 1));
                 callInfo.setExpression(variable + "." + targetMethod + "()");
                 callInfo.setLineNumber(lineNumber);
                 classInfo.getMethodCalls().add(callInfo);
             }
         }
+    }
+
+    /**
+     * 正则路径：有类名时写 {@code 短类名#method()} 或无参括号缺失时的前缀形式；无法可靠解析参数类型。
+     */
+    private String buildRegexTargetSignature(String depType, String targetMethod, String line, int openParenIdx) {
+        String shortClass = stripPackageSimple(depType);
+        if (!StringUtils.hasText(shortClass) || !StringUtils.hasText(targetMethod)) {
+            return targetMethod;
+        }
+        String inside = extractCallArgsInside(line, openParenIdx);
+        if (inside == null) {
+            return shortClass + "#" + targetMethod;
+        }
+        if (inside.isBlank()) {
+            return shortClass + "#" + targetMethod + "()";
+        }
+        // 有实参但正则推不出类型 → 无括号，供 BFS 前缀匹配
+        return shortClass + "#" + targetMethod;
+    }
+
+    /** @return 括号内文本；括号不配对时 null */
+    private static String extractCallArgsInside(String line, int openParenIdx) {
+        if (line == null || openParenIdx < 0 || openParenIdx >= line.length() || line.charAt(openParenIdx) != '(') {
+            return null;
+        }
+        int depth = 0;
+        for (int i = openParenIdx; i < line.length(); i++) {
+            char c = line.charAt(i);
+            if (c == '(') {
+                depth++;
+            } else if (c == ')') {
+                depth--;
+                if (depth == 0) {
+                    return line.substring(openParenIdx + 1, i);
+                }
+            }
+        }
+        return null;
+    }
+
+    private static String stripPackageSimple(String fqOrShort) {
+        if (!StringUtils.hasText(fqOrShort)) {
+            return fqOrShort;
+        }
+        String t = fqOrShort.trim();
+        int colon = t.lastIndexOf(':');
+        if (colon >= 0 && colon < t.length() - 1) {
+            t = t.substring(colon + 1).trim();
+        }
+        int dot = t.lastIndexOf('.');
+        return dot >= 0 ? t.substring(dot + 1) : t;
     }
 
     /**

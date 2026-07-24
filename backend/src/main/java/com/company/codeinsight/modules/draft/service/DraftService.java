@@ -19,6 +19,12 @@ public interface DraftService {
     List<KnowledgeDraft> listDraftsByWorkspace(Long workspaceId);
 
     /**
+     * 是否允许部分文档未逐篇确认时仍执行「任务整体通过」。
+     * 对应配置 {@code code-insight.review.allow-partial-pass}。
+     */
+    boolean isAllowPartialPass();
+
+    /**
      * 查询指定工作区下的草稿目录树（基于 parent_id 自引用递归构建）。
      * 返回的列表只包含顶级节点，子节点通过 DraftTreeNode.children 递归嵌套。
      */

@@ -178,7 +178,12 @@ export interface PreviewSystemDto {
 
 
 
-export function getWorkspaceByTask(taskId: number): Promise<{ workspace: DraftWorkspace; drafts: KnowledgeDraft[] }> {
+export function getWorkspaceByTask(taskId: number): Promise<{
+  workspace: DraftWorkspace;
+  drafts: KnowledgeDraft[];
+  /** 允许未逐篇确认时直接「任务整体通过」 */
+  allowPartialPass?: boolean;
+}> {
   if (isMockEnabled()) return mockGetWorkspaceByTask(taskId);
   return request.get(`/drafts/workspace/task/${taskId}`);
 }

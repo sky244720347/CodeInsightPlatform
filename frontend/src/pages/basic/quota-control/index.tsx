@@ -31,6 +31,8 @@ import {
 import {
   listSystemConfig,
   putSystemConfig,
+  clearTaskPermits,
+  clearAiPermits,
   type SystemConfig,
 } from '../../../api/system-config';
 
@@ -46,14 +48,15 @@ interface QuotaFormValues {
 
 /**
  * 「流量管控」页面：
- *  1) 全局限流配置（4 个 key）
- *  2) AI 调用并发配置
+ *  1) 全局限流配置（含任务/AI 并发）
+ *  2) Redis 并发许可运维清空
  *  3) 用户额度表（CRUD）
  */
 const QuotaControlPage: React.FC = () => {
   const [configs, setConfigs] = useState<SystemConfig[]>([]);
   const [configsLoading, setConfigsLoading] = useState(false);
   const [configSaving, setConfigSaving] = useState<string | null>(null);
+  const [clearingPool, setClearingPool] = useState<'task' | 'ai' | null>(null);
 
   const [quotas, setQuotas] = useState<UserQuota[]>([]);
   const [quotasLoading, setQuotasLoading] = useState(false);
@@ -118,6 +121,50 @@ const QuotaControlPage: React.FC = () => {
     }
   };
 
+  const handleClearTaskPermits = () => {
+    Modal.confirm({
+      title: '清空任务 Redis 并发许可？',
+      content:
+        '将删除 ci:permits:task:* 中全部 holder。若仍有任务在跑，可能导致短暂超卖（多跑任务）。仅在队列假满/许可残留时使用。',
+      okText: '确认清空',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setClearingPool('task');
+        try {
+          const res = await clearTaskPermits();
+          message.success(`已清空任务并发许可（清理前 ${res.removedBefore} 个）`);
+        } catch {
+          // ignore
+        } finally {
+          setClearingPool(null);
+        }
+      },
+    });
+  };
+
+  const handleClearAiPermits = () => {
+    Modal.confirm({
+      title: '清空 AI Redis 并发许可？',
+      content:
+        '将删除 ci:permits:ai:global 全部 holder。若仍有 AI 调用在飞，可能导致短暂超卖。仅在提示「AI 调用并发已达上限」且确认为残留时使用。',
+      okText: '确认清空',
+      okType: 'danger',
+      cancelText: '取消',
+      onOk: async () => {
+        setClearingPool('ai');
+        try {
+          const res = await clearAiPermits();
+          message.success(`已清空 AI 并发许可（清理前 ${res.removedBefore} 个）`);
+        } catch {
+          // ignore
+        } finally {
+          setClearingPool(null);
+        }
+      },
+    });
+  };
+
   const openCreateQuota = () => {
     setEditingQuota(null);
     quotaForm.resetFields();
@@ -140,7 +187,6 @@ const QuotaControlPage: React.FC = () => {
   const handleSaveQuota = async () => {
     try {
       const values = await quotaForm.validateFields();
-      // 表单 enabled 是 boolean，提交前转成 0/1
       const payload: UserQuotaRequest = {
         userId: values.userId,
         dailyTokenLimit: values.dailyTokenLimit,
@@ -172,7 +218,6 @@ const QuotaControlPage: React.FC = () => {
     }
   };
 
-  // 全局限流配置项
   const GLOBAL_CONFIG_KEYS: { key: string; label: string; help: string; type: 'switch' | 'int' }[] = [
     {
       key: 'token.limit-enabled',
@@ -193,14 +238,20 @@ const QuotaControlPage: React.FC = () => {
       type: 'int',
     },
     {
+      key: 'task.concurrency',
+      label: '任务全局最大并发数',
+      help: '同时处于流水线执行中的任务上限（task.concurrency）',
+      type: 'int',
+    },
+    {
       key: 'ai.concurrency',
       label: 'AI 调用最大并发数',
-      help: 'Semaphore 容量；超出后立即抛错',
+      help: '全平台同时打 LLM 的上限；超出后提示「AI 调用并发已达上限」',
       type: 'int',
     },
   ];
 
-  const renderConfigRow = (item: typeof GLOBAL_CONFIG_KEYS[number]) => {
+  const renderConfigRow = (item: (typeof GLOBAL_CONFIG_KEYS)[number]) => {
     const cfg = configs.find((c) => c.key === item.key);
     if (item.type === 'switch') {
       const enabled = cfg?.value === 'true';
@@ -264,10 +315,37 @@ const QuotaControlPage: React.FC = () => {
             }
           >
             <Spin spinning={configsLoading}>
-              <Paragraph type="secondary" style={{ marginBottom: 0 }}>
-                修改后即时生效；写库后由 AiSummaryServiceImpl 实时拉取。
+              <Paragraph type="secondary" style={{ marginBottom: 12 }}>
+                修改后即时生效。任务并发与 AI 并发相互独立：前者限制同时跑几个任务，后者限制同时打几路
+                LLM。
               </Paragraph>
               {GLOBAL_CONFIG_KEYS.map(renderConfigRow)}
+              <Alert
+                style={{ marginTop: 16 }}
+                type="warning"
+                showIcon
+                message="Redis 并发许可运维"
+                description={
+                  <Space direction="vertical" size="small" style={{ width: '100%' }}>
+                    <Text type="secondary">
+                      集群模式下若出现队列假满或「AI 调用并发已达上限」且确认为崩溃残留，可手动清空对应
+                      Redis Set。开发环境（dev）无 Redis 许可时按钮无实际成员可清。
+                    </Text>
+                    <Space wrap>
+                      <Button
+                        danger
+                        loading={clearingPool === 'task'}
+                        onClick={handleClearTaskPermits}
+                      >
+                        清空任务 Redis 并发
+                      </Button>
+                      <Button danger loading={clearingPool === 'ai'} onClick={handleClearAiPermits}>
+                        清空 AI Redis 并发
+                      </Button>
+                    </Space>
+                  </Space>
+                }
+              />
             </Spin>
           </Card>
         </Col>

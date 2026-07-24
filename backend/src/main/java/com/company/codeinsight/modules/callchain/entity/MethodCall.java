@@ -76,7 +76,7 @@ public class MethodCall extends BaseEntity {
     /**
      * 被调方方法完整签名（含类 + 方法 + 参数）
      * 格式："className#methodName(ParamType1, ParamType2)"
-     * MVP 阶段仅 caller 端带完整签名，target 端等同 targetMethod（同名第一个匹配）
+     * 旧任务 MVP 可能仅为 targetMethod（裸方法名）；正向 BFS 用 dependency_name / candidates 兜底。
      */
     @TableField("target_signature")
     private String targetSignature;

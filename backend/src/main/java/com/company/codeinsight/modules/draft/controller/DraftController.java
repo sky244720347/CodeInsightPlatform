@@ -52,6 +52,7 @@ public class DraftController {
         Map<String, Object> res = new HashMap<>();
         res.put("workspace", ws);
         res.put("drafts", list);
+        res.put("allowPartialPass", draftService.isAllowPartialPass());
         return ApiResponse.success(res);
     }
 

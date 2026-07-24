@@ -226,6 +226,8 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
 
   // ============ 工作区 & 草稿树（来自 DB） ============
   const [workspace, setWorkspace] = useState<DraftWorkspace | null>(null);
+  /** 后端 code-insight.review.allow-partial-pass：允许未逐篇确认直接整体通过 */
+  const [allowPartialPass, setAllowPartialPass] = useState(false);
   const [treeData, setTreeData] = useState<DraftTreeNode[]>([]);
   const [hierarchyTree, setHierarchyTree] = useState<DraftHierarchyTreeNode[]>([]);
   const [draftsLoading, setDraftsLoading] = useState(false);
@@ -324,6 +326,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     toggleDemoMode(next);
     setDemoMode(next);
     setWorkspace(null);
+    setAllowPartialPass(false);
     setTreeData([]);
     setHierarchyTree([]);
     setSelectedDraftId(null);
@@ -546,7 +549,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   );
 
   const canTaskOverallPass =
-    allDraftsConfirmed
+    (allowPartialPass || allDraftsConfirmed)
     && !taskOverallConfirmed
     && !isTaskLocked
     && !demoMode
@@ -585,6 +588,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     ])
       .then(([wsRes, tree, hierarchy]) => {
         setWorkspace(wsRes.workspace);
+        setAllowPartialPass(Boolean(wsRes.allowPartialPass));
         setTreeData(tree);
         const built = buildDraftHierarchyTree(hierarchy, tree);
         setHierarchyTree(built);
@@ -960,8 +964,12 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     setConfirmPreflightLoading(true);
     try {
       const synced = await syncWorkspaceTreeFromServer();
-      if (!synced || !areAllDraftLeavesConfirmed(synced.tree)) {
-        const pending = flattenDraftLeaves(synced?.tree ?? treeData).filter(
+      if (!synced) {
+        message.warning('草稿树为空或尚未加载完成，请刷新后重试');
+        return;
+      }
+      if (!allowPartialPass && !areAllDraftLeavesConfirmed(synced.tree)) {
+        const pending = flattenDraftLeaves(synced.tree).filter(
           (leaf) => leaf.status !== 'CONFIRMED' && leaf.status !== 'PUSHED',
         ).length;
         message.warning(
@@ -992,7 +1000,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     setConfirmLoading(true);
     try {
       const synced = await syncWorkspaceTreeFromServer();
-      if (!synced || !areAllDraftLeavesConfirmed(synced.tree)) {
+      if (!allowPartialPass && (!synced || !areAllDraftLeavesConfirmed(synced.tree))) {
         message.warning('仍有文档未逐篇通过，请核对目录后重试');
         return;
       }
@@ -1013,6 +1021,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
       try {
         const ws = await getWorkspaceByTask(selectedTaskId);
         setWorkspace(ws.workspace);
+        setAllowPartialPass(Boolean(ws.allowPartialPass));
       } catch {
         /* 忽略，工作区状态在 treeData 中已经反映 */
       }
@@ -1355,13 +1364,17 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
           title={
             taskOverallConfirmed
               ? '任务已完成整体确认'
-              : unconfirmedDraftCount > 0
-                ? `尚有 ${unconfirmedDraftCount} 篇文档未逐篇「通过」`
-                : flatLeaves.length === 0
-                  ? '暂无草稿文档'
-                  : isTaskLocked
-                    ? '任务已推送，不可再次确认'
-                    : '全部文档已逐篇通过，点击完成任务整体确认后可创建版本并推送'
+              : flatLeaves.length === 0
+                ? '暂无草稿文档'
+                : isTaskLocked
+                  ? '任务已推送，不可再次确认'
+                  : allowPartialPass
+                    ? unconfirmedDraftCount > 0
+                      ? `允许部分通过：尚有 ${unconfirmedDraftCount} 篇未逐篇确认，整体通过时将一并确认`
+                      : '点击完成任务整体确认后可创建版本并推送'
+                    : unconfirmedDraftCount > 0
+                      ? `尚有 ${unconfirmedDraftCount} 篇文档未逐篇「通过」`
+                      : '全部文档已逐篇通过，点击完成任务整体确认后可创建版本并推送'
           }
         >
           <Button
@@ -1912,7 +1925,10 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
           setConfirmComment('');
         }}
         okText="任务整体通过"
-        okButtonProps={{ loading: confirmLoading, disabled: !allDraftsConfirmed }}
+        okButtonProps={{
+          loading: confirmLoading,
+          disabled: allowPartialPass ? flatLeaves.length === 0 : !allDraftsConfirmed,
+        }}
         cancelButtonProps={{ disabled: confirmLoading }}
         destroyOnClose
       >
@@ -1965,7 +1981,9 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                 </Space>
                 {unconfirmedCount > 0 ? (
                   <div style={{ marginTop: 6, fontSize: 11, color: '#92400e' }}>
-                    尚有 {unconfirmedCount} 篇文档未逐篇「通过」，请先完成逐篇确认。
+                    {allowPartialPass
+                      ? `尚有 ${unconfirmedCount} 篇未逐篇确认；已开启「允许部分通过」，整体通过时将一并确认。`
+                      : `尚有 ${unconfirmedCount} 篇文档未逐篇「通过」，请先完成逐篇确认。`}
                   </div>
                 ) : (
                   <div style={{ marginTop: 6, fontSize: 11, color: '#047857' }}>

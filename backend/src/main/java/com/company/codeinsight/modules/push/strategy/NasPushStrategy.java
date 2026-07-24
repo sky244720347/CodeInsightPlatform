@@ -75,7 +75,8 @@ public class NasPushStrategy implements PushStrategy {
             for (KnowledgeDraft d : drafts) {
                 Path src = DraftFileUtil.resolve(d.getContentUri(), storageResolver);
                 if (Files.exists(src)) {
-                    String safe = d.getModuleName().replaceAll("[\\s/\\(\\)]", "_") + ".md";
+                    String safe = com.company.codeinsight.modules.knowledge.service.impl.KnowledgeIndexServiceImpl
+                            .flattenKnowledgeDocFileName(d.getModuleName());
                     Files.copy(src, modulesDir.resolve(safe), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
                 }
             }

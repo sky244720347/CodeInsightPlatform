@@ -30,4 +30,22 @@ public class ClusterProperties {
 
     /** 草稿编辑锁续期间隔（秒），前端应小于 TTL 周期性续租 */
     private int draftEditLockRenewSeconds = 60;
+
+    /**
+     * 任务并发 Redis Set key TTL（秒）。流水线运行中会按 {@link #taskPermitRenewSeconds} 续租；
+     * 崩溃残留依赖启动/周期对账清理，TTL 仅作兜底。
+     */
+    private int taskPermitTtlSeconds = 300;
+
+    /** 任务并发许可续租间隔（秒），应小于 {@link #taskPermitTtlSeconds} */
+    private int taskPermitRenewSeconds = 60;
+
+    /** 任务并发许可与 DB 对账间隔（毫秒） */
+    private long taskPermitReconcileIntervalMs = 60_000L;
+
+    /**
+     * 实例心跳 TTL（秒）。对账时用其判断 claimed_by / AI holder 所属节点是否仍存活。
+     * 应大于 {@link #taskPermitReconcileIntervalMs} 对应秒数。
+     */
+    private int instanceHeartbeatTtlSeconds = 90;
 }

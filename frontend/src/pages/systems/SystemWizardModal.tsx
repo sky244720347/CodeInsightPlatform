@@ -509,13 +509,13 @@ const SystemWizardModal: React.FC<Props> = ({
           <Form<RepositoryFormValues>
             form={repoForm}
             layout="vertical"
-            initialValues={{ branch: 'main', scanRoot: '/' }}
+            initialValues={{ branch: 'master', scanRoot: '/' }}
           >
             <Form.Item name="gitUrl" label="Git 地址" rules={[{ required: true, message: '请输入 Git 地址' }]}>
               <Input placeholder="https://github.com/xxx/yyy.git" />
             </Form.Item>
             <Form.Item name="branch" label="分支" rules={[{ required: true, message: '请输入分支' }]}>
-              <Input placeholder="main" />
+              <Input placeholder="master" />
             </Form.Item>
             <Form.Item name="scanRoot" label="扫描根目录" rules={[{ required: true, message: '请输入扫描根目录' }]}>
               <Input placeholder="/" />

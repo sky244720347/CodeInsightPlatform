@@ -66,4 +66,21 @@ public class SystemConfigController {
         }
         return ApiResponse.success();
     }
+
+    @Operation(summary = "清空任务 Redis 并发许可（运维）")
+    @PostMapping("/permits/task/clear")
+    public ApiResponse<PermitClearResult> clearTaskPermits() {
+        long removed = taskConcurrencyLimiter.clearAllRedisPermits();
+        return ApiResponse.success(new PermitClearResult("task", removed));
+    }
+
+    @Operation(summary = "清空 AI Redis 并发许可（运维）")
+    @PostMapping("/permits/ai/clear")
+    public ApiResponse<PermitClearResult> clearAiPermits() {
+        long removed = aiConcurrencyService.clearAllRedisPermits();
+        return ApiResponse.success(new PermitClearResult("ai", removed));
+    }
+
+    public record PermitClearResult(String pool, long removedBefore) {
+    }
 }

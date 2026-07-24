@@ -92,9 +92,13 @@ public class ModuleDocClassPathPromptTest {
         b.setMethodSignature("listInStockProducts()");
         Mockito.when(bindingMapper.selectByTaskAndFunction(taskId, "f00001"))
                 .thenReturn(Collections.singletonList(b));
+        Mockito.when(graphService.resolveReachableMethods(Mockito.eq(taskId), Mockito.anySet()))
+                .thenReturn(Collections.emptySet());
 
         List<String> classes = service.resolveAuthoritativeClasses(taskId, fn, null);
-        Assertions.assertEquals(List.of("com.codeinsight.demo.controller.ProductController"), classes);
+        Assertions.assertTrue(classes.contains("com.codeinsight.demo.controller.ProductController"));
+        Assertions.assertTrue(classes.contains("com.other.OldController"));
+        Assertions.assertEquals(2, classes.size());
 
         List<Map<String, String>> methods = service.resolveAuthoritativeMethods(taskId, fn, null);
         Assertions.assertEquals(1, methods.size());
@@ -121,6 +125,8 @@ public class ModuleDocClassPathPromptTest {
         b.setMethodSignature("list()");
         Mockito.when(bindingMapper.selectByTaskAndFunction(taskId, "f00001"))
                 .thenReturn(Collections.singletonList(b));
+        Mockito.when(graphService.resolveReachableMethods(Mockito.eq(taskId), Mockito.anySet()))
+                .thenReturn(Collections.emptySet());
 
         String json = (String) ReflectionTestUtils.invokeMethod(
                 service, "buildScopedHierarchyJson", taskId, m, sm, fn, null);

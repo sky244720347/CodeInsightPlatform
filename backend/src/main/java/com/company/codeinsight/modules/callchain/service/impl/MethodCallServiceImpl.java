@@ -7,6 +7,8 @@ import com.company.codeinsight.modules.callchain.service.MethodCallService;
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo;
 import com.company.codeinsight.modules.parser.service.JavaParserService;
 import com.company.codeinsight.modules.scanner.model.IncrementalContext;
+import com.company.codeinsight.modules.scanner.model.ScanScope;
+import com.company.codeinsight.modules.scanner.service.ScanScopeResolver;
 import lombok.extern.slf4j.Slf4j;
 import org.apache.ibatis.session.ExecutorType;
 import org.apache.ibatis.session.SqlSession;
@@ -56,6 +58,9 @@ public class MethodCallServiceImpl implements MethodCallService {
     @Autowired
     private com.company.codeinsight.modules.scanner.service.BaselineInheritanceService baselineInheritanceService;
 
+    @Autowired
+    private ScanScopeResolver scanScopeResolver;
+
     @Override
     @Transactional(rollbackFor = Exception.class)
     public int persistAstForTask(Long taskId, File projectDir) {
@@ -70,11 +75,12 @@ public class MethodCallServiceImpl implements MethodCallService {
             return 0;
         }
         IncrementalContext effective = ctx == null ? IncrementalContext.fullScan() : ctx;
+        ScanScope scope = scanScopeResolver.resolveBestEffort(taskId, projectDir);
 
         if (!effective.isIncremental()) {
-            // 全量：保持原行为，幂等清理 + 走全树
+            // 全量：保持原行为，幂等清理 + 走扫描根子树
             deleteByTaskId(taskId);
-            return walkAndPersist(projectDir, projectDir, taskId, null);
+            return walkAndPersist(projectDir, scope.getEffectiveRoot(), taskId, null, scope);
         }
 
         // v1 增量：基线 + 增量叠加
@@ -104,22 +110,22 @@ public class MethodCallServiceImpl implements MethodCallService {
             );
         }
         // 4) 只对变更文件重新解析；空集合 = 没有文件需要重写
-        int inserted = walkAndPersist(projectDir, projectDir, taskId, effective.getChangedPaths());
+        int inserted = walkAndPersist(projectDir, scope.getEffectiveRoot(), taskId, effective.getChangedPaths(), scope);
         log.info("AST incremental call-chain persistence done. taskId={}, ctx={}, callsInserted={}",
                 taskId, effective, inserted);
         return inserted;
     }
 
     /**
-     * 递归遍历 projectDir 并把 .java 文件的 method calls 落表。
+     * 递归遍历并把 .java 文件的 method calls 落表。
      *
      * @param pathFilter 非 null 时只解析相对路径命中该集合的文件（增量模式用）；null 表示全量遍历。
      * @return 本次实际写入的调用链条目数
      */
-    private int walkAndPersist(File baseDir, File current, Long taskId, Set<String> pathFilter) {
+    private int walkAndPersist(File baseDir, File startDir, Long taskId, Set<String> pathFilter, ScanScope scope) {
         int[] counters = new int[]{0, 0, 0};
         List<MethodCall> buffer = new ArrayList<>(BATCH_SIZE);
-        walk(baseDir, current, taskId, buffer, counters, pathFilter);
+        walk(baseDir, startDir, taskId, buffer, counters, pathFilter, scope);
         if (!buffer.isEmpty()) {
             insertBatch(buffer);
         }
@@ -165,8 +171,14 @@ public class MethodCallServiceImpl implements MethodCallService {
      * @param pathFilter 非 null 时只解析相对路径命中该集合的文件（增量场景用）；
      *                   目录级短路：若子树中没有命中文件，直接跳过递归。
      */
-    private void walk(File baseDir, File current, Long taskId, List<MethodCall> buffer, int[] counters, Set<String> pathFilter) {
+    private void walk(File baseDir, File current, Long taskId, List<MethodCall> buffer, int[] counters,
+                      Set<String> pathFilter, ScanScope scope) {
         if (current.isDirectory()) {
+            String dirRel = relativize(baseDir, current);
+            // effectiveRoot 自身相对路径可能为空或等于 scanRoot；空路径视为可进入
+            if (StringUtils.hasText(dirRel) && !scope.acceptsDirectory(dirRel)) {
+                return;
+            }
             File[] children = current.listFiles();
             if (children == null) {
                 return;
@@ -175,7 +187,7 @@ public class MethodCallServiceImpl implements MethodCallService {
                 if (child.isDirectory() && SKIP_DIRS.contains(child.getName())) {
                     continue;
                 }
-                walk(baseDir, child, taskId, buffer, counters, pathFilter);
+                walk(baseDir, child, taskId, buffer, counters, pathFilter, scope);
             }
             return;
         }
@@ -185,6 +197,9 @@ public class MethodCallServiceImpl implements MethodCallService {
         }
 
         String relativePath = relativize(baseDir, current);
+        if (!scope.accepts(relativePath)) {
+            return;
+        }
         // 增量模式：仅处理命中 pathFilter 的文件
         if (pathFilter != null && !pathFilter.contains(relativePath)) {
             return;
@@ -207,7 +222,8 @@ public class MethodCallServiceImpl implements MethodCallService {
                 mc.setCallerSignature(buildCallerSignature(info.getClassName(), src.getCallerSignature()));
                 mc.setDependencyName(src.getDependencyName());
                 mc.setTargetMethod(src.getTargetMethod());
-                mc.setTargetSignature(src.getTargetSignature());
+                mc.setTargetSignature(buildTargetSignature(
+                        src.getDependencyName(), src.getTargetMethod(), src.getTargetSignature()));
                 mc.setExpression(truncate(src.getExpression(), MAX_EXPR_LEN));
                 mc.setLineNumber(src.getLineNumber());
                 // Phase 3：多态候选集透传（候选解析阶段已经在 parser 模块做完）
@@ -278,12 +294,48 @@ public class MethodCallServiceImpl implements MethodCallService {
 
     /**
      * 拼装 caller_signature："className#methodName(ParamType1, ParamType2)"
-     * 阶段 2 反查调用链用；MVP 仅 caller 端带完整签名，target 端等阶段 3
+     * （methodSignature 段由 parser 提供，可含参数名）
      */
     private String buildCallerSignature(String className, String methodSignature) {
         if (!StringUtils.hasText(className) || !StringUtils.hasText(methodSignature)) {
             return null;
         }
         return className + "#" + methodSignature;
+    }
+
+    /**
+     * 规范化 target_signature 为 {@code 短类名#method(...)}。
+     * parser 已给出含 {@code #} 的签名时仅校正类名前缀；否则用 dependencyName + targetMethod 补全。
+     */
+    static String buildTargetSignature(String dependencyName, String targetMethod, String fromParser) {
+        if (StringUtils.hasText(fromParser) && fromParser.contains("#")) {
+            int hash = fromParser.indexOf('#');
+            String classPart = stripPackage(fromParser.substring(0, hash));
+            String methodPart = fromParser.substring(hash + 1);
+            if (StringUtils.hasText(classPart) && StringUtils.hasText(methodPart)) {
+                return classPart + "#" + methodPart;
+            }
+        }
+        String shortClass = stripPackage(dependencyName);
+        if (!StringUtils.hasText(shortClass) || !StringUtils.hasText(targetMethod)) {
+            return StringUtils.hasText(fromParser) ? fromParser : targetMethod;
+        }
+        if (StringUtils.hasText(fromParser) && fromParser.startsWith(targetMethod + "(")) {
+            return shortClass + "#" + fromParser;
+        }
+        return shortClass + "#" + targetMethod;
+    }
+
+    private static String stripPackage(String fqOrShort) {
+        if (!StringUtils.hasText(fqOrShort)) {
+            return fqOrShort;
+        }
+        String t = fqOrShort.trim();
+        int colon = t.lastIndexOf(':');
+        if (colon >= 0 && colon < t.length() - 1) {
+            t = t.substring(colon + 1).trim();
+        }
+        int dot = t.lastIndexOf('.');
+        return dot >= 0 ? t.substring(dot + 1) : t;
     }
 }

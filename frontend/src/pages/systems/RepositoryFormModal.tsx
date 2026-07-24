@@ -65,7 +65,7 @@ const RepositoryFormModal: React.FC<Props> = ({
         </Col>
         <Col span={12}>
           <Form.Item name="branch" label="分支" rules={[{ required: true, message: '请输入分支' }]}>
-            <Input placeholder="main" />
+            <Input placeholder="master" />
           </Form.Item>
         </Col>
         <Col span={12}>

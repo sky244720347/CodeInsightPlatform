@@ -15,8 +15,7 @@ import java.util.LinkedHashSet;
 import java.util.Set;
 
 /**
- * 方法调用链图 BFS 单测
- * 测试场景：直接调用 / 直连 / 传递 / 循环 / 空入参
+ * 方法调用链图 BFS 单测：完整 target 签名 / 旧数据兜底 / 多态候选。
  */
 @SpringBootTest
 @ActiveProfiles("test")
@@ -32,50 +31,97 @@ public class MethodCallGraphServiceTest {
     @Test
     public void testResolveReachableMethodsDirect() {
         Long taskId = 9101L;
-        // A.method1 → B.method2（直接调用）
-        insertCall(taskId, "com.demo.A#method1()", "method2", 1);
+        insertCall(taskId, "A#method1()", "B", "method2", "B#method2()", null, 1);
 
         Set<String> roots = new LinkedHashSet<>();
-        roots.add("com.demo.A#method1()");
+        roots.add("A#method1()");
         Set<String> visited = methodCallGraphService.resolveReachableMethods(taskId, roots);
 
-        Assertions.assertTrue(visited.contains("com.demo.A#method1()"));
-        Assertions.assertTrue(visited.contains("method2"));
-        Assertions.assertEquals(2, visited.size());
+        Assertions.assertTrue(visited.contains("A#method1()"));
+        Assertions.assertTrue(visited.contains("B#method2()"));
+        Assertions.assertFalse(visited.contains("method2"));
     }
 
     @Test
     public void testResolveReachableMethodsTransitive() {
         Long taskId = 9102L;
-        // A.method1 → B.method2 → C.method3（链式调用）
-        insertCall(taskId, "com.demo.A#method1()", "method2", 1);
-        insertCall(taskId, "com.demo.B#method2()", "method3", 1);
+        insertCall(taskId, "A#method1()", "B", "method2", "B#method2()", null, 1);
+        insertCall(taskId, "B#method2()", "C", "method3", "C#method3()", null, 1);
 
         Set<String> roots = new LinkedHashSet<>();
-        roots.add("com.demo.A#method1()");
+        roots.add("A#method1()");
         Set<String> visited = methodCallGraphService.resolveReachableMethods(taskId, roots);
 
-        Assertions.assertTrue(visited.contains("com.demo.A#method1()"));
-        Assertions.assertTrue(visited.contains("method2"));
-        Assertions.assertTrue(visited.contains("method3"));
-        Assertions.assertEquals(3, visited.size());
+        Assertions.assertTrue(visited.contains("A#method1()"));
+        Assertions.assertTrue(visited.contains("B#method2()"));
+        Assertions.assertTrue(visited.contains("C#method3()"));
     }
 
     @Test
     public void testResolveReachableMethodsWithCycles() {
         Long taskId = 9103L;
-        // A → B → A（循环调用）：BFS 必须去重，不能无限循环
-        insertCall(taskId, "com.demo.A#method1()", "method2", 1);
-        insertCall(taskId, "com.demo.B#method2()", "method1", 1);
+        insertCall(taskId, "A#method1()", "B", "method2", "B#method2()", null, 1);
+        insertCall(taskId, "B#method2()", "A", "method1", "A#method1()", null, 1);
 
         Set<String> roots = new LinkedHashSet<>();
-        roots.add("com.demo.A#method1()");
+        roots.add("A#method1()");
         Set<String> visited = methodCallGraphService.resolveReachableMethods(taskId, roots);
 
-        // 包含 A + B，不重复
+        Assertions.assertTrue(visited.contains("A#method1()"));
+        Assertions.assertTrue(visited.contains("B#method2()"));
         Assertions.assertEquals(2, visited.size());
-        Assertions.assertTrue(visited.contains("com.demo.A#method1()"));
-        Assertions.assertTrue(visited.contains("method2"));
+    }
+
+    @Test
+    public void testLegacyBareTargetUsesDependencyName() {
+        Long taskId = 9105L;
+        // 旧数据：target_signature 仅为方法名
+        insertCall(taskId, "ProductController#listProducts()", "ProductService",
+                "listProducts", "listProducts", null, 1);
+        insertCall(taskId, "ProductService#listProducts()", "Repo", "findAll", "Repo#findAll()", null, 2);
+
+        Set<String> roots = new LinkedHashSet<>();
+        roots.add("ProductController#listProducts()");
+        Set<String> visited = methodCallGraphService.resolveReachableMethods(taskId, roots);
+
+        Assertions.assertTrue(visited.contains("ProductService#listProducts()"));
+        Assertions.assertTrue(visited.contains("Repo#findAll()"));
+        Assertions.assertFalse(visited.contains("listProducts"));
+    }
+
+    @Test
+    public void testDependencyCandidatesEnqueueImpl() {
+        Long taskId = 9106L;
+        insertCall(taskId, "OrderController#quote()", "OrderService",
+                "quote", "OrderService#quote()", "OrderServiceImpl", 1);
+        insertCall(taskId, "OrderServiceImpl#quote()", "Pricing", "calc", "Pricing#calc()", null, 2);
+
+        Set<String> roots = new LinkedHashSet<>();
+        roots.add("OrderController#quote()");
+        Set<String> visited = methodCallGraphService.resolveReachableMethods(taskId, roots);
+
+        Assertions.assertTrue(visited.contains("OrderService#quote()")
+                || visited.stream().anyMatch(s -> s.startsWith("OrderService#quote")));
+        Assertions.assertTrue(visited.contains("OrderServiceImpl#quote()")
+                || visited.stream().anyMatch(s -> s.startsWith("OrderServiceImpl#quote")));
+        Assertions.assertTrue(visited.contains("Pricing#calc()"));
+    }
+
+    @Test
+    public void testFullParamExactOverload() {
+        Long taskId = 9107L;
+        insertCall(taskId, "ProductController#getProduct(Long)", "ProductService",
+                "getProduct", "ProductService#getProduct(Long)", null, 1);
+        insertCall(taskId, "ProductService#getProduct(Long)", "Dao", "load", "Dao#load(Long)", null, 2);
+        insertCall(taskId, "ProductService#getProduct(String)", "Dao", "loadByName", "Dao#loadByName(String)", null, 3);
+
+        Set<String> roots = new LinkedHashSet<>();
+        roots.add("ProductController#getProduct(Long)");
+        Set<String> visited = methodCallGraphService.resolveReachableMethods(taskId, roots);
+
+        Assertions.assertTrue(visited.stream().anyMatch(s -> s.startsWith("ProductService#getProduct")));
+        Assertions.assertTrue(visited.contains("Dao#load(Long)") || visited.stream().anyMatch(s -> s.startsWith("Dao#load(")));
+        Assertions.assertFalse(visited.contains("Dao#loadByName(String)"));
     }
 
     @Test
@@ -90,24 +136,47 @@ public class MethodCallGraphServiceTest {
     @Test
     public void testResolveReachableMethodsNullTaskId() {
         Set<String> roots = new LinkedHashSet<>();
-        roots.add("com.demo.A#method1()");
+        roots.add("A#method1()");
         Set<String> visited = methodCallGraphService.resolveReachableMethods(null, roots);
         Assertions.assertTrue(visited.isEmpty());
     }
 
-    private void insertCall(Long taskId, String callerSignature, String targetMethod, int lines) {
+    private void insertCall(Long taskId, String callerSignature, String dependencyName,
+                            String targetMethod, String targetSignature, String candidates, int line) {
+        methodCallMapper.insert(baseCall(taskId, callerSignature, dependencyName, targetMethod,
+                targetSignature, candidates, line));
+    }
+
+    private MethodCall baseCall(Long taskId, String callerSignature, String dependencyName,
+                                String targetMethod, String targetSignature, String candidates, int line) {
         MethodCall mc = new MethodCall();
         mc.setTaskId(taskId);
         mc.setFilePath("src/main/java/com/demo/Test.java");
-        mc.setClassName("com.demo.Test");
-        mc.setCallerMethod(callerSignature.substring(callerSignature.indexOf('#') + 1, callerSignature.indexOf('(')));
+        String className = "Test";
+        if (callerSignature != null && callerSignature.contains("#")) {
+            className = callerSignature.substring(0, callerSignature.indexOf('#'));
+            int dot = className.lastIndexOf('.');
+            if (dot >= 0) {
+                className = className.substring(dot + 1);
+            }
+        }
+        mc.setClassName(className);
+        if (callerSignature != null && callerSignature.contains("#")) {
+            String methodPart = callerSignature.substring(callerSignature.indexOf('#') + 1);
+            int paren = methodPart.indexOf('(');
+            mc.setCallerMethod(paren >= 0 ? methodPart.substring(0, paren) : methodPart);
+        } else {
+            mc.setCallerMethod("unknown");
+        }
         mc.setCallerSignature(callerSignature);
-        mc.setDependencyName("dep:Demo");
+        mc.setDependencyName(dependencyName);
         mc.setTargetMethod(targetMethod);
-        mc.setTargetSignature(targetMethod);
-        mc.setExpression("dep." + targetMethod + "()");
-        mc.setLineNumber(lines);
+        mc.setTargetSignature(targetSignature);
+        mc.setDependencyCandidates(candidates);
+        mc.setExpression((dependencyName == null ? "this" : "dep") + "."
+                + (targetMethod == null ? "x" : targetMethod) + "()");
+        mc.setLineNumber(line);
         mc.setCreatedDate(LocalDateTime.now());
-        methodCallMapper.insert(mc);
+        return mc;
     }
 }

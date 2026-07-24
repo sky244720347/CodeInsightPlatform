@@ -30,7 +30,9 @@ import com.github.javaparser.ast.expr.ObjectCreationExpr;
 import com.github.javaparser.ast.expr.StringLiteralExpr;
 import com.github.javaparser.ast.stmt.BlockStmt;
 import com.github.javaparser.ast.type.ClassOrInterfaceType;
+import com.github.javaparser.resolution.declarations.ResolvedMethodDeclaration;
 import com.github.javaparser.resolution.declarations.ResolvedReferenceTypeDeclaration;
+import com.github.javaparser.resolution.types.ResolvedType;
 import com.github.javaparser.symbolsolver.JavaSymbolSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.CombinedTypeSolver;
 import com.github.javaparser.symbolsolver.resolution.typesolvers.JavaParserTypeSolver;
@@ -305,9 +307,10 @@ public class AstJavaParserService implements JavaParserService {
         // 收集工作已在此方法体内完成（attachMethodBody 内同时遍历调用链与 SQL 字面量）
     }
 
-    /** 抽出方法级 MethodCallExpr，caller = 当前方法名，target = 方法名，dependencyName = depVars[receiver]
-     *  Phase 2：当 symbolSolver 非空（项目源根已知）时，对 receiver 进一步做符号解析，把声明类型升级为解析后 FQ。
-     *  Phase 3：基于 subtypeIndex 给 depType 填上多态候选集（逗号分隔的 FQ 列表）。
+    /**
+     * 抽出方法级 MethodCallExpr：caller 签名、dependency、完整 target 签名（短类名#method(ParamTypes)）。
+     * <p>Phase 2：symbolSolver 升级 receiver 声明类型为 FQ；Phase 3：subtypeIndex 填多态候选。
+     * target 参数优先用 resolve() 声明类型，失败再按实参推类型。
      */
     private void attachMethodBody(MethodDeclaration md, MethodInfo mi, ParsedClassInfo info,
                                  Map<String, String> depVars,
@@ -321,8 +324,6 @@ public class AstJavaParserService implements JavaParserService {
             ci.setCallerMethod(mi.getName());
             ci.setCallerSignature(mi.getName() + "(" + (mi.getArguments() == null ? "" : mi.getArguments()) + ")");
             ci.setTargetMethod(call.getNameAsString());
-            // MVP 简化：targetSignature 仅为方法名（不带参数）
-            ci.setTargetSignature(call.getNameAsString());
 
             String depType = null;
             String receiver = null;
@@ -342,6 +343,7 @@ public class AstJavaParserService implements JavaParserService {
                 }
             }
             ci.setDependencyName(depType == null ? "" : depType);
+            ci.setTargetSignature(buildTargetSignature(depType, call, symbolSolver));
             ci.setExpression((receiver == null ? "this" : receiver) + "." + call.getNameAsString() + "()");
             if (call.getRange().isPresent()) {
                 ci.setLineNumber(call.getRange().get().begin.line);
@@ -591,6 +593,133 @@ public class AstJavaParserService implements JavaParserService {
             first = false;
         }
         return sb.toString();
+    }
+
+    /**
+     * 拼装 target_signature：{@code 短类名#methodName(ParamType1, ParamType2)}。
+     * 无 dependency 时退回方法名（不应落边）；有类名但参数推不出且 call 有实参时写 {@code 短类名#methodName}（无括号）供 BFS 前缀匹配。
+     */
+    private String buildTargetSignature(String depType, MethodCallExpr call, JavaSymbolSolver symbolSolver) {
+        String methodName = call.getNameAsString();
+        if (!StringUtils.hasText(depType)) {
+            return methodName;
+        }
+        String shortClass = stripPackageName(depType);
+        String paramTypes = resolveTargetParamTypes(call, symbolSolver);
+        if (paramTypes != null) {
+            return shortClass + "#" + methodName + "(" + paramTypes + ")";
+        }
+        if (call.getArguments() == null || call.getArguments().isEmpty()) {
+            return shortClass + "#" + methodName + "()";
+        }
+        log.debug("target 参数类型未解析，写无括号签名供 BFS 前缀匹配: {}#{}", shortClass, methodName);
+        return shortClass + "#" + methodName;
+    }
+
+    /**
+     * @return 参数类型列表（逗号分隔、无空格偏好与历史一致用 ", "）；空串表示无参；null 表示未能解析
+     */
+    private String resolveTargetParamTypes(MethodCallExpr call, JavaSymbolSolver symbolSolver) {
+        if (symbolSolver != null) {
+            try {
+                ResolvedMethodDeclaration resolved = call.resolve();
+                StringBuilder sb = new StringBuilder();
+                for (int i = 0; i < resolved.getNumberOfParams(); i++) {
+                    if (i > 0) {
+                        sb.append(", ");
+                    }
+                    sb.append(simplifyResolvedType(resolved.getParam(i).getType()));
+                }
+                return sb.toString();
+            } catch (Exception ignored) {
+                // fall through to argument inference
+            }
+        }
+        return inferParamTypesFromArguments(call, symbolSolver);
+    }
+
+    private String inferParamTypesFromArguments(MethodCallExpr call, JavaSymbolSolver symbolSolver) {
+        if (call.getArguments() == null) {
+            return "";
+        }
+        if (call.getArguments().isEmpty()) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < call.getArguments().size(); i++) {
+            Expression arg = call.getArguments().get(i);
+            String type = inferExpressionType(arg, symbolSolver);
+            if (type == null) {
+                return null;
+            }
+            if (i > 0) {
+                sb.append(", ");
+            }
+            sb.append(type);
+        }
+        return sb.toString();
+    }
+
+    private String inferExpressionType(Expression arg, JavaSymbolSolver symbolSolver) {
+        if (arg == null) {
+            return null;
+        }
+        if (symbolSolver != null) {
+            try {
+                ResolvedType resolved = symbolSolver.calculateType(arg);
+                return simplifyResolvedType(resolved);
+            } catch (Exception ignored) {
+                // fall through
+            }
+        }
+        if (arg.isStringLiteralExpr()) {
+            return "String";
+        }
+        if (arg.isBooleanLiteralExpr()) {
+            return "boolean";
+        }
+        if (arg.isCharLiteralExpr()) {
+            return "char";
+        }
+        if (arg.isIntegerLiteralExpr()) {
+            return "int";
+        }
+        if (arg.isLongLiteralExpr()) {
+            return "long";
+        }
+        if (arg.isDoubleLiteralExpr()) {
+            return "double";
+        }
+        if (arg.isNullLiteralExpr()) {
+            return null;
+        }
+        return null;
+    }
+
+    private static String simplifyResolvedType(ResolvedType type) {
+        if (type == null) {
+            return "Object";
+        }
+        if (type.isPrimitive()) {
+            return type.asPrimitive().describe();
+        }
+        if (type.isArray()) {
+            return simplifyResolvedType(type.asArrayType().getComponentType()) + "[]";
+        }
+        if (type.isReferenceType()) {
+            String qname = type.asReferenceType().getQualifiedName();
+            return stripPackageName(stripGeneric(qname));
+        }
+        return stripPackageName(stripGeneric(type.describe()));
+    }
+
+    private static String stripPackageName(String fqOrShort) {
+        if (fqOrShort == null) {
+            return null;
+        }
+        String t = fqOrShort.trim();
+        int dot = t.lastIndexOf('.');
+        return dot >= 0 ? t.substring(dot + 1) : t;
     }
 
     private static boolean isSimpleValueType(String type) {

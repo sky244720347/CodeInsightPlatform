@@ -11,6 +11,8 @@ import com.company.codeinsight.modules.entrypoint.model.TypeIncludeRules;
 import com.company.codeinsight.modules.entrypoint.service.EntryPointDiscoveryService;
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo;
 import com.company.codeinsight.modules.parser.service.JavaParserService;
+import com.company.codeinsight.modules.scanner.model.ScanScope;
+import com.company.codeinsight.modules.scanner.service.ScanScopeResolver;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
@@ -45,6 +47,9 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
 
     @Autowired
     private MethodCallService methodCallService;
+
+    @Autowired
+    private ScanScopeResolver scanScopeResolver;
 
     /** Ant 路径匹配器（无状态，可复用） */
     private final AntPathMatcher pathMatcher = new AntPathMatcher();
@@ -94,23 +99,17 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
             return Collections.emptyList();
         }
         EntryPointConfig cfg = normalizeConfig(config);
+        ScanScope scope = scanScopeResolver.resolveBestEffort(taskId, projectDir);
 
-        // 1) 加载本任务的调用链（基线继承后的版本），构建 className -> file_path 索引
-        //    用于入口识别时定位类路径（特别是多模块项目）
-        List<MethodCall> calls = methodCallService.listByTaskId(taskId);
-        Map<String, String> shortNameToFilePath = new HashMap<>();
-        for (MethodCall mc : calls) {
-            if (StringUtils.hasText(mc.getClassName()) && StringUtils.hasText(mc.getFilePath())) {
-                shortNameToFilePath.putIfAbsent(mc.getClassName(), mc.getFilePath());
-            }
-        }
-
-        // 2) 对 relativePaths 内的每个 .java 文件做单文件识别
+        // 2) 对 relativePaths 内的每个 .java 文件做单文件识别（先过 ScanScope）
         Map<String, EntryPoint> entries = new LinkedHashMap<>();
         int parsedFiles = 0;
         int parseFailures = 0;
         for (String relativePath : relativePaths) {
             if (!StringUtils.hasText(relativePath) || !relativePath.endsWith(".java")) {
+                continue;
+            }
+            if (!scope.accepts(relativePath)) {
                 continue;
             }
             File file = new File(projectDir, relativePath.replace('/', File.separatorChar));
@@ -243,11 +242,12 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
             return Collections.emptyList();
         }
         EntryPointConfig cfg = normalizeConfig(config);
+        ScanScope scope = scanScopeResolver.resolveBestEffort(taskId, projectDir);
 
-        // 1. 解析全项目
+        // 1. 仅解析 ScanScope 内的 Java 文件（路径仍相对仓库根）
         List<ParsedClassInfo> parsed;
         try {
-            parsed = javaParserService.parseDirectory(projectDir);
+            parsed = parseDirectoryScoped(projectDir, scope);
         } catch (Exception e) {
             log.error("parseDirectory failed for task {}", taskId, e);
             return Collections.emptyList();
@@ -373,12 +373,14 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
         if (taskId == null || !StringUtils.hasText(entryClassName) || projectDir == null || !projectDir.exists()) {
             return "";
         }
+        ScanScope scope = scanScopeResolver.resolveBestEffort(taskId, projectDir);
 
         // 入口自身若命中排除规则 → 直接返回空
         ParsedClassInfo entryInfo = null;
+        List<ParsedClassInfo> allScoped = Collections.emptyList();
         try {
-            List<ParsedClassInfo> all = javaParserService.parseDirectory(projectDir);
-            for (ParsedClassInfo p : all) {
+            allScoped = parseDirectoryScoped(projectDir, scope);
+            for (ParsedClassInfo p : allScoped) {
                 if (entryClassName.endsWith("." + p.getClassName())
                         || entryClassName.equals(p.getClassName())
                         || entryClassName.equals(fqName(p))) {
@@ -394,7 +396,7 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
 
         List<MethodCall> calls = methodCallService.listByTaskId(taskId);
         if (calls == null || calls.isEmpty()) {
-            return readSourceFile(projectDir, lookupFilePathByClass(calls, entryClassName), entryClassName);
+            return readSourceFile(projectDir, lookupFilePathByClass(calls, entryClassName), entryClassName, scope);
         }
 
         // BFS：从入口类出发，遍历 dependencyName 找到可达类集合
@@ -415,6 +417,13 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
         String entryShortName = entryClassName.contains(".") ? entryClassName.substring(entryClassName.lastIndexOf('.') + 1) : entryClassName;
         classToFilePath.putIfAbsent(entryShortName, lookupFilePathByClass(calls, entryClassName));
 
+        Map<String, ParsedClassInfo> byShortName = new HashMap<>();
+        for (ParsedClassInfo p : allScoped) {
+            if (p != null && StringUtils.hasText(p.getClassName())) {
+                byShortName.putIfAbsent(p.getClassName(), p);
+            }
+        }
+
         Set<String> reachable = new LinkedHashSet<>();
         Deque<String> queue = new ArrayDeque<>();
         queue.add(entryShortName);
@@ -425,18 +434,7 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
             if (deps == null) continue;
             for (String dep : deps) {
                 if (reachable.contains(dep)) continue;
-                // 排除传染：邻居依赖命中排除规则则不展开
-                ParsedClassInfo depInfo = null;
-                try {
-                    List<ParsedClassInfo> all = javaParserService.parseDirectory(projectDir);
-                    for (ParsedClassInfo p : all) {
-                        if (p.getClassName() != null && p.getClassName().equals(dep)) {
-                            depInfo = p;
-                            break;
-                        }
-                    }
-                } catch (Exception ignored) {
-                }
+                ParsedClassInfo depInfo = byShortName.get(dep);
                 if (depInfo != null) {
                     String depFq = fqName(depInfo);
                     if (isExcluded(depFq, depInfo, config)) {
@@ -448,14 +446,17 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
             }
         }
 
-        // 拼接源码
+        // 拼接源码（范围外跳过并 warn）
         StringBuilder sb = new StringBuilder();
         for (String className : reachable) {
             String relPath = classToFilePath.get(className);
             if (relPath == null) {
                 relPath = lookupFilePathByClass(calls, className);
             }
-            String content = readSourceFile(projectDir, relPath, className);
+            String content = readSourceFile(projectDir, relPath, className, scope);
+            if (!StringUtils.hasText(content) || content.startsWith("// (source out of scan scope")) {
+                continue;
+            }
             sb.append("// === Class: ").append(className).append(" ===\n");
             sb.append(content).append("\n\n");
         }
@@ -769,13 +770,31 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
     }
 
     private String readSourceFile(File projectDir, String relativePath, String fallbackClassName) {
+        return readSourceFile(projectDir, relativePath, fallbackClassName, null);
+    }
+
+    private String readSourceFile(File projectDir, String relativePath, String fallbackClassName, ScanScope scope) {
         if (projectDir == null) return "// (no source: projectDir null)";
+        if (StringUtils.hasText(relativePath) && scope != null && !scope.accepts(relativePath)) {
+            log.warn("readSourceFile: 路径超出扫描范围，跳过 path={}", relativePath);
+            return "// (source out of scan scope: " + relativePath + ")";
+        }
         File target = null;
         if (StringUtils.hasText(relativePath)) {
             target = new File(projectDir, relativePath.replace('/', File.separatorChar));
         }
         if (target == null || !target.exists()) {
             target = findJavaFileByFqcn(projectDir, fallbackClassName);
+            if (target != null && target.exists() && scope != null) {
+                String rel = projectDir.toURI().relativize(target.toURI()).getPath().replace('\\', '/');
+                if (rel.endsWith("/")) {
+                    rel = rel.substring(0, rel.length() - 1);
+                }
+                if (!scope.accepts(rel)) {
+                    log.warn("readSourceFile: FQCN 回退文件超出扫描范围，跳过 class={} path={}", fallbackClassName, rel);
+                    return "// (source out of scan scope: " + rel + ")";
+                }
+            }
         }
         if (target != null && target.exists()) {
             try {
@@ -785,5 +804,53 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
             }
         }
         return "// (source not found: " + (target == null ? "null" : target.getAbsolutePath()) + ")";
+    }
+
+    /**
+     * 在 ScanScope 内解析 Java 文件；{@link ParsedClassInfo#setSourceRelativePath} 相对仓库根。
+     */
+    private List<ParsedClassInfo> parseDirectoryScoped(File repoRoot, ScanScope scope) {
+        List<ParsedClassInfo> out = new ArrayList<>();
+        if (repoRoot == null || scope == null) {
+            return out;
+        }
+        walkParseScoped(repoRoot, scope.getEffectiveRoot(), scope, out);
+        return out;
+    }
+
+    private void walkParseScoped(File repoRoot, File current, ScanScope scope, List<ParsedClassInfo> out) {
+        if (current.isDirectory()) {
+            String dirRel = repoRoot.toURI().relativize(current.toURI()).getPath().replace('\\', '/');
+            if (dirRel.endsWith("/")) {
+                dirRel = dirRel.substring(0, dirRel.length() - 1);
+            }
+            if (StringUtils.hasText(dirRel) && !scope.acceptsDirectory(dirRel)) {
+                return;
+            }
+            File[] children = current.listFiles();
+            if (children == null) {
+                return;
+            }
+            for (File child : children) {
+                walkParseScoped(repoRoot, child, scope, out);
+            }
+            return;
+        }
+        if (!current.isFile() || !current.getName().endsWith(".java")) {
+            return;
+        }
+        String rel = repoRoot.toURI().relativize(current.toURI()).getPath().replace('\\', '/');
+        if (!scope.accepts(rel)) {
+            return;
+        }
+        try {
+            ParsedClassInfo info = javaParserService.parseFile(current);
+            if (info != null && info.getClassName() != null) {
+                info.setSourceRelativePath(rel);
+                out.add(info);
+            }
+        } catch (RuntimeException ex) {
+            log.warn("parseDirectoryScoped skip file {}: {}", current.getAbsolutePath(), ex.toString());
+        }
     }
 }

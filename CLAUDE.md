@@ -191,6 +191,10 @@ DRAFT
   /modules
   /changes
   /meta
+    document-index.md
+    module-map.yaml
+    knowledge-version.json
+    prompt-used.json
 ```
 
 元数据包括 `knowledge-version.json`、`module-map.yaml` 和 `prompt-used.json`。仓库级已发布快照写在 `ci_repository_publish_snapshot`；生效版本指针 `ci_repository.last_published_version_id` 由推送成功 / 回滚更新（见 `modules/push/RepositoryPublishService`）。

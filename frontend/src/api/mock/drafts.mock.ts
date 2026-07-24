@@ -595,12 +595,16 @@ export async function mockListReviewableTasks(params: {
     .sort((a, b) => (a.updatedDate < b.updatedDate ? 1 : -1));
 }
 
-export async function mockGetWorkspaceByTask(taskId: number): Promise<{ workspace: DraftWorkspace; drafts: KnowledgeDraft[] }> {
+export async function mockGetWorkspaceByTask(taskId: number): Promise<{
+  workspace: DraftWorkspace;
+  drafts: KnowledgeDraft[];
+  allowPartialPass?: boolean;
+}> {
   await wait(80);
   const workspace = workspaces.find((w) => w.taskId === taskId);
   if (!workspace) throw new Error(`找不到任务 ${taskId} 对应的工作区`);
   const drafts = Array.from(draftStore.values()).filter((d) => d.workspaceId === workspace.id);
-  return { workspace, drafts };
+  return { workspace, drafts, allowPartialPass: false };
 }
 
 export async function mockGetWorkspaceTree(workspaceId: number): Promise<DraftTreeNode[]> {

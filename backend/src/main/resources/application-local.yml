@@ -52,6 +52,8 @@ code-insight:
     releases-root: ${STORAGE_RELEASES_ROOT:}
   doc-generation:
     granularity: ${DOC_GENERATION_GRANULARITY:function}
+  review:
+    allow-partial-pass: ${REVIEW_ALLOW_PARTIAL_PASS:false}
   push:
     queue:
       enabled: ${PUSH_QUEUE_ENABLED:true}

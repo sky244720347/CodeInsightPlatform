@@ -100,6 +100,19 @@ public class DraftServiceImpl implements DraftService {
     private com.company.codeinsight.modules.knowledge.mapper.KnowledgeVersionMapper knowledgeVersionMapper;
 
     /**
+     * 知识复核「任务整体通过」开关：
+     * true = 允许在部分文档未逐篇确认时直接整体通过（未确认草稿一并置为 CONFIRMED）；
+     * false（默认）= 须全部文档已逐篇确认后才允许整体通过。
+     */
+    @Value("${code-insight.review.allow-partial-pass:false}")
+    private boolean allowPartialPass;
+
+    /** 供 API / 前端读取当前是否允许部分通过后整体放行 */
+    public boolean isAllowPartialPass() {
+        return allowPartialPass;
+    }
+
+    /**
      * 查询指定评审工作区下的所有草稿
      */
     @Override
@@ -679,14 +692,27 @@ public class DraftServiceImpl implements DraftService {
         if (drafts.isEmpty()) {
             throw new BusinessException("任务 #" + taskId + " 工作区为空，无需确认");
         }
-        for (KnowledgeDraft d : drafts) {
-            String st = d.getStatus();
-            if (!DraftStatus.CONFIRMED.name().equals(st) && !DraftStatus.PUSHED.name().equals(st)) {
-                throw new BusinessException("尚有未逐篇确认的草稿: " + d.getModuleName()
-                        + "（当前: " + st + "），请先对每篇文档点击「通过」");
+        if (!allowPartialPass) {
+            for (KnowledgeDraft d : drafts) {
+                String st = d.getStatus();
+                if (!DraftStatus.CONFIRMED.name().equals(st) && !DraftStatus.PUSHED.name().equals(st)) {
+                    throw new BusinessException("尚有未逐篇确认的草稿: " + d.getModuleName()
+                            + "（当前: " + st + "），请先对每篇文档点击「通过」");
+                }
             }
         }
         LocalDateTime now = LocalDateTime.now();
+
+        // 未确认草稿一并置为 CONFIRMED（allowPartialPass 时放行路径的必要步骤；
+        // 严格模式下此处多为 no-op，因上面已要求全部确认）
+        for (KnowledgeDraft d : drafts) {
+            String st = d.getStatus();
+            if (!DraftStatus.CONFIRMED.name().equals(st) && !DraftStatus.PUSHED.name().equals(st)) {
+                d.setStatus(DraftStatus.CONFIRMED.name());
+                d.setUpdatedDate(now);
+                draftMapper.updateById(d);
+            }
+        }
 
         // 2. 工作区晋升 COMPLETED
         ws.setStatus("COMPLETED");

@@ -22,24 +22,39 @@ import java.util.stream.Collectors;
 
 /**
  * 三级索引生成实现
- * 输出 Markdown 表格：
- * | 模块 | 子模块 | 功能 | 入口类 | md 链接 |
- * 链接路径：[模块名](modules/模块名.md)，锚点跳转到对应子模块标题
+ * <ul>
+ *   <li>{@code module-index.md}：模块结构 + 入口类 + md 链接</li>
+ *   <li>{@code meta/document-index.md}：模块→子模块→功能 → ZIP 相对路径（扁平下划线文件名）</li>
+ * </ul>
  */
 @Slf4j
 @Service
 public class KnowledgeIndexServiceImpl implements KnowledgeIndexService {
 
+    /** 与 KnowledgeServiceImpl.createVersion / NasPushStrategy 落盘规则一致 */
+    public static String flattenKnowledgeDocFileName(String breadcrumb) {
+        if (breadcrumb == null) {
+            return "_.md";
+        }
+        return breadcrumb.replaceAll("[\\s/\\(\\)]", "_") + ".md";
+    }
+
+    /** ZIP 内相对 code-insight/ 的路径：modules/{扁平文件名} */
+    public static String toZipRelativeDocPath(String breadcrumb) {
+        return "modules/" + flattenKnowledgeDocFileName(breadcrumb);
+    }
+
+    public static String functionBreadcrumb(String moduleName, String subName, String fnName) {
+        return moduleName + " / " + subName + " / " + fnName;
+    }
+
     @Override
-    public Path generateModuleIndex(Path modulesPath, ModuleHierarchy hierarchy, List<KnowledgeDraft> drafts) throws IOException {
-        // 建立 moduleName → md 文件相对路径索引
+    public Path generateModuleIndex(Path docsPath, ModuleHierarchy hierarchy, List<KnowledgeDraft> drafts) throws IOException {
+        // 建立 moduleName → md 文件相对路径索引（按 createVersion 扁平规则）
         Map<String, String> moduleNameToMdRelPath = new HashMap<>();
         for (KnowledgeDraft draft : drafts) {
-            if (StringUtils.hasText(draft.getModuleName()) && StringUtils.hasText(draft.getFilePath())) {
-                String fileName = extractFileName(draft.getFilePath());
-                if (StringUtils.hasText(fileName)) {
-                    moduleNameToMdRelPath.put(draft.getModuleName(), "modules/" + fileName);
-                }
+            if (StringUtils.hasText(draft.getModuleName())) {
+                moduleNameToMdRelPath.put(draft.getModuleName(), toZipRelativeDocPath(draft.getModuleName()));
             }
         }
 
@@ -49,7 +64,6 @@ public class KnowledgeIndexServiceImpl implements KnowledgeIndexService {
         sb.append("## 系统模块列表\n\n");
 
         if (hierarchy == null || hierarchy.getModules() == null || hierarchy.getModules().isEmpty()) {
-            // DTO 为空时回退到纯 KnowledgeDraft 列表（与原 KnowledgeServiceImpl 行为兼容）
             appendFallbackList(sb, moduleNameToMdRelPath);
         } else {
             appendThreeLevelTable(sb, hierarchy, moduleNameToMdRelPath);
@@ -57,14 +71,37 @@ public class KnowledgeIndexServiceImpl implements KnowledgeIndexService {
 
         sb.append("\n## 文档导览\n");
         sb.append("- [架构概览](architecture-overview.md)\n");
+        sb.append("- [知识文档索引](meta/document-index.md)\n");
         sb.append("- [接口索引](api-index.md)\n");
         sb.append("- [数据库索引](database-index.md)\n");
         sb.append("- [依赖与调用链路](dependency-index.md)\n");
         sb.append("- [待确认事项清单](pending-confirmation.md)\n");
 
-        Path indexPath = modulesPath.resolve("module-index.md");
+        Path indexPath = docsPath.resolve("module-index.md");
         Files.writeString(indexPath, sb.toString());
         log.info("KnowledgeIndexService generated: {}", indexPath);
+        return indexPath;
+    }
+
+    @Override
+    public Path generateDocumentIndex(Path docsPath, ModuleHierarchy hierarchy, List<KnowledgeDraft> drafts) throws IOException {
+        Path metaPath = docsPath.resolve("meta");
+        Files.createDirectories(metaPath);
+
+        StringBuilder sb = new StringBuilder();
+        sb.append("# 知识文档路径索引\n\n");
+        sb.append("本文件列出模块 → 子模块 → 功能对应的知识文档路径，");
+        sb.append("路径相对 ZIP 包内 `code-insight/` 根目录，与导出文件名一致（扁平下划线命名）。\n\n");
+
+        if (hierarchy == null || hierarchy.getModules() == null || hierarchy.getModules().isEmpty()) {
+            appendDocumentIndexFallback(sb, drafts);
+        } else {
+            appendDocumentIndexTable(sb, hierarchy);
+        }
+
+        Path indexPath = metaPath.resolve("document-index.md");
+        Files.writeString(indexPath, sb.toString());
+        log.info("KnowledgeIndexService generated document-index: {}", indexPath);
         return indexPath;
     }
 
@@ -82,60 +119,97 @@ public class KnowledgeIndexServiceImpl implements KnowledgeIndexService {
             String mdRelPath = moduleNameToMdRelPath.getOrDefault(moduleName, null);
 
             if (moduleDto.getSubModules() == null || moduleDto.getSubModules().isEmpty()) {
-                // 模块没有子模块 → 单行展示
-                sb.append(buildTableRow(moduleName, "—", "—", "—", mdRelPath, true, 1, true, 1));
+                sb.append(buildTableRow(moduleName, "—", "—", "—", mdRelPath));
                 continue;
             }
 
-            int subModuleCount = moduleDto.getSubModules().size();
-            int subIndex = 0;
             for (SubModuleDto subModuleDto : moduleDto.getSubModules().values()) {
                 String subName = subModuleDto.getSubModuleName();
                 int functionCount = subModuleDto.getFunctions() == null ? 0 : subModuleDto.getFunctions().size();
 
                 if (functionCount == 0) {
-                    // 子模块无功能
-                    sb.append(buildTableRow(moduleName, subName, "—", "—", mdRelPath, subIndex == 0, subModuleCount, true, 1));
-                    subIndex++;
+                    String breadcrumb = moduleName + " / " + subName;
+                    String path = moduleNameToMdRelPath.getOrDefault(breadcrumb, toZipRelativeDocPath(breadcrumb));
+                    sb.append(buildTableRow(moduleName, subName, "—", "—", path));
                     continue;
                 }
 
-                int fnIndex = 0;
                 for (FunctionDto functionDto : subModuleDto.getFunctions().values()) {
                     String fnName = functionDto.getFunctionName();
                     String entries = joinClassPaths(functionDto.getClassPaths());
-                    sb.append(buildTableRow(moduleName, subName, fnName, entries, mdRelPath,
-                            subIndex == 0, subModuleCount,
-                            fnIndex == 0, functionCount));
-                    fnIndex++;
+                    String breadcrumb = functionBreadcrumb(moduleName, subName, fnName);
+                    String path = moduleNameToMdRelPath.getOrDefault(breadcrumb, toZipRelativeDocPath(breadcrumb));
+                    sb.append(buildTableRow(moduleName, subName, fnName, entries, path));
                 }
-                subIndex++;
             }
         }
     }
 
-    /**
-     * 降级模式：DTO 为空时只列 KnowledgeDraft 名称与 md 链接（与原 buildLocalDocs 行为一致）
-     */
-    private void appendFallbackList(StringBuilder sb, Map<String, String> moduleNameToMdRelPath) {
-        sb.append("| 模块 | md 链接 |\n| --- | --- |\n");
-        // 按模块名排序输出
-        Set<String> sorted = new TreeSet<>(moduleNameToMdRelPath.keySet());
-        for (String moduleName : sorted) {
-            String rel = moduleNameToMdRelPath.get(moduleName);
-            sb.append("| ").append(moduleName).append(" | [").append(moduleName).append("](")
-                    .append(rel).append(") |\n");
+    private void appendDocumentIndexTable(StringBuilder sb, ModuleHierarchy hierarchy) {
+        sb.append("| 模块 | 子模块 | 功能 | 文档路径 |\n");
+        sb.append("| --- | --- | --- | --- |\n");
+
+        for (ModuleDto moduleDto : hierarchy.getModules().values()) {
+            String moduleName = moduleDto.getModuleName();
+
+            if (moduleDto.getSubModules() == null || moduleDto.getSubModules().isEmpty()) {
+                sb.append(buildDocumentIndexRow(moduleName, "—", "—", toZipRelativeDocPath(moduleName)));
+                continue;
+            }
+
+            for (SubModuleDto subModuleDto : moduleDto.getSubModules().values()) {
+                String subName = subModuleDto.getSubModuleName();
+                if (subModuleDto.getFunctions() == null || subModuleDto.getFunctions().isEmpty()) {
+                    String breadcrumb = moduleName + " / " + subName;
+                    sb.append(buildDocumentIndexRow(moduleName, subName, "—", toZipRelativeDocPath(breadcrumb)));
+                    continue;
+                }
+                for (FunctionDto functionDto : subModuleDto.getFunctions().values()) {
+                    String fnName = functionDto.getFunctionName();
+                    String breadcrumb = functionBreadcrumb(moduleName, subName, fnName);
+                    sb.append(buildDocumentIndexRow(moduleName, subName, fnName, toZipRelativeDocPath(breadcrumb)));
+                }
+            }
+        }
+    }
+
+    private void appendDocumentIndexFallback(StringBuilder sb, List<KnowledgeDraft> drafts) {
+        sb.append("| 模块（面包屑） | 文档路径 |\n");
+        sb.append("| --- | --- |\n");
+        if (drafts == null || drafts.isEmpty()) {
+            sb.append("| — | — |\n");
+            return;
+        }
+        Set<String> sorted = new TreeSet<>();
+        Map<String, String> nameToPath = new HashMap<>();
+        for (KnowledgeDraft draft : drafts) {
+            if (!StringUtils.hasText(draft.getModuleName())) {
+                continue;
+            }
+            sorted.add(draft.getModuleName());
+            nameToPath.put(draft.getModuleName(), toZipRelativeDocPath(draft.getModuleName()));
+        }
+        for (String name : sorted) {
+            sb.append("| ").append(escapeMd(name)).append(" | `")
+                    .append(nameToPath.get(name)).append("` |\n");
         }
     }
 
     /**
-     * 单行表格（不处理单元格合并，仅展示）。
-     * Markdown 不支持单元格合并时退化为重复展示模块/子模块名称以保证可读性。
+     * 降级模式：DTO 为空时只列 KnowledgeDraft 名称与 md 链接
      */
+    private void appendFallbackList(StringBuilder sb, Map<String, String> moduleNameToMdRelPath) {
+        sb.append("| 模块 | md 链接 |\n| --- | --- |\n");
+        Set<String> sorted = new TreeSet<>(moduleNameToMdRelPath.keySet());
+        for (String moduleName : sorted) {
+            String rel = moduleNameToMdRelPath.get(moduleName);
+            sb.append("| ").append(escapeMd(moduleName)).append(" | [").append(escapeMd(moduleName)).append("](")
+                    .append(rel).append(") |\n");
+        }
+    }
+
     private String buildTableRow(String moduleName, String subName, String fnName,
-                                 String entries, String mdRelPath,
-                                 boolean firstInModule, int moduleSpan,
-                                 boolean firstInSub, int subSpan) {
+                                 String entries, String mdRelPath) {
         String linkCell = mdRelPath == null
                 ? "—"
                 : "[" + escapeMd(moduleName) + "](" + mdRelPath + ")";
@@ -146,21 +220,18 @@ public class KnowledgeIndexServiceImpl implements KnowledgeIndexService {
                 + " | " + linkCell + " |\n";
     }
 
+    private String buildDocumentIndexRow(String moduleName, String subName, String fnName, String zipRelPath) {
+        return "| " + escapeMd(moduleName)
+                + " | " + escapeMd(subName)
+                + " | " + escapeMd(fnName)
+                + " | `" + zipRelPath + "` |\n";
+    }
+
     private String joinClassPaths(Set<String> classPaths) {
         if (classPaths == null || classPaths.isEmpty()) {
             return "—";
         }
         return classPaths.stream().sorted().collect(Collectors.joining("<br>"));
-    }
-
-    /**
-     * 提取 file_path 末段文件名（如 "task_123/UserModule.md" → "UserModule.md"）
-     */
-    private String extractFileName(String filePath) {
-        if (filePath == null) return null;
-        int idx = filePath.lastIndexOf('/');
-        if (idx < 0) idx = filePath.lastIndexOf('\\');
-        return idx >= 0 ? filePath.substring(idx + 1) : filePath;
     }
 
     /**
