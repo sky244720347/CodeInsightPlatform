@@ -34,6 +34,7 @@ public class TaskArtifactCloneService {
     private final MethodCallMapper methodCallMapper;
     private final EntrypointMapper entrypointMapper;
     private final RepositoryArtifactService artifactService;
+    private final com.company.codeinsight.modules.scanner.service.CodeScannerService codeScannerService;
 
     public void cloneWorkspace(Long baseTaskId, Long newTaskId) {
         Path source = taskWorkspacePaths.taskProjectPath(baseTaskId);
@@ -63,11 +64,26 @@ public class TaskArtifactCloneService {
         }
     }
 
+    /**
+     * 克隆基线工作区；若基线已被回收则对 newTask 重新 pull。
+     */
     @Transactional(rollbackFor = Exception.class)
-    public void cloneTaskArtifacts(Long baseTaskId, Long newTaskId) {
-        cloneWorkspace(baseTaskId, newTaskId);
+    public void cloneTaskArtifacts(Long baseTaskId, Long newTaskId, Long repositoryId) {
+        Path source = taskWorkspacePaths.taskProjectPath(baseTaskId);
+        if (Files.isDirectory(source)) {
+            cloneWorkspace(baseTaskId, newTaskId);
+        } else {
+            log.warn("基线工作区已回收 baseTaskId={}，纠错任务 newTaskId={} 重新拉取代码", baseTaskId, newTaskId);
+            codeScannerService.pullAndScan(newTaskId, repositoryId, "INITIAL");
+        }
         copySnapshots(baseTaskId, newTaskId);
         copyMethodCalls(baseTaskId, newTaskId);
+    }
+
+    /** @deprecated 使用 {@link #cloneTaskArtifacts(Long, Long, Long)} */
+    @Transactional(rollbackFor = Exception.class)
+    public void cloneTaskArtifacts(Long baseTaskId, Long newTaskId) {
+        throw new BusinessException("请使用带 repositoryId 的 cloneTaskArtifacts 重载");
     }
 
     @Transactional(rollbackFor = Exception.class)

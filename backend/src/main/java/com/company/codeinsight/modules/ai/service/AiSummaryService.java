@@ -50,6 +50,9 @@ public interface AiSummaryService {
      */
     String filterSensitiveInfo(String input);
 
+    /** 单篇功能文档重跑（原地覆盖）。返回更新后的草稿状态信息。 */
+    com.company.codeinsight.modules.draft.dto.RegenerateDraftResult regenerateFunctionDocument(Long draftId);
+
     /**
      * 调用元数据
      */

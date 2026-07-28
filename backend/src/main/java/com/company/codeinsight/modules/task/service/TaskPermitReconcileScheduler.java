@@ -11,7 +11,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * 集群模式下：实例心跳 + 任务/AI 并发许可对账与续租。
+ * 集群模式下：实例心跳 + 任务/AI 并发许可对账与续租；
+ * 另对流水线任务 DB 租约做续租（单机/集群均执行）。
  */
 @Slf4j
 @Component
@@ -22,6 +23,7 @@ public class TaskPermitReconcileScheduler {
     private final AiConcurrencyService aiConcurrencyService;
     private final ClusterProperties clusterProperties;
     private final InstanceHeartbeat instanceHeartbeat;
+    private final TaskLeaseRenewer taskLeaseRenewer;
 
     @EventListener(ApplicationReadyEvent.class)
     public void onReady() {
@@ -76,6 +78,16 @@ public class TaskPermitReconcileScheduler {
             aiConcurrencyService.renewLocalHeldPermits();
         } catch (Exception e) {
             log.warn("AI 并发许可续租失败: {}", e.getMessage());
+        }
+    }
+
+    /** 流水线任务 DB 租约续租（集群 / 单机均执行） */
+    @Scheduled(fixedDelayString = "${code-insight.cluster.task-lease-renew-interval-ms:120000}")
+    public void scheduledRenewTaskLeases() {
+        try {
+            taskLeaseRenewer.renewLocalHeld();
+        } catch (Exception e) {
+            log.warn("任务 DB 租约续租失败: {}", e.getMessage());
         }
     }
 }

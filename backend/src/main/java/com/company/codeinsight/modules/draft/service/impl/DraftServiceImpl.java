@@ -76,6 +76,14 @@ public class DraftServiceImpl implements DraftService {
     private TaskStateMachineService stateMachineService;
 
     @Autowired
+    @org.springframework.context.annotation.Lazy
+    private com.company.codeinsight.modules.knowledge.service.KnowledgePublishFacade knowledgePublishFacade;
+
+    @Autowired
+    @org.springframework.context.annotation.Lazy
+    private com.company.codeinsight.modules.ai.service.AiSummaryService aiSummaryService;
+
+    @Autowired
     private SystemApplicationMapper systemMapper;
 
     @Autowired
@@ -98,6 +106,19 @@ public class DraftServiceImpl implements DraftService {
 
     @Autowired
     private com.company.codeinsight.modules.knowledge.mapper.KnowledgeVersionMapper knowledgeVersionMapper;
+
+    @Autowired
+    private com.company.codeinsight.common.storage.TaskWorkspacePaths taskWorkspacePaths;
+
+    /** 无 Redis 时兜底：记录重跑前状态 / 失败原因 */
+    private final java.util.concurrent.ConcurrentHashMap<Long, String> regenPrevStatusLocal =
+            new java.util.concurrent.ConcurrentHashMap<>();
+    private final java.util.concurrent.ConcurrentHashMap<Long, String> regenErrorLocal =
+            new java.util.concurrent.ConcurrentHashMap<>();
+
+    private static final String REGEN_PREV_KEY_PREFIX = "draft:regen:prev-status:";
+    private static final String REGEN_ERROR_KEY_PREFIX = "draft:regen:error:";
+    private static final long REGEN_META_TTL_HOURS = 6;
 
     /**
      * 知识复核「任务整体通过」开关：
@@ -510,6 +531,7 @@ public class DraftServiceImpl implements DraftService {
         // 推送锁定：任务进入 PUSHING / PUSHED 后草稿只读，service 层兜底拦截
         // 防止前端绕 UI 直接调接口绕过锁定。前端也对应 disabled + tooltip 提示。
         assertNotPushed(draft);
+        assertNotRegenerating(draft);
         renewEditLockIfCluster(draftId, author);
 
         try {
@@ -595,6 +617,11 @@ public class DraftServiceImpl implements DraftService {
      */
     @Override
     public void autoSaveDraft(Long draftId, String content, String author) {
+        KnowledgeDraft draft = draftMapper.selectById(draftId);
+        if (draft == null) {
+            throw new BusinessException("草稿不存在");
+        }
+        assertNotRegenerating(draft);
         requireRedisForDraftCache();
         renewEditLockIfCluster(draftId, author);
         redisTemplate.opsForValue().set("draft:autosave:" + draftId, content, 7, TimeUnit.DAYS);
@@ -631,6 +658,7 @@ public class DraftServiceImpl implements DraftService {
             throw new BusinessException("草稿不存在");
         }
         assertNotPushed(draft);
+        assertNotRegenerating(draft);
 
         // 幂等保护：草稿已确认则直接返回
         if (DraftStatus.CONFIRMED.name().equals(draft.getStatus())) {
@@ -671,6 +699,7 @@ public class DraftServiceImpl implements DraftService {
         if (ws == null) {
             throw new BusinessException("任务 #" + taskId + " 没有关联的草稿工作区");
         }
+        assertNoRegeneratingInWorkspace(ws.getId());
 
         // 推送锁定守卫：PUSHING / PUSHED / CONFIRMED 不允许再次 CONFIRMED
         DecompileTask task = taskMapper.selectById(taskId);
@@ -744,6 +773,15 @@ public class DraftServiceImpl implements DraftService {
                             task.getId(), current, e.getMessage());
                 }
             }
+        }
+
+        // 人工知识复核通过后：组装发布包 → 清源码/drafts → 建版 → NAS 推送
+        try {
+            knowledgePublishFacade.onKnowledgeConfirmed(taskId, author);
+        } catch (Exception e) {
+            log.error("知识确认后自动发布失败 taskId={}", taskId, e);
+            throw e instanceof BusinessException ? (BusinessException) e
+                    : new BusinessException("自动建版推送失败: " + e.getMessage());
         }
     }
 
@@ -863,13 +901,256 @@ public class DraftServiceImpl implements DraftService {
     }
 
     /**
-     * 获取指定草稿的所有关联代码来源引用（文件名及行范围）
+     * 获取指定草稿的所有关联代码来源引用（文件名及行范围），按 bfs_order 升序。
      */
     @Override
     public List<DraftSourceReference> getSourceReferences(Long draftId) {
-        return referenceMapper.selectList(
-                new LambdaQueryWrapper<DraftSourceReference>().eq(DraftSourceReference::getDraftId, draftId)
+        List<DraftSourceReference> list = referenceMapper.selectList(
+                new LambdaQueryWrapper<DraftSourceReference>()
+                        .eq(DraftSourceReference::getDraftId, draftId)
+                        .orderByAsc(DraftSourceReference::getBfsOrder)
+                        .orderByAsc(DraftSourceReference::getId)
         );
+        return list != null ? list : Collections.emptyList();
+    }
+
+    @Override
+    @Transactional
+    public com.company.codeinsight.modules.draft.dto.RegenerateDraftResult regenerateDraft(
+            Long draftId, String author, String remark) {
+        KnowledgeDraft draft = draftMapper.selectById(draftId);
+        if (draft == null) {
+            throw new BusinessException("草稿不存在");
+        }
+        assertNotPushed(draft);
+        assertNotRegenerating(draft);
+
+        DraftWorkspace ws = workspaceMapper.selectById(draft.getWorkspaceId());
+        if (ws == null) {
+            throw new BusinessException("草稿工作区不存在");
+        }
+        DecompileTask task = taskMapper.selectById(ws.getTaskId());
+        if (task == null) {
+            throw new BusinessException("关联任务不存在");
+        }
+        String taskStatus = task.getStatus();
+        if (!TaskStatus.PENDING_REVIEW.name().equals(taskStatus)
+                && !TaskStatus.REVIEWING.name().equals(taskStatus)) {
+            throw new BusinessException("任务状态为 " + taskStatus + "，仅待复核/复核中可重跑单篇功能文档");
+        }
+        java.io.File projectDir = taskWorkspacePaths.taskProjectDir(task.getId());
+        if (projectDir == null || !projectDir.isDirectory()) {
+            throw new BusinessException("源码工作区已回收或不可用，无法重跑（知识确认后源码已清理）");
+        }
+
+        String prevStatus = StringUtils.hasText(draft.getStatus()) ? draft.getStatus() : DraftStatus.DRAFT.name();
+        rememberRegenPrevStatus(draftId, prevStatus);
+        clearRegenError(draftId);
+
+        draft.setStatus(DraftStatus.REGENERATING.name());
+        draft.setUpdatedDate(LocalDateTime.now());
+        draftMapper.updateById(draft);
+
+        final Long id = draftId;
+        final String opAuthor = author;
+        final String opRemark = remark;
+        Runnable job = () -> runRegenerateAsync(id, opAuthor, opRemark, prevStatus);
+        if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
+            org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
+                    new org.springframework.transaction.support.TransactionSynchronization() {
+                        @Override
+                        public void afterCommit() {
+                            java.util.concurrent.CompletableFuture.runAsync(job);
+                        }
+                    });
+        } else {
+            java.util.concurrent.CompletableFuture.runAsync(job);
+        }
+
+        com.company.codeinsight.modules.draft.dto.RegenerateDraftResult accepted =
+                new com.company.codeinsight.modules.draft.dto.RegenerateDraftResult();
+        accepted.setDraftId(draftId);
+        accepted.setStatus(DraftStatus.REGENERATING.name());
+        accepted.setAccepted(true);
+        accepted.setReferenceCount(0);
+        return accepted;
+    }
+
+    @Override
+    public com.company.codeinsight.modules.draft.dto.RegenerateDraftResult getRegenerateStatus(Long draftId) {
+        KnowledgeDraft draft = draftMapper.selectById(draftId);
+        if (draft == null) {
+            throw new BusinessException("草稿不存在");
+        }
+        com.company.codeinsight.modules.draft.dto.RegenerateDraftResult result =
+                new com.company.codeinsight.modules.draft.dto.RegenerateDraftResult();
+        result.setDraftId(draftId);
+        result.setStatus(draft.getStatus());
+        result.setAccepted(DraftStatus.REGENERATING.name().equals(draft.getStatus()));
+        result.setContentUri(draft.getContentUri());
+        result.setFunctionNodeId(draft.getFunctionNodeId());
+        result.setErrorMessage(readRegenError(draftId));
+        Long refCount = referenceMapper.selectCount(
+                new LambdaQueryWrapper<DraftSourceReference>().eq(DraftSourceReference::getDraftId, draftId));
+        result.setReferenceCount(refCount != null ? refCount.intValue() : 0);
+        return result;
+    }
+
+    @Override
+    public void recoverStaleRegeneratingDraft(Long draftId, String reason) {
+        KnowledgeDraft draft = draftMapper.selectById(draftId);
+        if (draft == null) {
+            return;
+        }
+        if (!DraftStatus.REGENERATING.name().equals(draft.getStatus())) {
+            return;
+        }
+        String prev = readRegenPrevStatus(draftId);
+        restoreStatusAfterRegenFailure(draftId, prev);
+        rememberRegenError(draftId, StringUtils.hasText(reason) ? reason : "重跑超时或服务重启");
+        log.warn("已恢复超时 REGENERATING 草稿 draftId={} reason={}", draftId, reason);
+    }
+
+    private String readRegenPrevStatus(Long draftId) {
+        if (redisTemplate != null) {
+            try {
+                String v = redisTemplate.opsForValue().get(REGEN_PREV_KEY_PREFIX + draftId);
+                if (StringUtils.hasText(v)) {
+                    return v;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return regenPrevStatusLocal.get(draftId);
+    }
+
+    private void runRegenerateAsync(Long draftId, String author, String remark, String prevStatus) {
+        try {
+            var result = aiSummaryService.regenerateFunctionDocument(draftId);
+            if (result != null) {
+                List<DraftRevision> revs = revisionMapper.selectList(
+                        new LambdaQueryWrapper<DraftRevision>()
+                                .eq(DraftRevision::getDraftId, draftId)
+                                .orderByDesc(DraftRevision::getId)
+                                .last("LIMIT 1"));
+                if (revs != null && !revs.isEmpty()) {
+                    DraftRevision last = revs.get(0);
+                    if ("AI 重跑".equals(last.getRemark())) {
+                        if (StringUtils.hasText(author)) {
+                            last.setAuthor(author);
+                        }
+                        if (StringUtils.hasText(remark) && !"AI 重跑".equals(remark.trim())) {
+                            last.setRemark(remark.trim());
+                        }
+                        revisionMapper.updateById(last);
+                    }
+                }
+            }
+            clearRegenPrevStatus(draftId);
+            clearRegenError(draftId);
+            log.info("异步重跑完成 draftId={} status={}", draftId, result != null ? result.getStatus() : null);
+        } catch (Exception e) {
+            log.error("异步重跑失败 draftId={}", draftId, e);
+            restoreStatusAfterRegenFailure(draftId, prevStatus);
+            rememberRegenError(draftId, e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+        }
+    }
+
+    private void restoreStatusAfterRegenFailure(Long draftId, String prevStatus) {
+        KnowledgeDraft draft = draftMapper.selectById(draftId);
+        if (draft == null) {
+            return;
+        }
+        if (!DraftStatus.REGENERATING.name().equals(draft.getStatus())) {
+            return;
+        }
+        String restore = StringUtils.hasText(prevStatus) ? prevStatus : DraftStatus.DRAFT.name();
+        if (DraftStatus.REGENERATING.name().equals(restore)) {
+            restore = DraftStatus.DRAFT.name();
+        }
+        draft.setStatus(restore);
+        draft.setUpdatedDate(LocalDateTime.now());
+        draftMapper.updateById(draft);
+        clearRegenPrevStatus(draftId);
+    }
+
+    private void rememberRegenPrevStatus(Long draftId, String prevStatus) {
+        if (redisTemplate != null) {
+            try {
+                redisTemplate.opsForValue().set(
+                        REGEN_PREV_KEY_PREFIX + draftId, prevStatus, REGEN_META_TTL_HOURS, TimeUnit.HOURS);
+                return;
+            } catch (Exception e) {
+                log.warn("写入重跑前状态到 Redis 失败 draftId={}", draftId, e);
+            }
+        }
+        regenPrevStatusLocal.put(draftId, prevStatus);
+    }
+
+    private void clearRegenPrevStatus(Long draftId) {
+        regenPrevStatusLocal.remove(draftId);
+        if (redisTemplate != null) {
+            try {
+                redisTemplate.delete(REGEN_PREV_KEY_PREFIX + draftId);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void rememberRegenError(Long draftId, String message) {
+        String msg = message != null ? message : "重跑失败";
+        if (msg.length() > 500) {
+            msg = msg.substring(0, 500);
+        }
+        if (redisTemplate != null) {
+            try {
+                redisTemplate.opsForValue().set(
+                        REGEN_ERROR_KEY_PREFIX + draftId, msg, REGEN_META_TTL_HOURS, TimeUnit.HOURS);
+                return;
+            } catch (Exception e) {
+                log.warn("写入重跑错误到 Redis 失败 draftId={}", draftId, e);
+            }
+        }
+        regenErrorLocal.put(draftId, msg);
+    }
+
+    private String readRegenError(Long draftId) {
+        if (redisTemplate != null) {
+            try {
+                String v = redisTemplate.opsForValue().get(REGEN_ERROR_KEY_PREFIX + draftId);
+                if (StringUtils.hasText(v)) {
+                    return v;
+                }
+            } catch (Exception ignored) {
+            }
+        }
+        return regenErrorLocal.get(draftId);
+    }
+
+    private void clearRegenError(Long draftId) {
+        regenErrorLocal.remove(draftId);
+        if (redisTemplate != null) {
+            try {
+                redisTemplate.delete(REGEN_ERROR_KEY_PREFIX + draftId);
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private void assertNotRegenerating(KnowledgeDraft draft) {
+        if (draft != null && DraftStatus.REGENERATING.name().equals(draft.getStatus())) {
+            throw new BusinessException("该文档正在 AI 重跑中，请稍候再试");
+        }
+    }
+
+    private void assertNoRegeneratingInWorkspace(Long workspaceId) {
+        Long cnt = draftMapper.selectCount(
+                new LambdaQueryWrapper<KnowledgeDraft>()
+                        .eq(KnowledgeDraft::getWorkspaceId, workspaceId)
+                        .eq(KnowledgeDraft::getStatus, DraftStatus.REGENERATING.name()));
+        if (cnt != null && cnt > 0) {
+            throw new BusinessException("仍有文档正在 AI 重跑中，请等待完成后再确认");
+        }
     }
 
     /**
@@ -1090,7 +1371,8 @@ public class DraftServiceImpl implements DraftService {
      */
     private static final List<String> NON_TERMINAL_DRAFT_STATUSES = List.of(
             DraftStatus.DRAFT.name(),
-            DraftStatus.EDITING.name()
+            DraftStatus.EDITING.name(),
+            DraftStatus.REGENERATING.name()
     );
 
     /**

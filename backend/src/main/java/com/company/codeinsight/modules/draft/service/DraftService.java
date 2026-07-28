@@ -128,6 +128,23 @@ public interface DraftService {
     List<DraftSourceReference> getSourceReferences(Long draftId);
 
     /**
+     * 单篇「重跑此篇」：异步接受。门禁通过后立刻将草稿置为 REGENERATING 并后台调 AI；
+     * 本方法在入队后立即返回（{@code accepted=true}），不阻塞 HTTP。
+     */
+    com.company.codeinsight.modules.draft.dto.RegenerateDraftResult regenerateDraft(
+            Long draftId, String author, String remark);
+
+    /**
+     * 查询单篇重跑进度（含失败原因，若有）。
+     */
+    com.company.codeinsight.modules.draft.dto.RegenerateDraftResult getRegenerateStatus(Long draftId);
+
+    /**
+     * 超时或进程重启后的 REGENERATING 草稿恢复：回退状态并记录失败原因。
+     */
+    void recoverStaleRegeneratingDraft(Long draftId, String reason);
+
+    /**
      * 复核工作区首页：列出所有「可预览」业务系统（至少有一条状态在 PENDING_REVIEW /
      * REVIEWING / CONFIRMED 的任务），并按状态汇总该系统下各阶段任务计数。
      * 用于前端下拉/角标展示。结果按 totalReviewableCount 倒序排列。

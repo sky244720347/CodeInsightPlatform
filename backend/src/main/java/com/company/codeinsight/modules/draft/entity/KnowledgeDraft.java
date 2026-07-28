@@ -53,7 +53,9 @@ public class KnowledgeDraft extends BaseEntity {
     /**
      * 草稿流转状态：与 ci_task.status 词汇解耦，仅描述文档自身生命周期。
      * 取值见 {@link com.company.codeinsight.modules.draft.enums.DraftStatus}：
-     * DRAFT-AI 已生成待处理, EDITING-复核人已编辑, CONFIRMED-已确认, REJECTED-已驳回, PUSHED-已推送, ARCHIVED-已归档。
+     * DRAFT-AI 已生成待处理, REGENERATING-单篇异步重跑中, EDITING-复核人已编辑,
+     * CONFIRMED-已确认, PUSHED-已推送, ARCHIVED-已归档。
+     * 流水线落库亦可能使用 AI_GENERATED / PENDING_REVIEW 字面值（与枚举并存，前端按字典展示）。
      * 注意：历史上曾与任务状态共用 PENDING_REVIEW / REVIEWING / REVISED 字面值；
      * 自 v0.2 起统一改用本枚举，存量数据由 schema.sql 末尾的幂等 UPDATE 完成迁移。
      */
@@ -76,4 +78,10 @@ public class KnowledgeDraft extends BaseEntity {
      */
     @TableField(value = "baseline_task_id", updateStrategy = FieldStrategy.ALWAYS)
     private Long baselineTaskId;
+
+    /**
+     * 功能节点 ID（f 前缀），与 {@code ci_method_function_binding.function_node_id} 对齐；
+     * function 粒度草稿生成时写入，单篇「重跑此篇」定位用。
+     */
+    private String functionNodeId;
 }

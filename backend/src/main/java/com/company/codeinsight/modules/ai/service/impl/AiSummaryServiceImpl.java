@@ -12,12 +12,17 @@ import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.modules.ai.mapper.AiCallRecordMapper;
 import com.company.codeinsight.modules.callchain.entity.MethodCall;
 import com.company.codeinsight.modules.callchain.mapper.MethodCallMapper;
+import com.company.codeinsight.modules.ai.model.FunctionSourceBundle;
 import com.company.codeinsight.modules.ai.service.AiSummaryService;
 import com.company.codeinsight.modules.ai.service.PipelineAiCaller;
+import com.company.codeinsight.modules.draft.dto.RegenerateDraftResult;
+import com.company.codeinsight.modules.draft.entity.DraftRevision;
 import com.company.codeinsight.modules.draft.entity.DraftWorkspace;
 import com.company.codeinsight.modules.draft.entity.KnowledgeDraft;
+import com.company.codeinsight.modules.draft.mapper.DraftRevisionMapper;
 import com.company.codeinsight.modules.draft.mapper.DraftWorkspaceMapper;
 import com.company.codeinsight.modules.draft.mapper.KnowledgeDraftMapper;
+import com.company.codeinsight.modules.task.enums.TaskStatus;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import com.company.codeinsight.modules.token.service.TokenAuditService;
@@ -91,6 +96,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     // 代码来源引用映射
     @Autowired
     private DraftSourceReferenceMapper draftSourceReferenceMapper;
+
+    @Autowired
+    private DraftRevisionMapper draftRevisionMapper;
 
     @Autowired
     private CodeRepositoryMapper repositoryMapper;
@@ -496,13 +504,13 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         Long taskId = task.getId();
         String funcName = functionDto.getFunctionName();
 
-        // 1. 收集该 Function 的源码
-        String source = collectFunctionSourceCode(taskId, functionDto, projectDir);
-        if (!StringUtils.hasText(source)) {
-            log.warn("Function {} BFS 无可达源码，跳过（详见上方 collectFunctionSourceCode 诊断）", funcName);
+        FunctionSourceBundle bundle = collectFunctionSourceBundle(taskId, functionDto, projectDir);
+        if (!bundle.hasPromptText()) {
+            log.warn("Function {} BFS 无可达源码，跳过（详见上方 collectFunctionSourceBundle 诊断）", funcName);
             execLog.log(taskId, "  [skip] function=" + funcName + " 原因=BFS/源码文件不可达");
             return false;
         }
+        String source = bundle.getPromptText();
 
         // 2. 渲染 prompt
         String promptTemplate = decompilePromptService.requireTaskPromptContent(task,
@@ -513,14 +521,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         if (promptTemplateLoader.hasUnresolvedModuleDocPlaceholders(promptInput)) {
             log.warn("Function {} prompt 有未替换占位符，回退占位文档", funcName);
             upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto,
-                    buildPlaceholderDoc(moduleDto), "PENDING_REVIEW", projectDir);
+                    buildPlaceholderDoc(moduleDto), "PENDING_REVIEW", bundle, projectDir);
             return true;
         }
-
-        // TODO(TEMP): 排查 Service 代码是否入 prompt，确认后删除本段日志
-        log.info("[TEMP_FULL_PROMPT] FUNCTION_DOC taskId={} target={} chars={} hasServiceHint={} prompt=\n{}",
-                taskId, label, promptInput.length(),
-                promptInput.contains("Service"), promptInput);
 
         // 3. 调 AI（可配置重试 + pipeline.log）
         AiSummaryService.AiCallMeta callMeta = new AiSummaryService.AiCallMeta();
@@ -558,7 +561,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             finalMarkdown = aiMarkdown;
             initialStatus = "AI_GENERATED";
         }
-        upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto, finalMarkdown, initialStatus, projectDir);
+        upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto, finalMarkdown, initialStatus, bundle, projectDir);
         return true;
     }
 
@@ -566,70 +569,59 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     private String collectFunctionSourceCode(Long taskId,
                                               com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
                                               File projectDir) {
+        return collectFunctionSourceBundle(taskId, fn, projectDir).getPromptText();
+    }
+
+    private FunctionSourceBundle collectFunctionSourceBundle(Long taskId,
+                                                             com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
+                                                             File projectDir) {
+        FunctionSourceBundle bundle = new FunctionSourceBundle();
+        if (fn != null) {
+            bundle.setFunctionNodeId(fn.getId());
+        }
         String funcName = fn != null ? fn.getFunctionName() : "?";
         String fnId = fn != null ? fn.getId() : null;
         boolean projectOk = projectDir != null && projectDir.isDirectory();
         if (!projectOk) {
-            log.warn("collectFunctionSourceCode: projectDir 不可用 taskId={} function={} id={} path={}",
+            log.warn("collectFunctionSourceBundle: projectDir 不可用 taskId={} function={} id={} path={}",
                     taskId, funcName, fnId, projectDir == null ? null : projectDir.getAbsolutePath());
         }
 
         Set<String> rootSignatures = loadFunctionRootSignatures(taskId, fn);
+        bundle.setRootSignatures(new LinkedHashSet<>(rootSignatures));
         ScanScope scope = (projectOk && taskId != null)
                 ? scanScopeResolver.resolveBestEffort(taskId, projectDir)
                 : null;
+
         if (rootSignatures.isEmpty()) {
-            // fallback：按 classPaths（兼容旧数据，且反向绑定表为空时不再做大杂烩 BFS）
             int classPathCount = fn != null && fn.getClassPaths() != null ? fn.getClassPaths().size() : 0;
-            log.warn("collectFunctionSourceCode: 无 BFS 根签名，走 classPaths 整文件回退 taskId={} function={} id={} classPaths={}",
+            log.warn("collectFunctionSourceBundle: 无 BFS 根签名，走 classPaths 整文件回退 taskId={} function={} id={} classPaths={}",
                     taskId, funcName, fnId, classPathCount);
-            if (fn != null && fn.getClassPaths() != null && !fn.getClassPaths().isEmpty()) {
-                StringBuilder sb = new StringBuilder();
-                int missLookup = 0;
-                int missFile = 0;
-                for (String cp : fn.getClassPaths()) {
-                    String classFilePath = lookupClassFilePath(taskId, cp);
-                    if (classFilePath == null) {
-                        missLookup++;
-                        continue;
-                    }
-                    if (scope != null && !scope.accepts(classFilePath)) {
-                        log.warn("collectFunctionSourceCode fallback 超出扫描范围，跳过: class={} path={}",
-                                cp, classFilePath);
-                        continue;
-                    }
-                    File f = new File(projectDir, classFilePath);
-                    if (!f.exists()) {
-                        missFile++;
-                        log.warn("collectFunctionSourceCode fallback 文件不存在: class={} rel={} abs={}",
-                                cp, classFilePath, f.getAbsolutePath());
-                        continue;
-                    }
-                    try {
-                        String content = Files.readString(f.toPath());
-                        String fq = resolveFqClassName(taskId, cp, projectDir, null);
-                        sb.append("// === Class: ").append(fq).append(" ===\n").append(content).append("\n\n");
-                    } catch (IOException e) {
-                        log.warn("collectFunctionSourceCode fallback 读文件失败: {} {}", f.getAbsolutePath(), e.getMessage());
-                    }
-                }
-                if (!StringUtils.hasText(sb.toString())) {
-                    log.warn("collectFunctionSourceCode fallback 仍为空 taskId={} function={} missLookup={} missFile={}",
-                            taskId, funcName, missLookup, missFile);
-                }
-                return sb.toString();
-            }
-            return "";
+            buildFallbackClassPathBundle(bundle, taskId, fn, projectDir, scope, funcName, fnId);
+            return bundle;
         }
 
         Set<String> reachableMethods = methodCallGraphService.resolveReachableMethods(taskId, rootSignatures);
+        List<FunctionSourceBundle.RefItem> refs = new ArrayList<>();
+        int bfsOrder = 0;
+        for (String callerSig : reachableMethods) {
+            FunctionSourceBundle.RefItem refItem = buildRefItemFromCallerSignature(
+                    taskId, callerSig, rootSignatures, scope, projectDir, bfsOrder++);
+            if (refItem != null) {
+                refs.add(refItem);
+            }
+        }
+        // 同一物理方法可能因「仅类型」与「类型+参数名」两种签名各占一条；按文件行号去重
+        refs = dedupeSourceRefs(refs);
+        bundle.setRefs(refs);
+
         Map<String, Set<String>> classToMethodSigs = groupByClass(reachableMethods);
-        log.info("collectFunctionSourceCode: taskId={} function={} id={} roots={} reachable={} classes={} projectDir={}",
+        log.info("collectFunctionSourceBundle: taskId={} function={} id={} roots={} reachable={} classes={} refs={} projectDir={}",
                 taskId, funcName, fnId, rootSignatures.size(), reachableMethods.size(),
-                classToMethodSigs.size(),
+                classToMethodSigs.size(), refs.size(),
                 projectDir == null ? null : projectDir.getAbsolutePath());
         if (log.isDebugEnabled()) {
-            log.debug("collectFunctionSourceCode roots sample={}", sampleForLog(rootSignatures, 5));
+            log.debug("collectFunctionSourceBundle roots sample={}", sampleForLog(rootSignatures, 5));
         }
 
         StringBuilder sb = new StringBuilder();
@@ -642,35 +634,270 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             String classFilePath = lookupClassFilePath(taskId, className);
             if (classFilePath == null) {
                 missLookup++;
-                log.warn("collectFunctionSourceCode: 无 filePath 映射 class={} taskId={}", className, taskId);
+                log.warn("collectFunctionSourceBundle: 无 filePath 映射 class={} taskId={}", className, taskId);
                 continue;
             }
             if (scope != null && !scope.accepts(classFilePath)) {
-                log.warn("collectFunctionSourceCode: 超出扫描范围，跳过 class={} path={}", className, classFilePath);
+                log.warn("collectFunctionSourceBundle: 超出扫描范围，跳过 class={} path={}", className, classFilePath);
                 continue;
             }
             File classFile = new File(projectDir, classFilePath);
             if (!classFile.exists()) {
                 missFile++;
-                log.warn("collectFunctionSourceCode: 源文件不存在 class={} rel={} abs={}",
+                log.warn("collectFunctionSourceBundle: 源文件不存在 class={} rel={} abs={}",
                         className, classFilePath, classFile.getAbsolutePath());
                 continue;
             }
             ClassMethodSnippet snippet = filterClassToMethods(classFile, methodSigs);
             if (snippet == null || !StringUtils.hasText(snippet.methodsBody)) {
                 missFilter++;
-                log.warn("collectFunctionSourceCode: 方法截取为空 class={} methods={}",
+                log.warn("collectFunctionSourceBundle: 方法截取为空 class={} methods={}",
                         className, sampleForLog(methodSigs, 8));
                 continue;
             }
             appendClassMethodSnippet(sb, taskId, className, projectDir, snippet);
         }
         if (!StringUtils.hasText(sb.toString())) {
-            log.warn("collectFunctionSourceCode: 组装结果为空 taskId={} function={} roots={} reachable={} missLookup={} missFile={} missFilter={}",
+            log.warn("collectFunctionSourceBundle: 组装结果为空 taskId={} function={} roots={} reachable={} missLookup={} missFile={} missFilter={}",
                     taskId, funcName, rootSignatures.size(), reachableMethods.size(),
                     missLookup, missFile, missFilter);
         }
-        return sb.toString();
+        bundle.setPromptText(sb.toString());
+        return bundle;
+    }
+
+    private void buildFallbackClassPathBundle(FunctionSourceBundle bundle, Long taskId,
+                                              com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
+                                              File projectDir, ScanScope scope,
+                                              String funcName, String fnId) {
+        if (fn == null || fn.getClassPaths() == null || fn.getClassPaths().isEmpty()) {
+            return;
+        }
+        StringBuilder sb = new StringBuilder();
+        List<FunctionSourceBundle.RefItem> refs = new ArrayList<>();
+        int missLookup = 0;
+        int missFile = 0;
+        int bfsOrder = 0;
+        for (String cp : fn.getClassPaths()) {
+            String classFilePath = lookupClassFilePath(taskId, cp);
+            if (classFilePath == null) {
+                missLookup++;
+                continue;
+            }
+            if (scope != null && !scope.accepts(classFilePath)) {
+                log.warn("collectFunctionSourceBundle fallback 超出扫描范围，跳过: class={} path={}",
+                        cp, classFilePath);
+                continue;
+            }
+            File f = new File(projectDir, classFilePath);
+            if (!f.exists()) {
+                missFile++;
+                log.warn("collectFunctionSourceBundle fallback 文件不存在: class={} rel={} abs={}",
+                        cp, classFilePath, f.getAbsolutePath());
+                continue;
+            }
+            try {
+                String content = Files.readString(f.toPath());
+                String fq = resolveFqClassName(taskId, cp, projectDir, null);
+                sb.append("// === Class: ").append(fq).append(" ===\n").append(content).append("\n\n");
+
+                FunctionSourceBundle.RefItem refItem = new FunctionSourceBundle.RefItem();
+                refItem.setFilePath(classFilePath);
+                refItem.setClassName(cp);
+                refItem.setMethodSignature(null);
+                refItem.setStartLine(1);
+                refItem.setEndLine(0);
+                refItem.setRefKind(FunctionSourceBundle.REF_KIND_ROOT);
+                refItem.setBfsOrder(bfsOrder++);
+                refs.add(refItem);
+            } catch (IOException e) {
+                log.warn("collectFunctionSourceBundle fallback 读文件失败: {} {}", f.getAbsolutePath(), e.getMessage());
+            }
+        }
+        if (!StringUtils.hasText(sb.toString())) {
+            log.warn("collectFunctionSourceBundle fallback 仍为空 taskId={} function={} missLookup={} missFile={}",
+                    taskId, funcName, missLookup, missFile);
+        }
+        bundle.setPromptText(sb.toString());
+        bundle.setRefs(refs);
+    }
+
+    private FunctionSourceBundle.RefItem buildRefItemFromCallerSignature(Long taskId, String callerSig,
+                                                                         Set<String> rootSignatures,
+                                                                         ScanScope scope, File projectDir,
+                                                                         int bfsOrder) {
+        int hashIdx = callerSig.indexOf('#');
+        if (hashIdx <= 0) {
+            return null;
+        }
+        String className = callerSig.substring(0, hashIdx);
+        String methodSig = callerSig.substring(hashIdx + 1);
+        String classFilePath = lookupClassFilePath(taskId, className);
+        if (classFilePath == null) {
+            return null;
+        }
+        if (scope != null && !scope.accepts(classFilePath)) {
+            return null;
+        }
+        File classFile = projectDir != null ? new File(projectDir, classFilePath) : null;
+        if (classFile == null || !classFile.exists()) {
+            return null;
+        }
+        int[] lines = resolveMethodLineRange(classFile, methodSig);
+        FunctionSourceBundle.RefItem refItem = new FunctionSourceBundle.RefItem();
+        refItem.setFilePath(classFilePath);
+        refItem.setClassName(className);
+        refItem.setMethodSignature(methodSig);
+        if (lines != null) {
+            refItem.setStartLine(lines[0]);
+            refItem.setEndLine(lines[1]);
+        } else {
+            refItem.setStartLine(1);
+            refItem.setEndLine(0);
+        }
+        refItem.setRefKind(isRootCallerSignature(callerSig, rootSignatures)
+                ? FunctionSourceBundle.REF_KIND_ROOT
+                : FunctionSourceBundle.REF_KIND_REACHABLE);
+        refItem.setBfsOrder(bfsOrder);
+        return refItem;
+    }
+
+    private static boolean isRootCallerSignature(String callerSig, Set<String> rootSignatures) {
+        if (!StringUtils.hasText(callerSig) || rootSignatures == null || rootSignatures.isEmpty()) {
+            return false;
+        }
+        String normalized = normalizeCallerSignature(callerSig);
+        for (String root : rootSignatures) {
+            if (callerSig.equals(root) || normalized.equals(normalizeCallerSignature(root))) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static String normalizeCallerSignature(String callerSig) {
+        if (!StringUtils.hasText(callerSig)) {
+            return callerSig;
+        }
+        int hashIdx = callerSig.indexOf('#');
+        if (hashIdx <= 0) {
+            return callerSig;
+        }
+        return stripPackage(callerSig.substring(0, hashIdx)) + callerSig.substring(hashIdx);
+    }
+
+    /**
+     * 代码来源去重：同一文件同一行区间只保留一条；无有效行号时按「短类名#规范化方法签名」去重。
+     * 冲突时优先保留 ROOT，其次保留带参数名的签名，并保留更早的 bfsOrder。
+     */
+    private static List<FunctionSourceBundle.RefItem> dedupeSourceRefs(List<FunctionSourceBundle.RefItem> refs) {
+        if (refs == null || refs.isEmpty()) {
+            return refs == null ? new ArrayList<>() : refs;
+        }
+        Map<String, FunctionSourceBundle.RefItem> byKey = new LinkedHashMap<>();
+        for (FunctionSourceBundle.RefItem item : refs) {
+            if (item == null || !StringUtils.hasText(item.getFilePath())) {
+                continue;
+            }
+            String key = refDedupeKey(item);
+            FunctionSourceBundle.RefItem existing = byKey.get(key);
+            if (existing == null) {
+                byKey.put(key, item);
+            } else {
+                byKey.put(key, preferSourceRef(existing, item));
+            }
+        }
+        List<FunctionSourceBundle.RefItem> out = new ArrayList<>(byKey.values());
+        for (int i = 0; i < out.size(); i++) {
+            out.get(i).setBfsOrder(i);
+        }
+        return out;
+    }
+
+    private static String refDedupeKey(FunctionSourceBundle.RefItem item) {
+        Integer start = item.getStartLine();
+        Integer end = item.getEndLine();
+        if (start != null && end != null && end > 0) {
+            return item.getFilePath() + "|" + start + "|" + end;
+        }
+        String classPart = stripPackage(item.getClassName());
+        String methodPart = normalizeMethodSignatureForDedupe(item.getMethodSignature());
+        return item.getFilePath() + "|" + classPart + "#" + methodPart;
+    }
+
+    /**
+     * {@code quote(Long productId, int quantity)} / {@code quote(Long, int)} → {@code quote(Long,int)}
+     */
+    private static String normalizeMethodSignatureForDedupe(String methodSig) {
+        if (!StringUtils.hasText(methodSig)) {
+            return "";
+        }
+        String s = methodSig.trim();
+        int paren = s.indexOf('(');
+        if (paren < 0) {
+            return s;
+        }
+        String name = s.substring(0, paren).trim();
+        int close = s.lastIndexOf(')');
+        String inside = close > paren ? s.substring(paren + 1, close) : "";
+        if (!StringUtils.hasText(inside)) {
+            return name + "()";
+        }
+        StringBuilder types = new StringBuilder();
+        for (String part : inside.split(",")) {
+            String token = part.trim();
+            if (!StringUtils.hasText(token)) {
+                continue;
+            }
+            // 去掉参数名：取最后一个空格前的类型（含泛型简单场景则整段作为类型）
+            int space = token.lastIndexOf(' ');
+            String type = space > 0 ? token.substring(0, space).trim() : token;
+            if (types.length() > 0) {
+                types.append(',');
+            }
+            types.append(type);
+        }
+        return name + "(" + types + ")";
+    }
+
+    private static FunctionSourceBundle.RefItem preferSourceRef(
+            FunctionSourceBundle.RefItem a, FunctionSourceBundle.RefItem b) {
+        boolean aRoot = FunctionSourceBundle.REF_KIND_ROOT.equals(a.getRefKind());
+        boolean bRoot = FunctionSourceBundle.REF_KIND_ROOT.equals(b.getRefKind());
+        if (aRoot != bRoot) {
+            return aRoot ? a : b;
+        }
+        int aNamed = methodSignatureParamNameScore(a.getMethodSignature());
+        int bNamed = methodSignatureParamNameScore(b.getMethodSignature());
+        if (aNamed != bNamed) {
+            return aNamed > bNamed ? a : b;
+        }
+        int aOrder = a.getBfsOrder();
+        int bOrder = b.getBfsOrder();
+        return aOrder <= bOrder ? a : b;
+    }
+
+    /** 带参数名的签名得分更高（如 {@code Long productId}） */
+    private static int methodSignatureParamNameScore(String methodSig) {
+        if (!StringUtils.hasText(methodSig)) {
+            return 0;
+        }
+        int paren = methodSig.indexOf('(');
+        int close = methodSig.lastIndexOf(')');
+        if (paren < 0 || close <= paren) {
+            return 0;
+        }
+        String inside = methodSig.substring(paren + 1, close).trim();
+        if (!StringUtils.hasText(inside)) {
+            return 0;
+        }
+        int score = 0;
+        for (String part : inside.split(",")) {
+            if (part.trim().contains(" ")) {
+                score++;
+            }
+        }
+        return score;
     }
 
     /**
@@ -1043,7 +1270,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                                       com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm,
                                       com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
                                       String markdown, String initialStatus,
-                                      File projectDir) {
+                                      FunctionSourceBundle bundle, File projectDir) {
         Long taskId = task.getId();
         String safeModule = m.getModuleName().replaceAll("[\\s/\\(\\)]", "_");
         String safeSub = sm.getSubModuleName().replaceAll("[\\s/\\(\\)]", "_");
@@ -1081,6 +1308,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             draft.setContentUri(contentUri);
             draft.setStatus(initialStatus);
             draft.setHash(hash);
+            draft.setFunctionNodeId(fn.getId());
             draft.setCreatedDate(LocalDateTime.now());
             draft.setUpdatedDate(LocalDateTime.now());
             knowledgeDraftMapper.insert(draft);
@@ -1091,11 +1319,16 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             draft.setContentUri(contentUri);
             draft.setHash(hash);
             draft.setStatus(initialStatus);          // AI 重生成 → 需重新复核
+            draft.setFunctionNodeId(fn.getId());
             draft.setBaselineTaskId(null);           // AI 重生成 → 不再是基线继承，标记为 modified（需 FieldStrategy.ALWAYS）
             draft.setUpdatedDate(LocalDateTime.now());
             knowledgeDraftMapper.updateById(draft);
         }
-        replaceDraftSourceReferencesForFunction(draft.getId(), taskId, fn, projectDir);
+        if (bundle != null && bundle.getRefs() != null && !bundle.getRefs().isEmpty()) {
+            replaceDraftSourceReferencesFromBundle(draft.getId(), bundle);
+        } else {
+            replaceDraftSourceReferencesForFunction(draft.getId(), taskId, fn, projectDir);
+        }
         log.info("Function draft: {} → {}", relativeDocPath, initialStatus);
     }
 
@@ -1136,11 +1369,6 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             upsertModuleDraft(task, ws, moduleDto, buildPlaceholderDoc(moduleDto), "PENDING_REVIEW", projectDir);
             return;
         }
-
-        // TODO(TEMP): 排查 Service 代码是否入 prompt，确认后删除本段日志
-        log.info("[TEMP_FULL_PROMPT] MODULE_DOC taskId={} module={} chars={} hasServiceHint={} prompt=\n{}",
-                task.getId(), moduleName, promptInput.length(),
-                promptInput.contains("Service"), promptInput);
 
         // 3. 调 AI（可配置重试 + pipeline.log）
         AiSummaryService.AiCallMeta callMeta = new AiSummaryService.AiCallMeta();
@@ -1556,6 +1784,149 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 new LambdaQueryWrapper<DraftSourceReference>().eq(DraftSourceReference::getDraftId, draftId)
         );
         insertDraftSourceReferences(draftId, taskId, fn, projectDir);
+    }
+
+    private void replaceDraftSourceReferencesFromBundle(Long draftId, FunctionSourceBundle bundle) {
+        draftSourceReferenceMapper.delete(
+                new LambdaQueryWrapper<DraftSourceReference>().eq(DraftSourceReference::getDraftId, draftId)
+        );
+        if (bundle == null || bundle.getRefs() == null || bundle.getRefs().isEmpty()) {
+            return;
+        }
+        for (FunctionSourceBundle.RefItem item : bundle.getRefs()) {
+            DraftSourceReference ref = new DraftSourceReference();
+            ref.setDraftId(draftId);
+            ref.setFilePath(item.getFilePath());
+            ref.setClassName(item.getClassName());
+            if (StringUtils.hasText(item.getMethodSignature())) {
+                ref.setMethodSignature(item.getMethodSignature().trim());
+            }
+            ref.setStartLine(item.getStartLine());
+            ref.setEndLine(item.getEndLine());
+            ref.setRefKind(item.getRefKind());
+            ref.setBfsOrder(item.getBfsOrder());
+            ref.setCreatedDate(LocalDateTime.now());
+            draftSourceReferenceMapper.insert(ref);
+        }
+    }
+
+    @Override
+    public RegenerateDraftResult regenerateFunctionDocument(Long draftId) {
+        if (draftId == null) {
+            throw new BusinessException("草稿 ID 不能为空");
+        }
+        KnowledgeDraft draft = knowledgeDraftMapper.selectById(draftId);
+        if (draft == null) {
+            throw new BusinessException("草稿不存在: " + draftId);
+        }
+        DraftWorkspace ws = draftWorkspaceMapper.selectById(draft.getWorkspaceId());
+        if (ws == null) {
+            throw new BusinessException("草稿工作区不存在");
+        }
+        DecompileTask task = decompileTaskMapper.selectById(ws.getTaskId());
+        if (task == null) {
+            throw new BusinessException("关联任务不存在");
+        }
+
+        String taskStatus = task.getStatus();
+        if (!TaskStatus.PENDING_REVIEW.name().equals(taskStatus)
+                && !TaskStatus.REVIEWING.name().equals(taskStatus)) {
+            throw new BusinessException("任务状态为 " + taskStatus + "，仅待复核/复核中可重跑单篇功能文档");
+        }
+
+        Long taskId = task.getId();
+        File projectDir = taskWorkspacePaths.taskProjectDir(taskId);
+        if (projectDir == null || !projectDir.isDirectory()) {
+            throw new BusinessException("源码工作区已回收或不可用，无法重跑（知识确认后源码已清理）");
+        }
+
+        com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy hierarchy =
+                moduleHierarchyService.loadByTaskId(taskId);
+        if (hierarchy == null || hierarchy.getModules() == null || hierarchy.getModules().isEmpty()) {
+            throw new BusinessException("模块层级为空，无法重跑功能文档");
+        }
+
+        FunctionHierarchyContext ctx = resolveFunctionHierarchyContext(draft, hierarchy);
+        boolean ok = generateFunctionDraft(task, ws, ctx.module(), ctx.subModule(), ctx.function(), hierarchy, projectDir);
+        if (!ok) {
+            throw new BusinessException("功能文档重跑失败：BFS 无可达源码或源码文件不可达");
+        }
+
+        KnowledgeDraft updated = knowledgeDraftMapper.selectById(draftId);
+        DraftRevision revision = new DraftRevision();
+        revision.setDraftId(draftId);
+        revision.setContentUri(updated.getContentUri());
+        revision.setAuthor("system");
+        revision.setRemark("AI 重跑");
+        revision.setCreatedDate(LocalDateTime.now());
+        draftRevisionMapper.insert(revision);
+
+        Long refCount = draftSourceReferenceMapper.selectCount(
+                new LambdaQueryWrapper<DraftSourceReference>().eq(DraftSourceReference::getDraftId, draftId));
+
+        RegenerateDraftResult result = new RegenerateDraftResult();
+        result.setDraftId(draftId);
+        result.setStatus(updated.getStatus());
+        result.setAccepted(false);
+        result.setContentUri(updated.getContentUri());
+        result.setFunctionNodeId(updated.getFunctionNodeId());
+        result.setReferenceCount(refCount != null ? refCount.intValue() : 0);
+        return result;
+    }
+
+    private record FunctionHierarchyContext(
+            com.company.codeinsight.modules.hierarchy.model.ModuleDto module,
+            com.company.codeinsight.modules.hierarchy.model.SubModuleDto subModule,
+            com.company.codeinsight.modules.hierarchy.model.FunctionDto function) {
+    }
+
+    private FunctionHierarchyContext resolveFunctionHierarchyContext(
+            KnowledgeDraft draft,
+            com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy hierarchy) {
+        String functionNodeId = draft.getFunctionNodeId();
+        if (StringUtils.hasText(functionNodeId)) {
+            for (com.company.codeinsight.modules.hierarchy.model.ModuleDto m : hierarchy.getModules().values()) {
+                for (com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm : m.getSubModules().values()) {
+                    for (com.company.codeinsight.modules.hierarchy.model.FunctionDto fn : sm.getFunctions().values()) {
+                        if (functionNodeId.equals(fn.getId())) {
+                            return new FunctionHierarchyContext(m, sm, fn);
+                        }
+                    }
+                }
+            }
+        }
+
+        String fullName = draft.getModuleName();
+        if (StringUtils.hasText(fullName)) {
+            String[] parts = fullName.split("\\s*/\\s*", 3);
+            if (parts.length == 3) {
+                String modName = parts[0].trim();
+                String subName = parts[1].trim();
+                String fnName = parts[2].trim();
+                for (com.company.codeinsight.modules.hierarchy.model.ModuleDto m : hierarchy.getModules().values()) {
+                    if (!modName.equals(m.getModuleName())) {
+                        continue;
+                    }
+                    for (com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm : m.getSubModules().values()) {
+                        if (!subName.equals(sm.getSubModuleName())) {
+                            continue;
+                        }
+                        for (com.company.codeinsight.modules.hierarchy.model.FunctionDto fn : sm.getFunctions().values()) {
+                            if (fnName.equals(fn.getFunctionName())) {
+                                if (!StringUtils.hasText(functionNodeId) && StringUtils.hasText(fn.getId())) {
+                                    draft.setFunctionNodeId(fn.getId());
+                                    draft.setUpdatedDate(LocalDateTime.now());
+                                    knowledgeDraftMapper.updateById(draft);
+                                }
+                                return new FunctionHierarchyContext(m, sm, fn);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        throw new BusinessException("无法定位功能节点，请确认草稿 moduleName 或 functionNodeId");
     }
 
     private void insertDraftSourceReferences(Long draftId, Long taskId,

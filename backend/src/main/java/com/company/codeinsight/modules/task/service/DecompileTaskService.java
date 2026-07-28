@@ -89,4 +89,15 @@ public interface DecompileTaskService extends IService<DecompileTask> {
     Page<DecompileTask> listQueuedTasks(int current, int size, Long systemId);
     Map<String, Object> getQueueSummary();
     void runPipeline(Long taskId);
+
+    /**
+     * 本 JVM 是否正在执行该任务流水线线程（taskCache 命中）。
+     * 用于孤儿判定时排除「本节点活任务」。
+     */
+    boolean isPipelineThreadActive(Long taskId);
+
+    /**
+     * 孤儿任务已被 CAS 接管后：按当前 status 从阶段边界重入（或早期阶段 FAILED→PENDING 重排队）。
+     */
+    void reclaimOrphanAndResume(Long taskId);
 }

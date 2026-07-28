@@ -470,6 +470,7 @@ CREATE TABLE IF NOT EXISTS ci_knowledge_draft (
     sort_order INT DEFAULT 0 NOT NULL,
     hash VARCHAR(100) NOT NULL,
     baseline_task_id BIGINT,
+    function_node_id VARCHAR(16),
     created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     is_deleted SMALLINT DEFAULT 0 NOT NULL,
@@ -478,6 +479,9 @@ CREATE TABLE IF NOT EXISTS ci_knowledge_draft (
 );
 
 CREATE INDEX IF NOT EXISTS idx_draft_workspace_baseline ON ci_knowledge_draft (workspace_id, baseline_task_id);
+CREATE INDEX IF NOT EXISTS idx_draft_function_node
+    ON ci_knowledge_draft (workspace_id, function_node_id)
+    WHERE function_node_id IS NOT NULL AND is_deleted = 0;
 
 CREATE INDEX IF NOT EXISTS idx_draft_workspace_id ON ci_knowledge_draft (workspace_id);
 CREATE INDEX IF NOT EXISTS idx_draft_status ON ci_knowledge_draft (status);
@@ -497,6 +501,8 @@ COMMENT ON COLUMN ci_knowledge_draft.content_uri IS '草稿内容在存储中的
 COMMENT ON COLUMN ci_knowledge_draft.status IS '草稿状态：DRAFT / EDITING / CONFIRMED / PUSHED / ARCHIVED（与 ci_task.status 解耦）';
 COMMENT ON COLUMN ci_knowledge_draft.sort_order IS '同级排序权重（升序）';
 COMMENT ON COLUMN ci_knowledge_draft.hash IS '草稿内容的 MD5 Hash';
+COMMENT ON COLUMN ci_knowledge_draft.function_node_id IS '功能节点 ID（f 前缀）；单篇重跑定位用';
+COMMENT ON COLUMN ci_knowledge_draft.baseline_task_id IS 'INCREMENTAL 基线任务 ID（NULL=本次生成）';
 
 -- ============================================================
 -- 11. ci_draft_revision — 草稿修订历史表
@@ -573,6 +579,8 @@ CREATE TABLE IF NOT EXISTS ci_draft_source_reference (
     end_line INT NOT NULL,
     class_name VARCHAR(512),
     method_signature VARCHAR(512),
+    ref_kind VARCHAR(16) DEFAULT 'REACHABLE' NOT NULL,
+    bfs_order INT DEFAULT 0 NOT NULL,
     created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP NOT NULL,
     is_deleted SMALLINT DEFAULT 0 NOT NULL,
@@ -594,6 +602,8 @@ COMMENT ON COLUMN ci_draft_source_reference.start_line IS '起始行号';
 COMMENT ON COLUMN ci_draft_source_reference.end_line IS '结束行号（0 表示整文件）';
 COMMENT ON COLUMN ci_draft_source_reference.class_name IS '入口类全限定名（可选，便于复核展示）';
 COMMENT ON COLUMN ci_draft_source_reference.method_signature IS '方法签名 methodName(ParamTypes)，不含返回类型（可选）';
+COMMENT ON COLUMN ci_draft_source_reference.ref_kind IS 'ROOT=binding 入口；REACHABLE=BFS 下游';
+COMMENT ON COLUMN ci_draft_source_reference.bfs_order IS 'BFS 发现序（从 0 起）';
 
 -- ============================================================
 -- 14. ci_knowledge_version — 知识版本表

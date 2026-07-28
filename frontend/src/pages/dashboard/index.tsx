@@ -23,7 +23,7 @@ import './index.css';
 const { Text } = Typography;
 
 // 运行中状态定义：这些状态下的任务被视为活跃中的分析任务
-const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'BASELINE_DOC_INHERIT', 'GENERATING_DOC'];
+const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'MODULE_HIERARCHY', 'MODULE_HIERARCHY_REVIEW', 'BASELINE_DOC_INHERIT', 'GENERATING_DOC'];
 
 // 分页查询空值兜底模板
 const emptyPage = <T,>(): PageResult<T> => ({
@@ -494,8 +494,8 @@ const Dashboard: React.FC = () => {
           </Card>
 
           <Card
-            title={panelTitle('Release Bus', '最近知识推送', <CloudUploadOutlined />)}
-            extra={<Link to="/push" className="ci-card-extra-link">推送中心 <RightOutlined style={{ fontSize: 10 }} /></Link>}
+            title={panelTitle('Release Bus', '最近推送记录', <CloudUploadOutlined />)}
+            extra={<Link to="/push" className="ci-card-extra-link">推送记录 <RightOutlined style={{ fontSize: 10 }} /></Link>}
             className="ci-dashboard-card"
           >
             <List

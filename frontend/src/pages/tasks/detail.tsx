@@ -15,6 +15,7 @@ import {
 import { useNavigate, useParams } from 'react-router-dom';
 import { getTask, getTaskExecutionLog, getTaskLogSummary, retryTask, retryBaselineInherit, startTask, terminateTask } from '../../api/task';
 import { getSystem } from '../../api/system';
+import { listVersions, type KnowledgeVersion } from '../../api/knowledge';
 import type { PipelineStageStat, System, Task, TaskLogSummary } from '../../types';
 import IncrementalImpactCard from './components/IncrementalImpactCard';
 
@@ -24,13 +25,34 @@ const buildDraftsHref = (task: Task) => `/drafts/${task.id}`;
 
 const { Text, Title } = Typography;
 
-// 包含 ENTRYPOINT_REVIEW / MODULE_HIERARCHY_REVIEW：处于人工复核断点时也要轮询状态
-const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'MODULE_HIERARCHY_REVIEW', 'BASELINE_DOC_INHERIT', 'GENERATING_DOC', 'PUSHING'];
+// 包含人工复核断点与发布段：处于这些状态时轮询详情
+const runningStatuses = [
+  'PENDING',
+  'PULLING_CODE',
+  'PARSING_CODE',
+  'ENTRYPOINT_REVIEW',
+  'AI_ANALYZING',
+  'MODULE_HIERARCHY',
+  'MODULE_HIERARCHY_REVIEW',
+  'BASELINE_DOC_INHERIT',
+  'GENERATING_DOC',
+  'CONFIRMED',
+  'PUSHING',
+];
 
-/** 执行流程 Steps 固定 8 步（含入口复核）；索引与 statusMeta.step 对齐 */
+/**
+ * 执行流程 Steps 索引（按「含基线复制」的完整链路编号；全量任务展示时会去掉基线步并前移）。
+ * 排队(0) → 拉取(1) → 解析(2) → 入口复核(3) → AI(4) → 层级复核(5)
+ * → 基线复制(6) → 生成文档(7) → 知识复核(8) → 建版(9) → NAS推送(10) → 完成(11)
+ */
 const FLOW_STEP_ENTRY_REVIEW = 3;
+const FLOW_STEP_BASELINE = 6;
+const FLOW_STEP_DOC_GEN = 7;
+const FLOW_STEP_KNOWLEDGE_REVIEW = 8;
+const FLOW_STEP_CREATE_VERSION = 9;
+const FLOW_STEP_PUSH = 10;
+const FLOW_STEP_DONE = 11;
 
-// 任务执行管道阶段步骤索引与展示元数据配置说明
 const statusMeta: Record<string, { color: string; label: string; step: number }> = {
   DRAFT: { color: 'default', label: '草稿', step: -1 },
   PENDING: { color: 'blue', label: '排队中', step: 0 },
@@ -40,13 +62,13 @@ const statusMeta: Record<string, { color: string; label: string; step: number }>
   AI_ANALYZING: { color: 'orange', label: 'AI 分析中', step: 4 },
   MODULE_HIERARCHY: { color: 'gold', label: '模块层级提炼', step: 4 },
   MODULE_HIERARCHY_REVIEW: { color: 'geekblue', label: '模块层级复核', step: 5 },
-  BASELINE_DOC_INHERIT: { color: 'cyan', label: '基线文档继承', step: 6 },
-  GENERATING_DOC: { color: 'gold', label: '生成文档', step: 7 },
-  PENDING_REVIEW: { color: 'magenta', label: '待复核', step: 8 },
-  REVIEWING: { color: 'geekblue', label: '复核中', step: 8 },
-  CONFIRMED: { color: 'green', label: '已确认', step: 8 },
-  PUSHING: { color: 'purple', label: '推送中', step: 8 },
-  PUSHED: { color: 'green', label: '已推送', step: 8 },
+  BASELINE_DOC_INHERIT: { color: 'cyan', label: '基线文档继承', step: FLOW_STEP_BASELINE },
+  GENERATING_DOC: { color: 'gold', label: '生成文档', step: FLOW_STEP_DOC_GEN },
+  PENDING_REVIEW: { color: 'magenta', label: '知识复核', step: FLOW_STEP_KNOWLEDGE_REVIEW },
+  REVIEWING: { color: 'geekblue', label: '知识复核中', step: FLOW_STEP_KNOWLEDGE_REVIEW },
+  CONFIRMED: { color: 'green', label: '已建版', step: FLOW_STEP_CREATE_VERSION },
+  PUSHING: { color: 'purple', label: '推送中', step: FLOW_STEP_PUSH },
+  PUSHED: { color: 'green', label: '已完成', step: FLOW_STEP_DONE },
   /** @deprecated 历史任务可能卡在此状态 */
   SPLITTING_TASK: { color: 'purple', label: '任务切片（已废弃）', step: 2 },
   FAILED: { color: 'red', label: '失败', step: -1 },
@@ -77,6 +99,8 @@ const TaskDetail: React.FC = () => {
   const [execLogContent, setExecLogContent] = useState('');
   const [logLoading, setLogLoading] = useState(false);
   const prevTaskStatusRef = useRef<string | null>(null);
+  /** 本任务关联的知识版本（建版/推送步展示 versionNum） */
+  const [taskVersion, setTaskVersion] = useState<KnowledgeVersion | null>(null);
 
   const clearExecutionLogs = useCallback(() => {
     setSummary(null);
@@ -164,6 +188,31 @@ const TaskDetail: React.FC = () => {
   useEffect(() => {
     fetchTaskDetails();
   }, [fetchTaskDetails]);
+
+  // 建版及之后：拉取本任务知识版本号，挂在「建版」步描述上
+  useEffect(() => {
+    if (!task?.repositoryId || !taskId) {
+      setTaskVersion(null);
+      return;
+    }
+    if (!['CONFIRMED', 'PUSHING', 'PUSHED'].includes(task.status)) {
+      setTaskVersion(null);
+      return;
+    }
+    let cancelled = false;
+    listVersions({ current: 1, size: 50, repositoryId: task.repositoryId, systemId: task.systemId })
+      .then((page) => {
+        if (cancelled) return;
+        const match = (page?.records ?? []).find((v) => v.taskId === taskId);
+        setTaskVersion(match ?? null);
+      })
+      .catch(() => {
+        if (!cancelled) setTaskVersion(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [task?.repositoryId, task?.systemId, task?.status, taskId]);
 
   /**
    * 启动任务轮询机制
@@ -283,29 +332,96 @@ const timelineItem = (s: PipelineStageStat) => {
     );
   }
 
-  /** undefined 时按后端默认 TRUE：启用入口复核 */
+  /** undefined 时按后端默认 TRUE：启用入口复核 / 知识复核 */
   const entryReviewEnabled = task.requireEntrypointReview !== false;
+  const knowledgeReviewEnabled = task.requireKnowledgeReview !== false;
   const isIncremental = task.type === 'INCREMENTAL';
   const flowCurrent = meta.step < 0 ? 0 : meta.step;
   const entryReviewSkipped = !entryReviewEnabled && flowCurrent > FLOW_STEP_ENTRY_REVIEW;
-  // 全量任务不展示「基线复制」；statusMeta 里 GENERATING_DOC=7 / 复核=8 含该步占位，需把 current 前移 1
-  const flowCurrentAdjusted =
-    !isIncremental && flowCurrent >= 6 ? flowCurrent - 1 : flowCurrent;
-  const flowStepItems = [
-    { title: '排队' },
-    { title: '拉取代码' },
-    { title: '静态解析' },
-    {
-      title: '入口复核',
+  const knowledgeReviewSkipped = !knowledgeReviewEnabled && flowCurrent > FLOW_STEP_KNOWLEDGE_REVIEW;
+
+  // 展示序号：全量任务去掉「基线复制」后，后续步骤整体前移 1
+  const toDisplayIndex = (flowStep: number) =>
+    !isIncremental && flowStep > FLOW_STEP_BASELINE ? flowStep - 1 : flowStep;
+  const displayCurrent =
+    meta.step < 0
+      ? (task.status === 'FAILED' ? 0 : -1)
+      : toDisplayIndex(
+          !isIncremental && flowCurrent === FLOW_STEP_BASELINE
+            ? FLOW_STEP_DOC_GEN
+            : flowCurrent,
+        );
+
+  type StepItem = {
+    title: string;
+    description?: string;
+    status?: 'finish' | 'wait' | 'process' | 'error';
+    icon?: React.ReactNode;
+  };
+
+  const resolveStatus = (displayIndex: number, forced?: StepItem['status']): StepItem['status'] => {
+    if (forced) return forced;
+    if (task.status === 'PUSHED') return 'finish';
+    if (displayCurrent < 0) return 'wait';
+    if (task.status === 'FAILED' && displayIndex === displayCurrent) return 'error';
+    if (displayIndex < displayCurrent) return 'finish';
+    if (displayIndex === displayCurrent) return 'process';
+    return 'wait';
+  };
+
+  const makeItem = (
+    title: string,
+    displayIndex: number,
+    opts?: { forced?: StepItem['status']; description?: string },
+  ): StepItem => {
+    const status = resolveStatus(displayIndex, opts?.forced);
+    return {
+      title,
+      description: opts?.description,
+      status,
+      // 连续编号跨两行；完成态交给 Ant Design 显示勾选
+      icon: status === 'finish' || status === 'error' ? undefined : displayIndex + 1,
+    };
+  };
+
+  // 上排固定 6：全量 6+5，增量含基线 6+6
+  const allStepItems: StepItem[] = [
+    makeItem('排队', toDisplayIndex(0)),
+    makeItem('拉取代码', toDisplayIndex(1)),
+    makeItem('静态解析', toDisplayIndex(2)),
+    makeItem('入口复核', toDisplayIndex(FLOW_STEP_ENTRY_REVIEW), {
+      forced: entryReviewSkipped ? 'finish' : !entryReviewEnabled ? 'wait' : undefined,
       description: entryReviewEnabled ? undefined : (entryReviewSkipped ? '已跳过' : '未启用'),
-      status: (entryReviewSkipped ? 'finish' : !entryReviewEnabled ? 'wait' : undefined) as 'finish' | 'wait' | undefined,
-    },
-    { title: 'AI 分析' },
-    { title: '模块层级复核' },
-    ...(isIncremental ? [{ title: '基线复制' }] : []),
-    { title: '生成文档' },
-    { title: '复核' },
+    }),
+    makeItem('AI 分析', toDisplayIndex(4)),
+    makeItem('模块层级复核', toDisplayIndex(5)),
+    ...(isIncremental ? [makeItem('基线复制', toDisplayIndex(FLOW_STEP_BASELINE))] : []),
+    makeItem('生成文档', toDisplayIndex(FLOW_STEP_DOC_GEN)),
+    makeItem('知识复核', toDisplayIndex(FLOW_STEP_KNOWLEDGE_REVIEW), {
+      forced: knowledgeReviewSkipped ? 'finish' : !knowledgeReviewEnabled ? 'wait' : undefined,
+      description: knowledgeReviewEnabled
+        ? undefined
+        : (knowledgeReviewSkipped ? '已跳过' : '未启用'),
+    }),
+    makeItem('建版', toDisplayIndex(FLOW_STEP_CREATE_VERSION), {
+      description: taskVersion?.versionNum,
+    }),
+    makeItem('NAS推送', toDisplayIndex(FLOW_STEP_PUSH), {
+      description:
+        task.status === 'PUSHED' ? (taskVersion?.pushMethod || 'NAS') : undefined,
+    }),
+    makeItem('完成', toDisplayIndex(FLOW_STEP_DONE)),
   ];
+
+  // 固定上排 6 个：全量 6+5，增量（含基线）6+6
+  const row1Count = 6;
+  const row1Items = allStepItems.slice(0, row1Count);
+  const row2Items = allStepItems.slice(row1Count);
+  // 两排各自的 current：未进入该排时用 -1
+  const row1Current = displayCurrent < 0 ? -1 : Math.min(displayCurrent, row1Count - 1);
+  const row2Current =
+    displayCurrent < row1Count ? -1 : Math.min(displayCurrent - row1Count, row2Items.length - 1);
+  const row2InboundReady = displayCurrent >= row1Count - 1 || task.status === 'PUSHED';
 
   return (
     <div className="ci-page ci-task-detail-page">
@@ -376,14 +492,24 @@ const timelineItem = (s: PipelineStageStat) => {
         </div>
       </Card>
 
-      {/* 任务管道当前阶段可视化 Steps 指引 */}
-      <Card title="执行流程状态">
-        <Steps
-          size="small"
-          current={flowCurrentAdjusted}
-          status={task.status === 'FAILED' ? 'error' : 'process'}
-          items={flowStepItems}
-        />
+      {/* 执行流程：上排 6 节点；下排首节点双倍宽以容纳等长导入线，整行拉满右对齐 */}
+      <Card title="执行流程状态" className="ci-task-flow-card" styles={{ body: { padding: '10px 16px 8px' } }}>
+        <div className="ci-task-flow-rows">
+          <Steps
+            size="small"
+            current={row1Current}
+            items={row1Items}
+            className="ci-task-flow-row"
+          />
+          <Steps
+            size="small"
+            current={row2Current}
+            items={row2Items}
+            className={`ci-task-flow-row ci-task-flow-row-inbound${
+              row2InboundReady ? ' ci-task-flow-inbound-ready' : ''
+            }`}
+          />
+        </div>
       </Card>
 
       {/* 入口复核提示：跳转到入口复核详情页 */}

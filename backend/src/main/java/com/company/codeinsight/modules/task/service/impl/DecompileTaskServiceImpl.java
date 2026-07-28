@@ -41,6 +41,7 @@ import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.enums.TaskStatus;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import com.company.codeinsight.modules.task.service.DecompileTaskService;
+import com.company.codeinsight.modules.task.service.TaskDiskCleanupService;
 import com.company.codeinsight.modules.task.service.TaskStateMachineService;
 import com.company.codeinsight.modules.task.support.TaskExecutionDuration;
 import lombok.extern.slf4j.Slf4j;
@@ -215,10 +216,19 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     private ClusterInstanceId clusterInstanceId;
 
     @Autowired
+    private com.company.codeinsight.modules.task.service.TaskQueueClaimService taskQueueClaimService;
+
+    @Autowired
     private TaskWorkspacePaths taskWorkspacePaths;
 
     @Autowired
     private EnvStorageResolver storageResolver;
+
+    @Autowired
+    private TaskDiskCleanupService taskDiskCleanupService;
+
+    @Autowired
+    private com.company.codeinsight.modules.knowledge.service.KnowledgePublishFacade knowledgePublishFacade;
 
     /**
      * 分页获取任务列表
@@ -383,6 +393,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         task.setRequireHierarchyReview(requireHierarchyReview == null ? Boolean.TRUE : requireHierarchyReview);
         // 默认开启知识入口复核断点，调用方显式传 false 才跳过
         task.setRequireEntrypointReview(requireEntrypointReview == null ? Boolean.TRUE : requireEntrypointReview);
+        // 知识复核断点：null → TRUE（与库默认一致）；下发页显式传 false 跳过
+        task.setRequireKnowledgeReview(Boolean.TRUE);
 
         this.save(task);
         return task;
@@ -440,6 +452,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         task.setEntryScanConfig(buildTaskEntryScanSnapshot(repositoryId, entryScanConfig));
         task.setRequireHierarchyReview(requireHierarchyReview == null ? Boolean.TRUE : requireHierarchyReview);
         task.setRequireEntrypointReview(requireEntrypointReview == null ? Boolean.TRUE : requireEntrypointReview);
+        task.setRequireKnowledgeReview(Boolean.TRUE);
 
         this.save(task);
         return task;
@@ -829,10 +842,10 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                     execLog.log(id, ">>> GENERATING_DOC — 生成文档");
                     stateMachineService.transitTo(id, TaskStatus.GENERATING_DOC, null);
                     aiSummaryService.generateDraftDocument(id, promptContent, incrementalCtx, impact);
-                    stateMachineService.transitTo(id, TaskStatus.PENDING_REVIEW, null);
+                    finishAfterDocGenerated(id);
                 }
 
-                execLog.log(id, "<<< 模块层级复核后续跑完成 → PENDING_REVIEW");
+                execLog.log(id, "<<< 模块层级复核后续跑完成");
             } catch (Exception e) {
                 log.error("Resume after hierarchy review failed for task " + id, e);
                 execLog.logException(id, "模块层级复核后续跑异常", e);
@@ -908,8 +921,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                         incrementalCtx, impact);
                 int pruned = draftWorkspacePruneService.pruneStaleDrafts(id, ws.getId());
                 execLog.log(id, "  裁剪失效草稿 " + pruned + " 份");
-                stateMachineService.transitTo(id, TaskStatus.PENDING_REVIEW, null);
-                execLog.log(id, "<<< 重新继承基线文档完成 → PENDING_REVIEW");
+                finishAfterDocGenerated(id);
+                execLog.log(id, "<<< 重新继承基线文档完成");
             } catch (Exception e) {
                 log.error("Retry baseline inherit failed for task " + id, e);
                 execLog.logException(id, "重新继承基线文档异常", e);
@@ -1254,7 +1267,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                         decompilePromptService.requireTaskPromptContent(task,
                                 com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
                         incrementalCtx, impact);
-                stateMachineService.transitTo(taskId, TaskStatus.PENDING_REVIEW, null);
+                finishAfterDocGenerated(taskId);
                 execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
             }
             // AI 阶段终态汇总：从 ci_ai_call_record 统计本次任务的成功/失败次数
@@ -1267,7 +1280,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                             .eq(com.company.codeinsight.modules.ai.entity.AiCallRecord::getTaskId, taskId)
                             .eq(com.company.codeinsight.modules.ai.entity.AiCallRecord::getIsSuccess, 0));
             execLog.log(taskId, "<<< AI_ANALYZING 完成 (成功 " + aiOk + " 失败 " + aiFail + ", 耗时 " + (System.currentTimeMillis() - aiT0) + "ms)");
-            execLog.log(taskId, "<<< 流水线完成 → PENDING_REVIEW");
+            execLog.log(taskId, "<<< 流水线文档阶段完成");
         } else {
             stateMachineService.transitTo(taskId, TaskStatus.MODULE_HIERARCHY_REVIEW, null);
             execLog.log(taskId, "<<< 暂停 — 等待人工复核模块层级");
@@ -1302,8 +1315,25 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         // ③ 按当前 hierarchy 裁掉失效草稿（含已删功能的继承文档），使 workspace = 最终发布集
         int pruned = draftWorkspacePruneService.pruneStaleDrafts(taskId, ws.getId());
         execLog.log(taskId, "  裁剪失效草稿 " + pruned + " 份");
-        stateMachineService.transitTo(taskId, TaskStatus.PENDING_REVIEW, null);
+        finishAfterDocGenerated(taskId);
         execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
+    }
+
+    /**
+     * 文档生成结束后：按 requireKnowledgeReview 进入人工复核，或跳过并自动建版推送。
+     */
+    private void finishAfterDocGenerated(Long taskId) {
+        DecompileTask task = this.getById(taskId);
+        if (task == null) {
+            task = taskCache.get(taskId);
+        }
+        if (task != null && Boolean.FALSE.equals(task.getRequireKnowledgeReview())) {
+            execLog.log(taskId, "<<< 跳过知识复核 → 自动确认并 NAS 发布");
+            knowledgePublishFacade.autoConfirmAndPublish(taskId);
+            return;
+        }
+        stateMachineService.transitTo(taskId, TaskStatus.PENDING_REVIEW, null);
+        execLog.log(taskId, "<<< 流水线完成 → PENDING_REVIEW（等待知识复核）");
     }
 
     /**
@@ -1410,8 +1440,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 execLog.log(taskId, "  裁剪失效草稿 " + pruned + " 份");
             }
         }
-        stateMachineService.transitTo(taskId, TaskStatus.PENDING_REVIEW, null);
-        execLog.log(taskId, "<<< 纠错流水线完成 → PENDING_REVIEW");
+        finishAfterDocGenerated(taskId);
+        execLog.log(taskId, "<<< 纠错流水线文档阶段完成");
     }
 
     /**
@@ -1419,11 +1449,248 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
      * 将代码扫描、切片、AI分析和归纳归整串联在一起的无阻塞后台流水线。
      */
     @Override
+    public boolean isPipelineThreadActive(Long taskId) {
+        return taskId != null && taskCache.containsKey(taskId);
+    }
+
+    /**
+     * 孤儿任务阶段重入。调用前须已 CAS 接管 claimed_by。
+     * <ul>
+     *   <li>PULLING_CODE / PARSING_CODE → FAILED（清产物）→ PENDING，由调度器重跑整条流水线</li>
+     *   <li>AI_ANALYZING / MODULE_HIERARCHY → 重建上下文后 continueAfterEntrypointReview</li>
+     *   <li>BASELINE_DOC_INHERIT / GENERATING_DOC → 重建上下文后走继承+生成或仅生成</li>
+     *   <li>PUSHING → FAILED，提示手工重推</li>
+     * </ul>
+     */
+    @Override
+    public void reclaimOrphanAndResume(Long taskId) {
+        DecompileTask task = this.getById(taskId);
+        if (task == null) {
+            throw new BusinessException("任务不存在");
+        }
+        TaskStatus status;
+        try {
+            status = TaskStatus.valueOf(task.getStatus());
+        } catch (Exception e) {
+            throw new BusinessException("任务状态无法识别: " + task.getStatus());
+        }
+        execLog.log(taskId, ">>> 孤儿接管 — 当前状态=" + status.name()
+                + " claimedBy=" + task.getClaimedBy());
+
+        switch (status) {
+            case PULLING_CODE, PARSING_CODE -> reclaimEarlyStageToPending(task);
+            case AI_ANALYZING, MODULE_HIERARCHY -> reclaimFromAiAnalyzing(task);
+            case BASELINE_DOC_INHERIT, GENERATING_DOC -> reclaimFromDocStage(task);
+            case PUSHING -> {
+                stateMachineService.transitTo(taskId, TaskStatus.FAILED,
+                        "推送过程中节点中断，请在推送页对 DRAFT/FAILED 版本重新入队");
+                taskQueueClaimService.clearReservation(taskId);
+            }
+            default -> throw new BusinessException("状态 " + status + " 不支持孤儿接管");
+        }
+    }
+
+    private void reclaimEarlyStageToPending(DecompileTask task) {
+        Long id = task.getId();
+        stateMachineService.transitTo(id, TaskStatus.FAILED, "节点丢失，自动接管后重新排队");
+        DecompileTask fresh = this.getById(id);
+        if (fresh == null) {
+            return;
+        }
+        fresh.setErrorReason(null);
+        TaskExecutionDuration.resetTiming(fresh);
+        fresh.setClaimedBy(null);
+        fresh.setClaimedAt(null);
+        fresh.setLeaseUntil(null);
+        fresh.setProgress(0);
+        this.updateById(fresh);
+        purgeTaskArtifacts(id);
+        pipelineContextCache.remove(id);
+        impactCache.remove(id);
+        taskCache.remove(id);
+        stateMachineService.transitTo(fresh, TaskStatus.PENDING, null);
+        execLog.log(id, "<<< 孤儿接管 — 已重新入队 PENDING，等待调度器拉起");
+    }
+
+    private void reclaimFromAiAnalyzing(DecompileTask task) {
+        Long id = task.getId();
+        File projectDir = taskWorkspacePaths.taskProjectDir(id);
+        if (projectDir == null || !projectDir.isDirectory()) {
+            stateMachineService.transitTo(id, TaskStatus.FAILED,
+                    "孤儿接管失败：工作目录不存在，无法从 AI 阶段续跑");
+            taskQueueClaimService.clearReservation(id);
+            return;
+        }
+        Long systemId = task.getSystemId();
+        if (!taskConcurrencyLimiter.tryAcquire(systemId, id)) {
+            // 许可暂满：清认领回到可再次扫描，避免永久占着 claimed_by
+            taskQueueClaimService.clearReservation(id);
+            execLog.log(id, "孤儿接管暂缓 — 任务并发许可不足，稍后重试");
+            return;
+        }
+        taskCache.put(id, task);
+        taskQueueClaimService.renewLease(id);
+        CompletableFuture.runAsync(() -> {
+            try {
+                PipelineContext pctx = pipelineContextCache.get(id);
+                if (pctx == null) {
+                    pctx = rebuildPipelineContext(task);
+                    if (pctx != null) {
+                        pipelineContextCache.put(id, pctx);
+                    }
+                }
+                if (pctx == null) {
+                    throw new BusinessException("无法重建流水线上下文");
+                }
+                execLog.log(id, ">>> 孤儿接管 — 从 AI_ANALYZING / MODULE_HIERARCHY 重入");
+                DecompileTask latest = this.getById(id);
+                if (latest == null) {
+                    latest = task;
+                }
+                // 拉回 AI_ANALYZING 以便 continueAfterEntrypointReview 从头走归纳
+                if (!TaskStatus.AI_ANALYZING.name().equals(latest.getStatus())) {
+                    // MODULE_HIERARCHY → 不允许直接回 AI；先 FAILED 再不行。
+                    // 状态机：MODULE_HIERARCHY → GENERATING_DOC 或 REVIEW，不能回 AI。
+                    // 故对 MODULE_HIERARCHY 直接从层级重跑：先 transit 保持，continue 内部会再 AI→MODULE。
+                    // continueAfterEntrypointReview 若当前不是 AI_ANALYZING 会 transitTo AI_ANALYZING。
+                    // 但从 MODULE_HIERARCHY → AI_ANALYZING 状态机禁止！
+                    // 解决：FAILED 再不行… 用强制 update 状态？不优雅。
+                    // 更好：MODULE_HIERARCHY 卡住时从 MODULE_HIERARCHY 重跑 buildAndPersist，再进后续。
+                    if (TaskStatus.MODULE_HIERARCHY.name().equals(latest.getStatus())) {
+                        reclaimModuleHierarchyOnly(id, latest, pctx);
+                        return;
+                    }
+                }
+                continueAfterEntrypointReview(id, latest, pctx.projectDir(), pctx.ctx(), pctx);
+            } catch (Exception e) {
+                execLog.logException(id, "孤儿接管(AI阶段)异常", e);
+                try {
+                    stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
+                } catch (Exception ex) {
+                    log.error("孤儿接管失败状态流转异常", ex);
+                }
+            } finally {
+                taskCache.remove(id);
+                pipelineContextCache.remove(id);
+                impactCache.remove(id);
+                taskConcurrencyLimiter.release(systemId, id);
+            }
+        });
+    }
+
+    private void reclaimModuleHierarchyOnly(Long id, DecompileTask task, PipelineContext pctx) {
+        execLog.log(id, ">>> 孤儿接管 — 从 MODULE_HIERARCHY 重入");
+        com.company.codeinsight.modules.callchain.model.IncrementalImpact impact = impactCache.get(id);
+        if (impact == null) {
+            impact = analyzeIncrementalImpact(id, pctx.projectDir(), pctx.ctx(), pctx);
+            if (impact != null) {
+                impactCache.put(id, impact);
+            }
+        }
+        moduleHierarchyService.buildAndPersist(id, pctx.projectDir(), pctx.ctx(), impact);
+        if (!Boolean.TRUE.equals(task.getRequireHierarchyReview())) {
+            if ("INCREMENTAL".equals(task.getType())) {
+                runBaselineDocInheritAndGenerateDoc(id, task, pctx.ctx(), impact);
+            } else {
+                stateMachineService.transitTo(id, TaskStatus.GENERATING_DOC, null);
+                aiSummaryService.generateDraftDocument(id,
+                        decompilePromptService.requireTaskPromptContent(task,
+                                com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
+                        pctx.ctx(), impact);
+                finishAfterDocGenerated(id);
+            }
+        } else {
+            stateMachineService.transitTo(id, TaskStatus.MODULE_HIERARCHY_REVIEW, null);
+            execLog.log(id, "<<< 暂停 — 等待人工复核模块层级");
+        }
+    }
+
+    private void reclaimFromDocStage(DecompileTask task) {
+        Long id = task.getId();
+        File projectDir = taskWorkspacePaths.taskProjectDir(id);
+        if (projectDir == null || !projectDir.isDirectory()) {
+            // INCREMENTAL 文档阶段有时仍可用（基线继承不依赖本地源码？）但 generate 需要源码
+            stateMachineService.transitTo(id, TaskStatus.FAILED,
+                    "孤儿接管失败：工作目录不存在，无法从文档阶段续跑");
+            taskQueueClaimService.clearReservation(id);
+            return;
+        }
+        Long systemId = task.getSystemId();
+        if (!taskConcurrencyLimiter.tryAcquire(systemId, id)) {
+            taskQueueClaimService.clearReservation(id);
+            execLog.log(id, "孤儿接管暂缓 — 任务并发许可不足，稍后重试");
+            return;
+        }
+        taskCache.put(id, task);
+        taskQueueClaimService.renewLease(id);
+        final String stage = task.getStatus();
+        CompletableFuture.runAsync(() -> {
+            try {
+                PipelineContext pctx = pipelineContextCache.get(id);
+                if (pctx == null) {
+                    pctx = rebuildPipelineContext(task);
+                    if (pctx != null) {
+                        pipelineContextCache.put(id, pctx);
+                    }
+                }
+                if (pctx == null) {
+                    throw new BusinessException("无法重建流水线上下文");
+                }
+                com.company.codeinsight.modules.callchain.model.IncrementalImpact impact = impactCache.get(id);
+                if (impact == null && "INCREMENTAL".equals(task.getType())) {
+                    impact = analyzeIncrementalImpact(id, pctx.projectDir(), pctx.ctx(), pctx);
+                    if (impact != null) {
+                        impactCache.put(id, impact);
+                    }
+                }
+                DecompileTask latest = this.getById(id);
+                if (latest == null) {
+                    latest = task;
+                }
+                if (TaskStatus.BASELINE_DOC_INHERIT.name().equals(stage)
+                        || ("INCREMENTAL".equals(latest.getType())
+                        && TaskStatus.GENERATING_DOC.name().equals(stage))) {
+                    execLog.log(id, ">>> 孤儿接管 — 从 BASELINE_DOC_INHERIT / GENERATING_DOC 重入");
+                    runBaselineDocInheritAndGenerateDoc(id, latest, pctx.ctx(), impact);
+                } else {
+                    execLog.log(id, ">>> 孤儿接管 — 从 GENERATING_DOC 重入");
+                    if (!TaskStatus.GENERATING_DOC.name().equals(latest.getStatus())) {
+                        stateMachineService.transitTo(id, TaskStatus.GENERATING_DOC, null);
+                    }
+                    aiSummaryService.generateDraftDocument(id,
+                            decompilePromptService.requireTaskPromptContent(latest,
+                                    com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
+                            pctx.ctx(), impact);
+                    finishAfterDocGenerated(id);
+                }
+            } catch (Exception e) {
+                execLog.logException(id, "孤儿接管(文档阶段)异常", e);
+                try {
+                    stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
+                } catch (Exception ex) {
+                    log.error("孤儿接管失败状态流转异常", ex);
+                }
+            } finally {
+                taskCache.remove(id);
+                pipelineContextCache.remove(id);
+                impactCache.remove(id);
+                taskConcurrencyLimiter.release(systemId, id);
+            }
+        });
+    }
+
+    @Override
     public void runPipeline(Long taskId) {
         // 缓存 systemId 用于 finally 释放并发许可
         DecompileTask task4SysId = taskCache.get(taskId);
         Long systemId = (task4SysId != null) ? task4SysId.getSystemId()
                 : (this.getById(taskId) != null ? this.getById(taskId).getSystemId() : null);
+        // 确保认领/租约落在本节点（单机路径此前可能未写 claimed_by）
+        try {
+            taskQueueClaimService.renewLease(taskId);
+        } catch (Exception e) {
+            log.warn("runPipeline 初始续租失败 taskId={}: {}", taskId, e.getMessage());
+        }
         CompletableFuture.runAsync(() -> {
             long t0 = System.currentTimeMillis();
             boolean pausedForEntrypointReview = false;
@@ -1593,30 +1860,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
      * 真正 clone 前 {@code CodeScannerServiceImpl} 会再强制清一次并硬失败。</p>
      */
     private void cleanupTaskWorkspace(Long taskId) {
-        if (taskId == null) {
-            return;
-        }
-        deleteDiskQuietly("workspace", taskWorkspacePaths.taskProjectPath(taskId), taskId);
-        // taskDataDir 含 pipeline.log / incremental-impact.json；整目录删掉即可，无需再 truncate
-        deleteDiskQuietly("taskData", storageResolver.taskDataDir(taskId), taskId);
-        deleteDiskQuietly("drafts", storageResolver.draftsRoot().resolve("task_" + taskId), taskId);
-        deleteDiskQuietly("aiLogs", storageResolver.aiLogDir(taskId), taskId);
-    }
-
-    private void deleteDiskQuietly(String label, Path path, Long taskId) {
-        if (path == null) {
-            return;
-        }
-        try {
-            if (!java.nio.file.Files.exists(path)) {
-                return;
-            }
-            DirectoryCleanupUtil.deleteRecursively(path);
-            log.info("cleanupTaskWorkspace: taskId={} {} path={}", taskId, label, path.toAbsolutePath());
-        } catch (Exception e) {
-            log.warn("cleanupTaskWorkspace failed taskId={} {} path={}: {}",
-                    taskId, label, path.toAbsolutePath(), e.getMessage());
-        }
+        taskDiskCleanupService.cleanupAllRuntimeArtifacts(taskId);
     }
 
     @Override

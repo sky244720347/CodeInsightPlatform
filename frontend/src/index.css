@@ -1929,6 +1929,152 @@ body {
   min-height: 338px;
 }
 
+.ci-task-flow-rows {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.ci-task-flow-card .ant-card-head {
+  min-height: 40px;
+  padding: 0 16px;
+}
+
+.ci-task-flow-card .ant-card-head-title {
+  padding: 10px 0;
+  font-size: 14px;
+}
+
+/*
+ * Ant Design 6 Steps 用 item-rail 画连线（不是 title::after / item-tail）。
+ * 这里只做布局微调，不再自定义 title::after，避免和原生 rail 叠成双线。
+ */
+.ci-task-flow-row.ant-steps {
+  width: 100%;
+}
+
+.ci-task-flow-row .ant-steps-item {
+  flex: 1 1 0 !important;
+  min-width: 0;
+  padding-inline-start: 0 !important;
+}
+
+/* antd 默认末项 flex:0，拉伸均分时需要与其它项一致 */
+.ci-task-flow-row.ant-steps-title-horizontal .ant-steps-item:last-child {
+  flex: 1 1 0 !important;
+}
+
+.ci-task-flow-row .ant-steps-item-title {
+  font-size: 12px !important;
+  line-height: 22px !important;
+}
+
+.ci-task-flow-row .ant-steps-item-content {
+  max-width: none !important;
+  margin-top: 2px;
+  font-size: 11px !important;
+  line-height: 1.2 !important;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ci-task-flow-row .ant-steps-item-icon {
+  width: 24px !important;
+  height: 24px !important;
+  font-size: 12px !important;
+  line-height: 24px !important;
+}
+
+.ci-task-flow-row .ant-steps-icon {
+  font-size: 12px !important;
+  line-height: 24px !important;
+}
+
+/*
+ * 两排连续编号使用了自定义 icon，antd 会给 item-custom 去掉圆底/描边，
+ * 进行中只剩一个数字，第二排尤其看不出「当前节点」。这里按状态补回圆标。
+ */
+.ci-task-flow-row .ant-steps-item-custom .ant-steps-item-icon {
+  border-radius: 50%;
+  border-width: 1px;
+  border-style: solid;
+}
+
+.ci-task-flow-row .ant-steps-item-custom.ant-steps-item-wait .ant-steps-item-icon {
+  background: var(--ant-color-bg-container, #fff);
+  border-color: var(--ant-color-text-disabled, rgba(0, 0, 0, 0.25));
+  color: var(--ant-color-text-disabled, rgba(0, 0, 0, 0.45));
+}
+
+.ci-task-flow-row .ant-steps-item-custom.ant-steps-item-process .ant-steps-item-icon {
+  background: var(--ant-color-primary);
+  border-color: var(--ant-color-primary);
+  color: var(--ant-color-text-light-solid, #fff);
+}
+
+/*
+ * 下排导入线（无虚拟节点）：
+ * - 首节点 flex:2，其余 flex:1，整行仍拉满 → 「完成」与上排右缘对齐
+ * - 首节点内 [导入线 flex:1 | 图标 | 标题 | 出线 flex:1]，两线等分剩余空间，不写死长度
+ * - 双倍宽让每条线 ≈ 其它节点单倍宽下的 rail 长度
+ */
+.ci-task-flow-row-inbound > .ant-steps-item:first-child {
+  flex: 2 1 0% !important;
+}
+
+.ci-task-flow-row-inbound > .ant-steps-item:not(:first-child) {
+  flex: 1 1 0% !important;
+}
+
+.ci-task-flow-row-inbound > .ant-steps-item:first-child > .ant-steps-item-wrapper {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  width: 100%;
+}
+
+.ci-task-flow-row-inbound > .ant-steps-item:first-child > .ant-steps-item-wrapper > .ant-steps-item-section,
+.ci-task-flow-row-inbound > .ant-steps-item:first-child .ant-steps-item-header {
+  display: contents;
+}
+
+.ci-task-flow-row-inbound > .ant-steps-item:first-child > .ant-steps-item-wrapper::before {
+  content: '';
+  flex: 1 1 0%;
+  min-width: 0;
+  align-self: flex-start;
+  margin-top: calc(var(--ant-cmp-steps-icon-size-max, var(--ant-cmp-steps-icon-size, 24px)) / 2);
+  transform: translateY(-50%);
+  border-block-start-width: var(--ant-cmp-steps-rail-size, 1px);
+  border-block-start-style: var(--ant-cmp-steps-rail-line-style, solid);
+  border-block-start-color: var(--ant-color-text-disabled);
+  margin-inline-end: var(--ant-cmp-steps-title-horizontal-rail-margin, 16px);
+}
+
+.ci-task-flow-row-inbound.ci-task-flow-inbound-ready > .ant-steps-item:first-child > .ant-steps-item-wrapper::before {
+  border-block-start-color: var(--ant-color-primary);
+}
+
+.ci-task-flow-row-inbound > .ant-steps-item:first-child .ant-steps-item-icon {
+  flex: 0 0 auto;
+}
+
+.ci-task-flow-row-inbound > .ant-steps-item:first-child .ant-steps-item-title {
+  flex: 0 1 auto;
+}
+
+.ci-task-flow-row-inbound > .ant-steps-item:first-child .ant-steps-item-rail {
+  flex: 1 1 0% !important;
+  min-width: 0;
+}
+
+.ci-task-flow-row-inbound > .ant-steps-item:first-child .ant-steps-item-content {
+  flex: 1 0 100%;
+  order: 10;
+  max-width: none !important;
+}
+
 .ci-detail-header {
   min-height: 64px;
 }

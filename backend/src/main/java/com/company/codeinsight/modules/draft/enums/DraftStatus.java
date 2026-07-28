@@ -9,7 +9,8 @@ package com.company.codeinsight.modules.draft.enums;
  *
  * <p>状态流转：</p>
  * <ul>
- *   <li>AI 生成完毕 → {@link #DRAFT}（默认）</li>
+ *   <li>AI 生成完毕 → {@link #DRAFT}（默认；流水线落库也可能写 AI_GENERATED 字面值）</li>
+ *   <li>单篇异步重跑进行中 → {@link #REGENERATING}</li>
  *   <li>复核人保存修改 → {@link #EDITING}</li>
  *   <li>复核人确认通过 → {@link #CONFIRMED}（允许复核人继续编辑，状态回流到 EDITING）</li>
  *   <li>推送模块写入 Git/ZIP → {@link #PUSHED}（任务级 PUSHING/PUSHED 时锁定）</li>
@@ -25,6 +26,11 @@ public enum DraftStatus {
      * AI 已生成 / 待处理（创建后默认状态）
      */
     DRAFT,
+
+    /**
+     * 单篇「重跑此篇」异步执行中（接受请求后写入，完成后由 AI 落库覆盖为 AI_GENERATED / DRAFT / PENDING_REVIEW 等）
+     */
+    REGENERATING,
 
     /**
      * 复核人已编辑（保存修改后流转至此）

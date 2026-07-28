@@ -146,7 +146,22 @@ export interface DraftSourceReference {
   endLine: number;
   className?: string;
   methodSignature?: string;
+  /** ROOT=入口；REACHABLE=调用链下游 */
+  refKind?: 'ROOT' | 'REACHABLE' | string;
+  /** BFS 发现序 */
+  bfsOrder?: number;
   createdDate: string;
+}
+
+export interface RegenerateDraftResult {
+  draftId: number;
+  status: string;
+  /** true = 已入队异步重跑，需轮询 regenerate-status */
+  accepted?: boolean;
+  contentUri?: string;
+  functionNodeId?: string;
+  referenceCount: number;
+  errorMessage?: string;
 }
 
 /**
@@ -318,7 +333,15 @@ export async function listAllTasksBySystem(systemId: number): Promise<import('..
 export const approveDraft = (id: number, author?: string): Promise<void> => {
   return request.post(`/drafts/${id}/confirm`, { author });
 };
-/** 单文档重跑（调用 AI 重新生成） */
-export const regenerateDraft = (id: number): Promise<void> => {
-  return request.post(`/drafts/${id}/regenerate`);
+/** 单文档重跑（异步接受，随后轮询 regenerate-status） */
+export const regenerateDraft = (
+  id: number,
+  body?: { author?: string; remark?: string },
+): Promise<RegenerateDraftResult> => {
+  return request.post(`/drafts/${id}/regenerate`, body ?? {});
+};
+
+/** 单文档重跑进度 */
+export const getRegenerateStatus = (id: number): Promise<RegenerateDraftResult> => {
+  return request.get(`/drafts/${id}/regenerate-status`);
 };

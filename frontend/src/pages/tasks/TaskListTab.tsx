@@ -62,6 +62,7 @@ const runningStatuses = [
   'PARSING_CODE',
   'ENTRYPOINT_REVIEW',
   'AI_ANALYZING',
+  'MODULE_HIERARCHY',
   'MODULE_HIERARCHY_REVIEW',
   'PENDING_REVIEW',
   'REVIEWING',
@@ -78,7 +79,7 @@ const statusMeta: Record<string, { color: string; label: string; loading?: boole
   /** @deprecated 历史任务 */
   SPLITTING_TASK: { color: 'default', label: '任务切片（已废弃）' },
   AI_ANALYZING: { color: 'orange', label: 'AI 分析中', loading: true },
-  MODULE_HIERARCHY: { color: 'gold', label: '模块层级提炼' },
+  MODULE_HIERARCHY: { color: 'gold', label: '模块层级提炼', loading: true },
   ENTRYPOINT_REVIEW: { color: 'cyan', label: '入口复核' },
   MODULE_HIERARCHY_REVIEW: { color: 'geekblue', label: '模块层级调试' },
   BASELINE_DOC_INHERIT: { color: 'cyan', label: '基线文档继承', loading: true },

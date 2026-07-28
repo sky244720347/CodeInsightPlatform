@@ -72,9 +72,6 @@ public class KnowledgeIndexServiceImpl implements KnowledgeIndexService {
         sb.append("\n## 文档导览\n");
         sb.append("- [架构概览](architecture-overview.md)\n");
         sb.append("- [知识文档索引](meta/document-index.md)\n");
-        sb.append("- [接口索引](api-index.md)\n");
-        sb.append("- [数据库索引](database-index.md)\n");
-        sb.append("- [依赖与调用链路](dependency-index.md)\n");
         sb.append("- [待确认事项清单](pending-confirmation.md)\n");
 
         Path indexPath = docsPath.resolve("module-index.md");

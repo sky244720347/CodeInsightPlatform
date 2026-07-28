@@ -71,6 +71,7 @@ import {
   type TaskCommentDto,
   approveDraft,
   regenerateDraft,
+  getRegenerateStatus,
 } from '../../api/draft';
 import type { Task } from '../../types';
 import type { DraftHierarchyTreeNode } from '../../utils/draftHierarchyTree';
@@ -91,18 +92,24 @@ const { TextArea } = Input;
 // 草稿状态颜色映射（与后端 DraftStatus 枚举一一对应；与任务 TaskStatus 词汇已解耦）
 const statusColor: Record<string, string> = {
   DRAFT: 'magenta',
+  REGENERATING: 'processing',
   EDITING: 'geekblue',
   CONFIRMED: 'green',
   PUSHED: 'green',
   ARCHIVED: 'default',
+  AI_GENERATED: 'magenta',
+  PENDING_REVIEW: 'orange',
 };
 
 const statusLabel: Record<string, string> = {
   DRAFT: '待处理',
+  REGENERATING: '生成中',
   EDITING: '已编辑',
   CONFIRMED: '已确认',
   PUSHED: '已推送',
   ARCHIVED: '已归档',
+  AI_GENERATED: '待处理',
+  PENDING_REVIEW: '待补充',
 };
 
 /**
@@ -289,6 +296,9 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   const [confirmPreflightLoading, setConfirmPreflightLoading] = useState(false);
   const [approveInFlight, setApproveInFlight] = useState(false);
   const approveInFlightRef = useRef(false);
+  /** 正在异步重跑的草稿 ID（本页发起或刷新后发现 REGENERATING） */
+  const [regeneratingDraftId, setRegeneratingDraftId] = useState<number | null>(null);
+  const regenPollTimerRef = useRef<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [autoSaveRetrying, setAutoSaveRetrying] = useState(false);
   const editorRef = useRef<any>(null);
@@ -369,10 +379,12 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     [selectedTask],
   );
 
-  /** 编辑锁未就绪或已被他人占用时，Monaco 只读 */
+  /** 编辑锁未就绪或已被他人占用时，Monaco 只读；AI 重跑中同样只读 */
+  const isDraftRegenerating = regeneratingDraftId != null && regeneratingDraftId === selectedDraftId
+    || selectedDraft?.status === 'REGENERATING';
   const isEditorReadOnly = useMemo(
-    () => isReadOnly || isTaskLocked || editLockStatus === 'blocked' || editLockStatus === 'acquiring',
-    [isReadOnly, isTaskLocked, editLockStatus],
+    () => isReadOnly || isTaskLocked || editLockStatus === 'blocked' || editLockStatus === 'acquiring' || isDraftRegenerating,
+    [isReadOnly, isTaskLocked, editLockStatus, isDraftRegenerating],
   );
 
   // v2: 构建 draftId → 变更类型 映射（INCREMENTAL 任务，用于 Badge + DIFF 过滤）
@@ -554,6 +566,8 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     && !isTaskLocked
     && !demoMode
     && !approveInFlight
+    && regeneratingDraftId == null
+    && !flatLeaves.some((leaf) => leaf.status === 'REGENERATING')
     && flatLeaves.length > 0;
 
   const isCurrentDraftConfirmed = useMemo(
@@ -906,13 +920,124 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     }
   };
 
-  const handleRegenerate = async () => {
-    if (!selectedDraftId) return;
+  const clearRegenPoll = useCallback(() => {
+    if (regenPollTimerRef.current) {
+      window.clearTimeout(regenPollTimerRef.current);
+      regenPollTimerRef.current = null;
+    }
+  }, []);
+
+  const finishRegenerateSuccess = useCallback(async (draftId: number, status?: string, referenceCount?: number) => {
+    clearRegenPoll();
+    setRegeneratingDraftId(null);
     try {
-      await regenerateDraft(selectedDraftId);
-      message.success("已重跑，文档已重置");
-      if (selectedDraft) setSelectedDraft({ ...selectedDraft, status: "EDITING" });
-    } catch (e) { message.error("重跑失败"); }
+      await syncWorkspaceTreeFromServer();
+    } catch {
+      /* ignore */
+    }
+    if (selectedDraftId === draftId) {
+      try {
+        const [content, referenceData, revisionData] = await Promise.all([
+          getDraftContent(draftId),
+          getReferences(draftId),
+          getRevisions(draftId),
+        ]);
+        setEditorContent(content);
+        setOriginalContent(content);
+        setReferences(referenceData);
+        setRevisions(revisionData);
+        setSelectedDraft((prev) => (prev && prev.id === draftId
+          ? { ...prev, status: status || prev.status }
+          : prev));
+      } catch {
+        /* ignore */
+      }
+    }
+    message.success(
+      `已重跑${referenceCount != null ? `，代码来源 ${referenceCount} 条` : ''}`,
+    );
+  }, [clearRegenPoll, selectedDraftId, syncWorkspaceTreeFromServer]);
+
+  const finishRegenerateFailure = useCallback(async (draftId: number, errorMessage?: string) => {
+    clearRegenPoll();
+    setRegeneratingDraftId(null);
+    try {
+      const synced = await syncWorkspaceTreeFromServer();
+      if (selectedDraftId === draftId && synced) {
+        const leaf = findDraftInTree(synced.tree, draftId);
+        if (leaf) {
+          setSelectedDraft(leaf);
+        }
+      }
+    } catch {
+      /* ignore */
+    }
+    message.error(errorMessage || '重跑失败');
+  }, [clearRegenPoll, selectedDraftId, syncWorkspaceTreeFromServer]);
+
+  const pollRegenerateUntilDone = useCallback((draftId: number) => {
+    clearRegenPoll();
+    setRegeneratingDraftId(draftId);
+    const tick = async () => {
+      try {
+        const st = await getRegenerateStatus(draftId);
+        if (st.status === 'REGENERATING' || st.accepted) {
+          regenPollTimerRef.current = window.setTimeout(tick, 2500);
+          return;
+        }
+        if (st.errorMessage) {
+          await finishRegenerateFailure(draftId, st.errorMessage);
+          return;
+        }
+        await finishRegenerateSuccess(draftId, st.status, st.referenceCount);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : '查询重跑进度失败';
+        await finishRegenerateFailure(draftId, msg);
+      }
+    };
+    regenPollTimerRef.current = window.setTimeout(tick, 1500);
+  }, [clearRegenPoll, finishRegenerateFailure, finishRegenerateSuccess]);
+
+  useEffect(() => () => clearRegenPoll(), [clearRegenPoll]);
+
+  // 刷新后若当前稿仍在生成中，自动续上轮询
+  useEffect(() => {
+    if (demoMode) return;
+    if (selectedDraftId && selectedDraft?.status === 'REGENERATING' && regeneratingDraftId !== selectedDraftId) {
+      pollRegenerateUntilDone(selectedDraftId);
+    }
+  }, [demoMode, selectedDraftId, selectedDraft?.status, regeneratingDraftId, pollRegenerateUntilDone]);
+
+  const handleRegenerate = () => {
+    if (!selectedDraftId || regeneratingDraftId != null) return;
+    Modal.confirm({
+      title: '重跑此篇文档？',
+      content: '将按当前调用链重新收集源码并调用 AI，覆盖当前正文；代码来源会同步刷新。此操作会写入修订记录。AI 耗时较长时将在后台生成，无需一直等待请求返回。',
+      okText: '确认重跑',
+      cancelText: '取消',
+      onOk: async () => {
+        try {
+          const result = await regenerateDraft(selectedDraftId, {
+            author: getCurrentOperator(),
+            remark: 'AI 重跑',
+          });
+          setSelectedDraft((prev) => (prev && prev.id === selectedDraftId
+            ? { ...prev, status: 'REGENERATING' }
+            : prev));
+          message.info('已提交重跑，正在生成…');
+          if (result?.accepted || result?.status === 'REGENERATING') {
+            pollRegenerateUntilDone(selectedDraftId);
+          } else {
+            // 兼容旧同步接口：直接刷新
+            await finishRegenerateSuccess(selectedDraftId, result?.status, result?.referenceCount);
+          }
+        } catch (e: unknown) {
+          const msg = e instanceof Error ? e.message : '重跑失败';
+          message.error(msg || '重跑失败');
+          throw e;
+        }
+      },
+    });
   };
 
   const handleSave = () => {
@@ -1009,7 +1134,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
         getCurrentOperator(),
         confirmComment.trim() || undefined,
       );
-      message.success('任务已整体确认通过，可前往推送页创建版本');
+      message.success('任务已整体确认，正在自动建版并 NAS 推送');
       setConfirmModalOpen(false);
       setConfirmComment('');
       await syncWorkspaceTreeFromServer();
@@ -1297,10 +1422,11 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     // 当前草稿编辑组：仅保存这一篇选中草稿；任务级别操作已抽到顶层 renderTaskActions
     // 自 v0.3 起移除"驳回"按钮：复核人通过直接编辑修改草稿，状态自动回流到 EDITING。
     // 任务处于 PUSHING / PUSHED 时即使草稿可编辑也禁用保存，与后端 assertNotPushed 同步。
-    const draftEditGroup = !isEditorReadOnly ? (
+    // AI 重跑中：保留按钮组以便展示 loading，但禁止保存/通过，重跑按钮 loading。
+    const draftEditGroup = (!isEditorReadOnly || isDraftRegenerating) ? (
       <div className="ci-action-group">
-        <Tooltip title={isTaskLocked ? '任务已推送，文档已锁定' : '保存当前选中的草稿（物理落盘并写入修订记录）'}>
-          <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} disabled={isTaskLocked}>
+        <Tooltip title={isTaskLocked ? '任务已推送，文档已锁定' : isDraftRegenerating ? '正在 AI 重跑，暂不可保存' : '保存当前选中的草稿（物理落盘并写入修订记录）'}>
+          <Button type="primary" icon={<SaveOutlined />} onClick={handleSave} disabled={isTaskLocked || isDraftRegenerating}>
             保存
           </Button>
         </Tooltip>
@@ -1308,6 +1434,8 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
           title={
             approveInFlight
               ? '正在提交通过，请稍候'
+              : isDraftRegenerating
+                ? '正在 AI 重跑，暂不可通过'
               : isCurrentDraftConfirmed
                 ? '当前文档已通过'
                 : '审核通过此文档（锁定，不可再编辑）'
@@ -1317,14 +1445,19 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
             icon={isCurrentDraftConfirmed ? <CheckOutlined /> : <CheckCircleOutlined />}
             onClick={handleApprove}
             loading={approveInFlight}
-            disabled={isTaskLocked || approveInFlight || isCurrentDraftConfirmed}
+            disabled={isTaskLocked || approveInFlight || isCurrentDraftConfirmed || isDraftRegenerating}
           >
             {isCurrentDraftConfirmed ? '已通过' : '通过'}
           </Button>
         </Tooltip>
-        <Tooltip title="重跑此文档（重置为可编辑）">
-          <Button icon={<ReloadOutlined />} onClick={handleRegenerate} disabled={isTaskLocked}>
-            重跑此篇
+        <Tooltip title={isTaskLocked ? '任务已锁定，无法重跑' : isDraftRegenerating ? '正在生成中…' : '按调用链重新收集源码并调用 AI（覆盖正文）'}>
+          <Button
+            icon={<ReloadOutlined />}
+            onClick={handleRegenerate}
+            loading={isDraftRegenerating}
+            disabled={isTaskLocked || isCurrentDraftConfirmed || isDraftRegenerating}
+          >
+            {isDraftRegenerating ? '生成中' : '重跑此篇'}
           </Button>
         </Tooltip>
       </div>
@@ -1371,10 +1504,10 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                   : allowPartialPass
                     ? unconfirmedDraftCount > 0
                       ? `允许部分通过：尚有 ${unconfirmedDraftCount} 篇未逐篇确认，整体通过时将一并确认`
-                      : '点击完成任务整体确认后可创建版本并推送'
+                      : '点击完成任务整体确认后将自动建版并 NAS 推送'
                     : unconfirmedDraftCount > 0
                       ? `尚有 ${unconfirmedDraftCount} 篇文档未逐篇「通过」`
-                      : '全部文档已逐篇通过，点击完成任务整体确认后可创建版本并推送'
+                      : '全部文档已逐篇通过，点击完成任务整体确认后将自动建版并 NAS 推送'
           }
         >
           <Button
@@ -1473,7 +1606,9 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                       </div>
                       <div className="ci-info-timeline-meta">
                         <FileTextOutlined />
-                        <span>源码引用</span>
+                        <span>
+                          {ref.refKind === 'ROOT' ? '入口' : ref.refKind === 'REACHABLE' ? '调用链' : '源码引用'}
+                        </span>
                         {ref.className && (
                           <>
                             <span className="ci-info-timeline-meta-sep">·</span>

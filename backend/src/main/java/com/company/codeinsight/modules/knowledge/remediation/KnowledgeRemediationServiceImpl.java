@@ -50,7 +50,7 @@ public class KnowledgeRemediationServiceImpl implements KnowledgeRemediationServ
 
         DecompileTask task = createRemediationShell(ctx, baseTaskId, KnowledgeRemediationConstants.KIND_ENTRYPOINT,
                 KnowledgeRemediationConstants.RESUME_AI_ANALYZING, null);
-        artifactCloneService.cloneTaskArtifacts(baseTaskId, task.getId());
+        artifactCloneService.cloneTaskArtifacts(baseTaskId, task.getId(), ctx.getRepositoryId());
         artifactCloneService.seedEntrypointsFromRepository(ctx.getRepositoryId(), task.getId(), ctx.getSystemId());
 
         List<ExcludeTarget> excludes = request.getExcludeTargets();
@@ -83,7 +83,7 @@ public class KnowledgeRemediationServiceImpl implements KnowledgeRemediationServ
         String scopeJson = writeScope(request.getModuleIds());
         DecompileTask task = createRemediationShell(ctx, baseTaskId, KnowledgeRemediationConstants.KIND_HIERARCHY,
                 KnowledgeRemediationConstants.RESUME_GENERATING_DOC, scopeJson);
-        artifactCloneService.cloneTaskArtifacts(baseTaskId, task.getId());
+        artifactCloneService.cloneTaskArtifacts(baseTaskId, task.getId(), ctx.getRepositoryId());
         artifactCloneService.seedEntrypointsFromRepository(ctx.getRepositoryId(), task.getId(), ctx.getSystemId());
 
         ModuleHierarchy hierarchy = request.getHierarchy();
@@ -110,7 +110,7 @@ public class KnowledgeRemediationServiceImpl implements KnowledgeRemediationServ
         String scopeJson = writeScope(request.getModuleIds());
         DecompileTask task = createRemediationShell(ctx, baseTaskId, KnowledgeRemediationConstants.KIND_DOCUMENT,
                 KnowledgeRemediationConstants.RESUME_GENERATING_DOC, scopeJson);
-        artifactCloneService.cloneTaskArtifacts(baseTaskId, task.getId());
+        artifactCloneService.cloneTaskArtifacts(baseTaskId, task.getId(), ctx.getRepositoryId());
         artifactCloneService.seedEntrypointsFromRepository(ctx.getRepositoryId(), task.getId(), ctx.getSystemId());
 
         ModuleHierarchy published = hierarchyLoader.loadByRepositoryId(ctx.getRepositoryId());

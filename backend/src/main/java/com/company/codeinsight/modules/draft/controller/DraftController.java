@@ -227,6 +227,28 @@ public class DraftController {
         return ApiResponse.success(list);
     }
 
+    /**
+     * 单篇「重跑此篇」：知识确认前按调用链重新喂 AI 并覆盖正文，刷新代码来源。
+     * <p>异步接受：立刻返回 {@code accepted=true, status=REGENERATING}，后台跑 AI；
+     * 前端应轮询 {@code GET /{id}/regenerate-status}。</p>
+     */
+    @Operation(summary = "单篇草稿 AI 重跑（异步接受）")
+    @PostMapping("/{id}/regenerate")
+    public ApiResponse<com.company.codeinsight.modules.draft.dto.RegenerateDraftResult> regenerate(
+            @PathVariable Long id,
+            @RequestBody(required = false) java.util.Map<String, String> body) {
+        String author = body != null ? body.get("author") : null;
+        String remark = body != null ? body.get("remark") : null;
+        return ApiResponse.success(draftService.regenerateDraft(id, author, remark));
+    }
+
+    @Operation(summary = "查询单篇草稿 AI 重跑进度")
+    @GetMapping("/{id}/regenerate-status")
+    public ApiResponse<com.company.codeinsight.modules.draft.dto.RegenerateDraftResult> regenerateStatus(
+            @PathVariable Long id) {
+        return ApiResponse.success(draftService.getRegenerateStatus(id));
+    }
+
     // ========================================================================
     // 复核工作区「可预览系统」相关端点
     // ========================================================================

@@ -3,6 +3,7 @@ package com.company.codeinsight.modules.push.service.impl;
 import java.io.File;
 import java.io.IOException;
 import java.nio.file.Files;
+import java.nio.file.Path;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
@@ -100,6 +101,12 @@ public class PushServiceImpl implements PushService {
     private com.company.codeinsight.common.storage.EnvStorageResolver storageResolver;
 
     @Autowired
+    private com.company.codeinsight.common.storage.TaskWorkspacePaths taskWorkspacePaths;
+
+    @Autowired
+    private com.company.codeinsight.modules.task.service.TaskDiskCleanupService taskDiskCleanupService;
+
+    @Autowired
     private RepositoryPublishService repositoryPublishService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -124,7 +131,6 @@ public class PushServiceImpl implements PushService {
             throw new BusinessException("未找到该版本记录");
         }
 
-        // 状态校验：只有 DRAFT 或 FAILED 状态可以重新推送
         if (!"DRAFT".equals(version.getStatus()) && !"FAILED".equals(version.getStatus())) {
             throw new BusinessException("版本状态为 " + version.getStatus() + "，不可推送。仅 DRAFT 或 FAILED 状态的版本可推送");
         }
@@ -133,21 +139,22 @@ public class PushServiceImpl implements PushService {
         if (task == null) {
             throw new BusinessException("未找到关联的知识构建任务");
         }
+        // 仅支持 NAS
+        PushMethod effectiveMethod = PushMethod.NAS;
+
         draftService.assertTaskReadyForKnowledgePublish(task.getId());
 
-        // 强校验：所有 Draft 必须为 CONFIRMED 状态
         DraftWorkspace ws = workspaceMapper.selectOne(
                 new LambdaQueryWrapper<DraftWorkspace>().eq(DraftWorkspace::getTaskId, version.getTaskId()));
         if (ws == null) {
             throw new BusinessException("草稿工作区不存在，无法推送");
         }
 
-        validateDraftsReady(ws.getId());
+        validateDraftsReady(ws.getId(), version.getTaskId());
 
-        // 创建推送任务记录
         PushTask pushTask = new PushTask();
         pushTask.setVersionId(versionId);
-        pushTask.setPushMethod(method.name());
+        pushTask.setPushMethod(effectiveMethod.name());
         pushTask.setStatus(PushTaskStatus.PENDING.name());
         pushTask.setRetryCount(0);
         pushTask.setMaxRetries(3);
@@ -155,9 +162,8 @@ public class PushServiceImpl implements PushService {
         pushTask.setCreatedDate(LocalDateTime.now());
         pushTaskMapper.insert(pushTask);
 
-        // 更新 KnowledgeVersion 状态
         version.setStatus("PUSHING");
-        version.setPushMethod(method.name());
+        version.setPushMethod(effectiveMethod.name());
         versionMapper.updateById(version);
 
         if (TaskStatus.CONFIRMED.name().equals(task.getStatus())) {
@@ -167,18 +173,15 @@ public class PushServiceImpl implements PushService {
                     + "），仅 CONFIRMED 状态可入队推送");
         }
 
-        // 入队到 Redis
-        enqueueToRedis(pushTask.getId(), versionId, method);
+        enqueueToRedis(pushTask.getId(), versionId, effectiveMethod);
 
-        log.info("推送任务已入队: pushTaskId={}, versionId={}, method={}", pushTask.getId(), versionId, method);
+        log.info("推送任务已入队: pushTaskId={}, versionId={}, method={}", pushTask.getId(), versionId, effectiveMethod);
     }
 
     /**
-     * 强校验：工作区内所有草稿必须是 CONFIRMED 或 PUSHED 状态，且无未解决的待确认项。
-     * CONFIRMED = 人工确认通过但尚未推送；PUSHED = 曾经成功推送过。两种状态均可再次推送。
-     * DRAFT / EDITING（未确认）和 ARCHIVED（已归档终止）不允许推送。
+     * 强校验：草稿 DB 状态为 CONFIRMED/PUSHED；待确认项从 docs/modules（或残留 drafts）读取。
      */
-    private void validateDraftsReady(Long workspaceId) {
+    private void validateDraftsReady(Long workspaceId, Long taskId) {
         List<KnowledgeDraft> drafts = draftMapper.selectList(
                 new LambdaQueryWrapper<KnowledgeDraft>()
                         .eq(KnowledgeDraft::getWorkspaceId, workspaceId));
@@ -209,19 +212,25 @@ public class PushServiceImpl implements PushService {
             throw new BusinessException("模块 " + invalidDraft.getModuleName() + " 的" + pathError + "，无法推送！");
         }
 
-        // 校验草稿内容中不能残留 `- [ ]` 待确认标记
+        Path modulesDir = taskWorkspacePaths.taskDocsCodeInsight(taskId).resolve("modules");
         for (KnowledgeDraft draft : drafts) {
+            Path staged = modulesDir.resolve(
+                    com.company.codeinsight.modules.knowledge.service.impl.KnowledgeIndexServiceImpl
+                            .flattenKnowledgeDocFileName(draft.getModuleName()));
             File draftFile = DraftFileUtil.resolve(draft.getContentUri(), storageResolver).toFile();
-            if (draftFile.exists()) {
-                try {
-                    String content = Files.readString(draftFile.toPath());
-                    if (content.contains("- [ ]")) {
-                        throw new BusinessException("模块 " + draft.getModuleName()
-                                + " 中包含待确认项 '- [ ]'，无法推送！请先复核并解决这些待确认项。");
-                    }
-                } catch (IOException e) {
-                    log.error("读取草稿文件校验失败: {}", draft.getContentUri(), e);
+            Path contentPath = Files.exists(staged) ? staged
+                    : (draftFile.exists() ? draftFile.toPath() : null);
+            if (contentPath == null) {
+                continue;
+            }
+            try {
+                String content = Files.readString(contentPath);
+                if (content.contains("- [ ]")) {
+                    throw new BusinessException("模块 " + draft.getModuleName()
+                            + " 中包含待确认项 '- [ ]'，无法推送！请先复核并解决这些待确认项。");
                 }
+            } catch (IOException e) {
+                log.error("读取发布正文校验失败: {}", contentPath, e);
             }
         }
     }
@@ -342,6 +351,7 @@ public class PushServiceImpl implements PushService {
                 if (taskAfterPush != null && TaskStatus.PUSHING.name().equals(taskAfterPush.getStatus())) {
                     stateMachineService.transitTo(version.getTaskId(), TaskStatus.PUSHED, null);
                 }
+                taskDiskCleanupService.cleanupAfterPush(version.getTaskId());
 
                 log.info("推送任务执行成功: pushTaskId={}, result={}", pushTaskId, result);
             } catch (Exception e) {

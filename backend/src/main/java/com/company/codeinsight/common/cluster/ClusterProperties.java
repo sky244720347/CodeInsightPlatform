@@ -22,8 +22,27 @@ public class ClusterProperties {
     /** Leader 锁 TTL（秒），持有方需周期性续租 */
     private int leaderLockTtlSeconds = 15;
 
-    /** 任务认领后 lease 时长（小时），用于断点恢复亲和校验 */
+    /**
+     * 任务认领 lease 时长（分钟）。流水线运行中按 {@link #taskLeaseRenewIntervalSeconds} 续租。
+     * <p>重启后靠「心跳已死 ∨ 租约过期」判定孤儿；过长会导致崩溃后迟迟不能接管。
+     * 旧字段 {@link #taskLeaseHours} 仅作兼容，优先用本字段。</p>
+     */
+    private int taskLeaseMinutes = 10;
+
+    /**
+     * @deprecated 改用 {@link #taskLeaseMinutes}；若 {@code taskLeaseMinutes}≤0 时回退为 hours×60。
+     */
+    @Deprecated
     private int taskLeaseHours = 2;
+
+    /** 流水线运行中续租间隔（秒），应明显小于 {@link #taskLeaseMinutes} */
+    private int taskLeaseRenewIntervalSeconds = 120;
+
+    /** 孤儿任务扫描/接管间隔（毫秒）；启动时也会立即扫一次 */
+    private long orphanReclaimIntervalMs = 30_000L;
+
+    /** 单篇草稿 REGENERATING 超时（分钟），超时后恢复上一状态 */
+    private int draftRegenTimeoutMinutes = 30;
 
     /** 草稿编辑锁 TTL（秒） */
     private int draftEditLockTtlSeconds = 120;
@@ -48,4 +67,12 @@ public class ClusterProperties {
      * 应大于 {@link #taskPermitReconcileIntervalMs} 对应秒数。
      */
     private int instanceHeartbeatTtlSeconds = 90;
+
+    /** 解析实际 lease 时长（分钟） */
+    public int resolveTaskLeaseMinutes() {
+        if (taskLeaseMinutes > 0) {
+            return taskLeaseMinutes;
+        }
+        return Math.max(1, taskLeaseHours * 60);
+    }
 }

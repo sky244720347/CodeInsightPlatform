@@ -95,14 +95,16 @@ public class TaskQueueDispatcher {
             return;
         }
         for (DecompileTask t : pending) {
-            if (!limiter.tryAcquire(t.getSystemId())) {
+            if (!limiter.tryAcquire(t.getSystemId(), t.getId())) {
                 continue;
             }
             try {
+                claimService.renewLease(t.getId());
                 transitPendingToExecutionStart(t);
                 decompileTaskService.runPipeline(t.getId());
             } catch (Exception e) {
                 limiter.release(t.getSystemId(), t.getId());
+                claimService.clearReservation(t.getId());
                 log.error("dispatcher 触发任务 #{} 失败", t.getId(), e);
             }
         }

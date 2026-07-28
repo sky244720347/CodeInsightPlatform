@@ -363,6 +363,7 @@ CREATE TABLE IF NOT EXISTS ci_task (
     document_prompt_id BIGINT,
     require_hierarchy_review BOOLEAN DEFAULT TRUE NOT NULL,
     require_entrypoint_review BOOLEAN DEFAULT TRUE NOT NULL,
+    require_knowledge_review BOOLEAN DEFAULT TRUE NOT NULL,
     trigger_source VARCHAR(40) DEFAULT 'MANUAL' NOT NULL,
     schedule_id BIGINT,
     priority INT DEFAULT 50 NOT NULL,
@@ -400,6 +401,7 @@ ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS lease_until TIMESTAMP;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS source_commit VARCHAR(100);
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS active_segment_started_at TIMESTAMP;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS require_entrypoint_review BOOLEAN DEFAULT TRUE NOT NULL;
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS require_knowledge_review BOOLEAN DEFAULT TRUE NOT NULL;
 ALTER TABLE ci_task DROP COLUMN IF EXISTS prompt_version;
 ALTER TABLE ci_task DROP COLUMN IF EXISTS modularize_prompt_version;
 ALTER TABLE ci_task DROP COLUMN IF EXISTS document_prompt_version;
@@ -449,6 +451,7 @@ COMMENT ON COLUMN ci_task.modularize_prompt_id IS '模块提取提示词 ID（�
 COMMENT ON COLUMN ci_task.document_prompt_id IS '文档生成提示词 ID（按主键查 ci_prompt）';
 COMMENT ON COLUMN ci_task.require_hierarchy_review IS '是否启用模块层级人工复核断点：TRUE-停在 MODULE_HIERARCHY_REVIEW 等待人工调试；FALSE-跳过断点直接进入 GENERATING_DOC。默认 TRUE';
 COMMENT ON COLUMN ci_task.require_entrypoint_review IS '是否启用知识入口人工复核断点：TRUE-停在 ENTRYPOINT_REVIEW 等待人工确认；FALSE-跳过断点直接进入 AI_ANALYZING。默认 TRUE';
+COMMENT ON COLUMN ci_task.require_knowledge_review IS '是否启用知识文档人工复核断点：TRUE-停在 PENDING_REVIEW；FALSE-跳过并自动确认/建版/NAS推送。默认 TRUE；下发页 UI 默认 false 并以请求体为准';
 COMMENT ON COLUMN ci_task.trigger_source IS '触发来源：MANUAL / SCHEDULED / KNOWLEDGE_REMEDIATION';
 COMMENT ON COLUMN ci_task.schedule_id IS '触发该任务的调度配置 ID（trigger_source=SCHEDULED 时非空）';
 COMMENT ON COLUMN ci_task.priority IS '队列优先级：0-100，越大越优先；SCHEDULED 默认 60，MANUAL 默认 50';
@@ -630,9 +633,14 @@ ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS sort_order INT DEFAULT 0
 
 -- v1: INCREMENTAL 任务基线继承（NULL=本次新增；非空=从该基线任务继承）
 ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS baseline_task_id BIGINT;
+-- 功能节点 ID：与 ci_method_function_binding.function_node_id 对齐，单篇重跑定位用
+ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS function_node_id VARCHAR(16);
 -- 注意：ci_knowledge_draft 没有 task_id 列（task_id 存在 ci_draft_workspace 表），
 -- 索引应以 workspace_id 为第一列。基线继承查询场景：workspace_id 范围内按 baseline_task_id 过滤
 CREATE INDEX IF NOT EXISTS idx_draft_workspace_baseline ON ci_knowledge_draft (workspace_id, baseline_task_id);
+CREATE INDEX IF NOT EXISTS idx_draft_function_node
+    ON ci_knowledge_draft (workspace_id, function_node_id)
+    WHERE function_node_id IS NOT NULL AND is_deleted = 0;
 
 CREATE INDEX IF NOT EXISTS idx_draft_workspace_id ON ci_knowledge_draft (workspace_id);
 CREATE INDEX IF NOT EXISTS idx_draft_status ON ci_knowledge_draft (status);
@@ -662,6 +670,8 @@ COMMENT ON COLUMN ci_knowledge_draft.content_uri IS '草稿内容在存储中的
 COMMENT ON COLUMN ci_knowledge_draft.status IS '草稿状态：DRAFT / EDITING / CONFIRMED / PUSHED / ARCHIVED（与 ci_task.status 解耦）';
 COMMENT ON COLUMN ci_knowledge_draft.sort_order IS '同级排序权重（升序）';
 COMMENT ON COLUMN ci_knowledge_draft.hash IS '草稿内容的 MD5 Hash';
+COMMENT ON COLUMN ci_knowledge_draft.function_node_id IS '功能节点 ID（f 前缀），与 binding 对齐；单篇重跑定位用';
+COMMENT ON COLUMN ci_knowledge_draft.baseline_task_id IS 'INCREMENTAL 基线任务 ID（NULL=本次生成）';
 
 
 -- ============================================================
@@ -760,6 +770,8 @@ CREATE TABLE IF NOT EXISTS ci_draft_source_reference (
 
 ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS class_name VARCHAR(512);
 ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS method_signature VARCHAR(512);
+ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS ref_kind VARCHAR(16) DEFAULT 'REACHABLE' NOT NULL;
+ALTER TABLE ci_draft_source_reference ADD COLUMN IF NOT EXISTS bfs_order INT DEFAULT 0 NOT NULL;
 
 CREATE INDEX IF NOT EXISTS idx_ref_draft_id ON ci_draft_source_reference (draft_id);
 
@@ -785,6 +797,8 @@ COMMENT ON COLUMN ci_draft_source_reference.start_line IS '起始行号';
 COMMENT ON COLUMN ci_draft_source_reference.end_line IS '结束行号（0 表示整文件）';
 COMMENT ON COLUMN ci_draft_source_reference.class_name IS '入口类全限定名（可选，便于复核展示）';
 COMMENT ON COLUMN ci_draft_source_reference.method_signature IS '方法签名 methodName(ParamTypes)，不含返回类型（可选）';
+COMMENT ON COLUMN ci_draft_source_reference.ref_kind IS 'ROOT=binding 入口；REACHABLE=BFS 下游（含同类助手）';
+COMMENT ON COLUMN ci_draft_source_reference.bfs_order IS 'BFS 发现序（从 0 起），代码来源列表排序用';
 
 
 -- ============================================================

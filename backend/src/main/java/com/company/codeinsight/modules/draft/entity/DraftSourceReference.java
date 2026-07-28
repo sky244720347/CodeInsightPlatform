@@ -47,4 +47,10 @@ public class DraftSourceReference extends BaseEntity {
 
     /** 方法签名 methodName(ParamTypes)，不含返回类型（可选） */
     private String methodSignature;
+
+    /** ROOT=binding 入口；REACHABLE=BFS 下游（含同类助手） */
+    private String refKind;
+
+    /** BFS 发现序（从 0 起），代码来源列表排序用 */
+    private Integer bfsOrder;
 }

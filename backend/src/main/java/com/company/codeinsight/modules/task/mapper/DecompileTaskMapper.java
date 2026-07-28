@@ -17,5 +17,18 @@ public interface DecompileTaskMapper extends BaseMapper<DecompileTask> {
      * 无可用任务时返回 null。
      */
     Long selectNextPendingIdForUpdate();
+
+    /**
+     * CAS 接管认领：status 与 claimed_by 与期望一致时，写入新 claimed_by / lease。
+     * {@code expectedClaimedBy} 为 null 时匹配 DB claimed_by IS NULL。
+     *
+     * @return 影响行数（1=成功）
+     */
+    int casTakeoverClaim(@Param("id") Long id,
+                         @Param("expectedStatus") String expectedStatus,
+                         @Param("expectedClaimedBy") String expectedClaimedBy,
+                         @Param("newClaimedBy") String newClaimedBy,
+                         @Param("now") java.time.LocalDateTime now,
+                         @Param("newLeaseUntil") java.time.LocalDateTime newLeaseUntil);
 }
 

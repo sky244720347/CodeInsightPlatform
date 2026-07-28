@@ -69,12 +69,15 @@ public class DecompileTaskController {
                 request.getModularizePromptId(), request.getDocumentPromptId(),
                 request.getModelName(), request.getEntryScanConfig(),
                 request.getRequireHierarchyReview(), request.getRequireEntrypointReview());
+        applyKnowledgeReviewAndAutostart(task, request);
         operationLogService.logOperation(request.getSystemId(), task.getId(), "CREATE_TASK",
                 "创建全量初始化知识构建任务" +
-                        (Boolean.TRUE.equals(request.getRequireHierarchyReview()) ? "（启用模块层级调试）" : "（跳过模块层级调试）") +
-                        (Boolean.TRUE.equals(request.getRequireEntrypointReview()) ? "（启用知识入口复核）" : "（跳过知识入口复核）"),
+                        (Boolean.TRUE.equals(task.getRequireHierarchyReview()) ? "（启用模块层级调试）" : "（跳过模块层级调试）") +
+                        (Boolean.TRUE.equals(task.getRequireEntrypointReview()) ? "（启用知识入口复核）" : "（跳过知识入口复核）") +
+                        (Boolean.TRUE.equals(task.getRequireKnowledgeReview()) ? "（启用知识复核）" : "（跳过知识复核）") +
+                        "（已自动启动）",
                 null, true);
-        return ApiResponse.success(task);
+        return ApiResponse.success(decompileTaskService.getById(task.getId()));
     }
 
     /**
@@ -87,12 +90,15 @@ public class DecompileTaskController {
                 request.getModularizePromptId(), request.getDocumentPromptId(),
                 request.getModelName(), request.getEntryScanConfig(),
                 request.getRequireHierarchyReview(), request.getRequireEntrypointReview());
+        applyKnowledgeReviewAndAutostart(task, request);
         operationLogService.logOperation(request.getSystemId(), task.getId(), "CREATE_TASK",
                 "创建增量分析知识构建任务" +
-                        (Boolean.TRUE.equals(request.getRequireHierarchyReview()) ? "（启用模块层级调试）" : "（跳过模块层级调试）") +
-                        (Boolean.TRUE.equals(request.getRequireEntrypointReview()) ? "（启用知识入口复核）" : "（跳过知识入口复核）"),
+                        (Boolean.TRUE.equals(task.getRequireHierarchyReview()) ? "（启用模块层级调试）" : "（跳过模块层级调试）") +
+                        (Boolean.TRUE.equals(task.getRequireEntrypointReview()) ? "（启用知识入口复核）" : "（跳过知识入口复核）") +
+                        (Boolean.TRUE.equals(task.getRequireKnowledgeReview()) ? "（启用知识复核）" : "（跳过知识复核）") +
+                        "（已自动启动）",
                 null, true);
-        return ApiResponse.success(task);
+        return ApiResponse.success(decompileTaskService.getById(task.getId()));
     }
 
     /**
@@ -482,6 +488,18 @@ public class DecompileTaskController {
         private Boolean requireHierarchyReview;
         /** 是否启用知识入口复核断点；null 时按默认 TRUE 处理 */
         private Boolean requireEntrypointReview;
+        /** 是否启用知识文档复核断点；null 时按默认 TRUE；下发页 UI 默认 false */
+        private Boolean requireKnowledgeReview;
+    }
+
+    /**
+     * 手动下发：写入知识复核开关并以请求体为准，随后自动启动。
+     */
+    private void applyKnowledgeReviewAndAutostart(DecompileTask task, TaskCreateRequest request) {
+        Boolean kr = request.getRequireKnowledgeReview();
+        task.setRequireKnowledgeReview(kr == null ? Boolean.TRUE : kr);
+        decompileTaskService.updateById(task);
+        decompileTaskService.startTask(task.getId());
     }
 
     /**

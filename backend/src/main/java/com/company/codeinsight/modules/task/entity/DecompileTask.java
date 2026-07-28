@@ -133,6 +133,15 @@ public class DecompileTask extends BaseEntity {
     private Boolean requireEntrypointReview;
 
     /**
+     * 是否启用知识文档复核断点（人工复核，介于 GENERATING_DOC 与 CONFIRMED 之间）
+     * TRUE - 文档生成后停在 PENDING_REVIEW，等待人工确认后再建版推送
+     * FALSE - 跳过断点，自动确认并建版 + NAS 推送
+     * 默认 TRUE；手动下发页 UI 默认 false，以创建请求体为准
+     */
+    @TableField("require_knowledge_review")
+    private Boolean requireKnowledgeReview;
+
+    /**
      * 任务触发来源：
      * <ul>
      *   <li>MANUAL - 前端用户手动创建并启动（默认）</li>

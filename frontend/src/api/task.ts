@@ -47,8 +47,10 @@ export interface CreateTaskPayload {
   entryScanConfig?: EntryScanConfig;
   /** 是否启用模块层级调试（人工复核断点）；不传则按默认 TRUE 处理 */
   requireHierarchyReview?: boolean;
-  /** 是否启用知识入口复核（人工复核断点，介于 PARSING_CODE 与 AI_ANALYZING 之间）；不传则按默认 TRUE 处理 */
+  /** 是否启用知识入口复核；不传则按默认 TRUE */
   requireEntrypointReview?: boolean;
+  /** 是否启用知识文档复核；不传则按默认 TRUE；下发页 UI 默认 false */
+  requireKnowledgeReview?: boolean;
 }
 
 export const listTasks = (params: {

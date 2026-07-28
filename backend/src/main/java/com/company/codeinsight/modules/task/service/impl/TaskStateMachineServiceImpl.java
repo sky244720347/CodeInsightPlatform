@@ -140,6 +140,12 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
         // 持久化更新至数据库
         decompileTaskMapper.updateById(task);
 
+        // 流水线持有的 taskCache 实例可能与本次传入实体不是同一引用
+        // （例如 autoConfirmAndPublish 用 selectById 新对象流转到 CONFIRMED）。
+        // transitTo(taskId) 优先读 cache，必须把可变状态同步回去，否则会出现
+        // DB=CONFIRMED 而 cache 仍为 GENERATING_DOC，随后 CONFIRMED→PUSHING 被误判为非法。
+        syncTaskCacheAfterTransit(task);
+
         // 任务级联归档：流转到 CANCELLED / FAILED 时，把关联的 workspace + draft 一并置 ARCHIVED。
         // 否则会出现「任务已终止但草稿仍 DRAFT/EDITING」的孤儿状态，污染 readiness 视图。
         if (targetStatus == TaskStatus.CANCELLED || targetStatus == TaskStatus.FAILED) {
@@ -155,6 +161,28 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
                 errorReason,
                 true
         );
+    }
+
+    /**
+     * 将本次流转后的可变字段同步到流水线 {@link DecompileTaskServiceImpl#taskCache} 中的实例。
+     * 仅在 cache 命中且与传入实体不是同一引用时拷贝；同引用已就地更新，无需处理。
+     */
+    private void syncTaskCacheAfterTransit(DecompileTask task) {
+        if (task == null || task.getId() == null) {
+            return;
+        }
+        DecompileTask cached = DecompileTaskServiceImpl.taskCache.get(task.getId());
+        if (cached == null || cached == task) {
+            return;
+        }
+        cached.setStatus(task.getStatus());
+        cached.setProgress(task.getProgress());
+        cached.setErrorReason(task.getErrorReason());
+        cached.setUpdatedDate(task.getUpdatedDate());
+        cached.setStartedAt(task.getStartedAt());
+        cached.setEndedAt(task.getEndedAt());
+        cached.setDurationMs(task.getDurationMs());
+        cached.setActiveSegmentStartedAt(task.getActiveSegmentStartedAt());
     }
 
     /**
@@ -232,7 +260,8 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
             case MODULE_HIERARCHY -> target == TaskStatus.MODULE_HIERARCHY_REVIEW || target == TaskStatus.BASELINE_DOC_INHERIT || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case MODULE_HIERARCHY_REVIEW -> target == TaskStatus.BASELINE_DOC_INHERIT || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case BASELINE_DOC_INHERIT -> target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
-            case GENERATING_DOC -> target == TaskStatus.PENDING_REVIEW || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
+            case GENERATING_DOC -> target == TaskStatus.PENDING_REVIEW || target == TaskStatus.CONFIRMED
+                    || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case PENDING_REVIEW -> target == TaskStatus.REVIEWING || target == TaskStatus.CONFIRMED || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case REVIEWING -> target == TaskStatus.CONFIRMED || target == TaskStatus.PENDING_REVIEW || target == TaskStatus.CANCELLED;
             case CONFIRMED -> target == TaskStatus.PUSHING || target == TaskStatus.ARCHIVED || target == TaskStatus.CANCELLED;

@@ -9,18 +9,24 @@ const { Text } = Typography;
 
 const statusColor: Record<string, string> = {
   DRAFT: 'magenta',
+  REGENERATING: 'processing',
   EDITING: 'geekblue',
   CONFIRMED: 'green',
   PUSHED: 'green',
   ARCHIVED: 'default',
+  AI_GENERATED: 'magenta',
+  PENDING_REVIEW: 'orange',
 };
 
 const statusLabel: Record<string, string> = {
   DRAFT: '待处理',
+  REGENERATING: '生成中',
   EDITING: '已编辑',
   CONFIRMED: '已确认',
   PUSHED: '已推送',
   ARCHIVED: '已归档',
+  AI_GENERATED: '待处理',
+  PENDING_REVIEW: '待补充',
 };
 
 export type HierarchyTreeDataNode = DataNode & { draftId?: number };

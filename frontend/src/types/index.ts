@@ -81,6 +81,8 @@ export interface Task {
   requireHierarchyReview?: boolean;
   /** 是否启用知识入口复核（人工复核断点，介于 PARSING_CODE 与 AI_ANALYZING 之间）；undefined 时按 TRUE 处理 */
   requireEntrypointReview?: boolean;
+  /** 是否启用知识文档复核；undefined 时按 TRUE；下发页默认 false */
+  requireKnowledgeReview?: boolean;
   /** 触发来源：MANUAL 手动触发 / SCHEDULED 定时调度触发 */
   triggerSource?: 'MANUAL' | 'SCHEDULED' | string;
   /** 触发该任务的调度配置 ID（triggerSource=SCHEDULED 时非空） */

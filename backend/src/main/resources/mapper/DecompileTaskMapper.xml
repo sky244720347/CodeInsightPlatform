@@ -18,4 +18,17 @@
         FOR UPDATE SKIP LOCKED
     </select>
 
+    <!-- CAS 接管：防止两个节点同时把同一孤儿拉起 -->
+    <update id="casTakeoverClaim">
+        UPDATE ci_task
+        SET claimed_by = #{newClaimedBy},
+            claimed_at = #{now},
+            lease_until = #{newLeaseUntil},
+            updated_date = #{now}
+        WHERE id = #{id}
+          AND is_deleted = 0
+          AND status = #{expectedStatus}
+          AND claimed_by IS NOT DISTINCT FROM #{expectedClaimedBy}
+    </update>
+
 </mapper>

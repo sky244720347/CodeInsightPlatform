@@ -10,10 +10,20 @@ import com.company.codeinsight.modules.knowledge.entity.KnowledgeVersion;
 public interface KnowledgeService {
 
     /**
-     * 生成知识版本记录，并在磁盘上编译出完整的 Markdown 规范化文档目录结构
+     * 将已确认草稿组装为 {@code workspaces/task_{id}/docs/code-insight} 发布包（不含源码类索引）。
+     */
+    void assemblePublishPackage(Long taskId);
+
+    /**
+     * 按仓库已有 {@code v1,v2,…} 取最大数字 +1；无则 {@code v1}。
+     */
+    String nextSimpleVersionNum(Long repositoryId);
+
+    /**
+     * 生成知识版本记录；若发布包尚未组装则先组装。推送只依赖 docs/code-insight。
      *
      * @param taskId      复核完成的任务 ID
-     * @param versionNum  自定义的版本号名称
+     * @param versionNum  版本号（如 v1）
      * @param confirmedBy 操作确认用户名
      * @return 刚被创建的知识版本对象
      */

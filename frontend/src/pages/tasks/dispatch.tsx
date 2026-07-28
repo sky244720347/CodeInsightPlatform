@@ -273,24 +273,24 @@ const TaskDispatchPage: React.FC = () => {
       const entryScanConfig = form.getFieldValue('entryScanConfig') as EntryScanConfig | undefined;
       const requireEntrypointReview = form.getFieldValue('requireEntrypointReview') as boolean | undefined;
       const requireHierarchyReview = form.getFieldValue('requireHierarchyReview') as boolean | undefined;
+      const requireKnowledgeReview = form.getFieldValue('requireKnowledgeReview') as boolean | undefined;
 
       const payload = {
         systemId,
         repositoryId,
         modelName,
         entryScanConfig,
-        requireEntrypointReview: requireEntrypointReview !== false,
-        requireHierarchyReview: requireHierarchyReview !== false,
+        requireEntrypointReview: requireEntrypointReview === true,
+        requireHierarchyReview: requireHierarchyReview === true,
+        requireKnowledgeReview: requireKnowledgeReview === true,
       };
       if ((taskType || 'INITIAL') === 'INITIAL') {
         await createInitialTask(payload);
       } else {
         await createIncrementalTask(payload);
       }
-      const entryReviewOn = requireEntrypointReview !== false;
-      const hierarchyReviewOn = requireHierarchyReview !== false;
       message.success(
-        `任务已创建（入口复核：${entryReviewOn ? '启用' : '跳过'}；模块层级复核：${hierarchyReviewOn ? '启用' : '跳过'}）`,
+        `任务已创建并自动启动（入口复核：${payload.requireEntrypointReview ? '启用' : '跳过'}；模块层级：${payload.requireHierarchyReview ? '启用' : '跳过'}；知识复核：${payload.requireKnowledgeReview ? '启用' : '跳过'}）`,
       );
       navigate('/tasks/query');
     } finally {
@@ -319,6 +319,7 @@ const TaskDispatchPage: React.FC = () => {
     | undefined;
   const summaryRequireEntry = form.getFieldValue('requireEntrypointReview');
   const summaryRequireHierarchy = form.getFieldValue('requireHierarchyReview');
+  const summaryRequireKnowledge = form.getFieldValue('requireKnowledgeReview');
 
   const modularizeDisplay = selectedSystem
     ? resolveBoundName(selectedRepository?.modularizePromptId ?? undefined, modularizeById)
@@ -360,6 +361,7 @@ const TaskDispatchPage: React.FC = () => {
             entryScanConfig: buildScanConfigWithDefaults(undefined),
             requireEntrypointReview: false,
             requireHierarchyReview: false,
+            requireKnowledgeReview: false,
           }}
         >
           <Row gutter={[16, 16]} style={{ display: currentStep === 0 ? undefined : 'none' }}>
@@ -507,7 +509,7 @@ const TaskDispatchPage: React.FC = () => {
                 showIcon
                 style={{ marginTop: 12 }}
                 message="人工复核断点"
-                description="启用入口复核或模块层级复核后，流水线会在对应阶段暂停，需前往复核页面手动确认后才能继续。默认关闭，任务将自动跑完全流程。"
+                description="启用后流水线会在对应阶段暂停。三个开关默认均为跳过；任务创建后自动启动，知识复核跳过时将自动建版并 NAS 推送。"
               />
 
               <Form.Item
@@ -524,6 +526,16 @@ const TaskDispatchPage: React.FC = () => {
                 name="requireHierarchyReview"
                 label="模块层级复核"
                 tooltip="启用后，AI 提炼模块层级完成会停在「模块层级复核」断点，需在复核页面确认后才继续生成文档。"
+                valuePropName="checked"
+                style={{ marginTop: 12, marginBottom: 0 }}
+              >
+                <Switch checkedChildren="启用" unCheckedChildren="跳过" />
+              </Form.Item>
+
+              <Form.Item
+                name="requireKnowledgeReview"
+                label="知识复核"
+                tooltip="启用后，文档生成完成会停在「知识复核」；跳过时自动确认、按 v1/v2/v3 建版并 NAS 推送。"
                 valuePropName="checked"
                 style={{ marginTop: 12, marginBottom: 0 }}
               >
@@ -586,7 +598,15 @@ const TaskDispatchPage: React.FC = () => {
                     : '跳过（AI 提炼后直接生成文档）'}
                 </b>
               </p>
-              <Text type="secondary">任务将以草稿状态创建，可在「任务查询」列表中手动启动。</Text>
+              <p>
+                知识复核：
+                <b>
+                  {summaryRequireKnowledge === true
+                    ? '启用（文档生成后暂停，人工确认后再自动建版推送）'
+                    : '跳过（自动确认、建版 vN 并 NAS 推送）'}
+                </b>
+              </p>
+              <Text type="secondary">创建后将自动启动任务，无需再点「启动」。</Text>
             </div>
           )}
         </Form>

@@ -162,9 +162,9 @@ const knowledgeNav: NavItem[] = [
       {
         key: '/push',
         icon: <CloudUploadOutlined />,
-        label: <TabLink to="/push">知识推送</TabLink>,
-        title: '知识推送',
-        description: '创建确认版本、执行推送校验、导出 ZIP 包并推送到 Git。',
+        label: <TabLink to="/push">推送记录</TabLink>,
+        title: '推送记录',
+        description: '查看知识版本与 NAS 推送历史（自动发布，不可手动新建）。',
       },
     ],
   },

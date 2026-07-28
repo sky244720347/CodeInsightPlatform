@@ -28,7 +28,7 @@ export const PATH_META: Record<string, PathMeta> = {
   '/tasks/hierarchy-review': { title: '模块层级复核' },
 
   '/drafts': { title: '知识复核' },
-  '/push': { title: '知识推送' },
+  '/push': { title: '推送记录' },
   '/audit': { title: 'Token 审计' },
   '/logs': { title: '操作日志' },
   '/knowledge/entrypoints': { title: '扫描入口', parent: '知识查询' },

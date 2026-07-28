@@ -66,6 +66,12 @@ export function listVersions(params: {
   return request.get('/knowledge/page', { params });
 }
 
+/** 打开浏览器下载知识版本 ZIP（后端 GET /knowledge/{id}/export） */
+export function downloadVersionZip(versionId: number): void {
+  const baseUrl = import.meta.env.VITE_API_BASE_URL || '/api';
+  window.open(`${baseUrl}/knowledge/${versionId}/export`);
+}
+
 export interface RepositoryPublishSnapshotView {
   id: number;
   repositoryId: number;

@@ -104,11 +104,11 @@ public class KnowledgeServiceTest {
         Assertions.assertEquals("v1.0.0", version.getVersionNum());
         Assertions.assertEquals("task-scan-commit-abc", version.getSourceCommit());
         Assertions.assertEquals("DRAFT", version.getStatus());
-        Assertions.assertEquals("GIT", version.getPushMethod());
+        Assertions.assertEquals("NAS", version.getPushMethod());
 
         // 4. 推送任务入队（Redis 不可用时抛出 BusinessException）
         BusinessException ex = Assertions.assertThrows(BusinessException.class, () -> {
-            pushService.enqueuePush(version.getId(), PushMethod.GIT);
+            pushService.enqueuePush(version.getId(), PushMethod.NAS);
         });
         Assertions.assertTrue(ex.getMessage().contains("Redis") || ex.getMessage().contains("推送"),
                 "Should fail due to Redis not available in test");
@@ -177,7 +177,7 @@ public class KnowledgeServiceTest {
 
         // 校验1: 草稿中有 `- [ ]` 待确认项 → enqueuePush 应抛出 BusinessException
         Assertions.assertThrows(BusinessException.class, () -> {
-            pushService.enqueuePush(version.getId(), PushMethod.GIT);
+            pushService.enqueuePush(version.getId(), PushMethod.NAS);
         });
 
         // 修复内容但改为非 CONFIRMED 状态
@@ -187,7 +187,7 @@ public class KnowledgeServiceTest {
 
         // 校验2: 草稿状态不是 CONFIRMED → enqueuePush 应抛出 BusinessException
         Assertions.assertThrows(BusinessException.class, () -> {
-            pushService.enqueuePush(version.getId(), PushMethod.GIT);
+            pushService.enqueuePush(version.getId(), PushMethod.NAS);
         });
     }
 }

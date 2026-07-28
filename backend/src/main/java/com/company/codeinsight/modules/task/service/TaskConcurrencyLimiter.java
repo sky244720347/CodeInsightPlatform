@@ -94,12 +94,22 @@ public class TaskConcurrencyLimiter {
         if (clusterProperties.isEnabled()) {
             return tryAcquireCluster(systemId, taskId);
         }
-        return tryAcquireLocal(systemId);
+        return tryAcquireLocal(systemId, taskId);
     }
 
     /** 兼容旧调用（单机路径无 taskId） */
     public boolean tryAcquire(Long systemId) {
         return tryAcquire(systemId, null);
+    }
+
+    /** 本节点是否仍持有该任务的并发许可（运行中） */
+    public boolean isHeldLocally(Long taskId) {
+        return taskId != null && localHeldTasks.containsKey(taskId);
+    }
+
+    /** 本节点持有的全部 taskId（供租约续租） */
+    public java.util.Set<Long> localHeldTaskIds() {
+        return java.util.Set.copyOf(localHeldTasks.keySet());
     }
 
     public void release(Long systemId, Long taskId) {
@@ -288,7 +298,7 @@ public class TaskConcurrencyLimiter {
         return true;
     }
 
-    private boolean tryAcquireLocal(Long systemId) {
+    private boolean tryAcquireLocal(Long systemId, Long taskId) {
         if (globalLocal == null) {
             rebuildGlobal(systemConfigService.getInt("task.concurrency", 2));
         }
@@ -302,7 +312,14 @@ public class TaskConcurrencyLimiter {
             globalLocal.release();
             return false;
         }
+        if (taskId != null) {
+            localHeldTasks.put(taskId, systemId);
+        }
         return true;
+    }
+
+    private boolean tryAcquireLocal(Long systemId) {
+        return tryAcquireLocal(systemId, null);
     }
 
     private void releaseLocal(Long systemId) {
