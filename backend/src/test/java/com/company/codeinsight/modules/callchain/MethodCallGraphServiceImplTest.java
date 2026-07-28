@@ -123,6 +123,45 @@ public class MethodCallGraphServiceImplTest {
     }
 
     @Test
+    void sameClassPrivateHelperReachable() {
+        store.add(edge(9L, "ProductController#getProduct(Long)", "ProductService",
+                "getProduct", "ProductService#getProduct(Long)", null));
+        store.add(edge(9L, "ProductService#getProduct(Long)", "ProductService",
+                "requireProduct", "ProductService#requireProduct(Long)", null));
+        store.add(edge(9L, "ProductService#requireProduct(Long)", "ProductService",
+                "findById", "ProductService#findById(Long)", null));
+        Set<String> visited = service.resolveReachableMethods(9L, Set.of("ProductController#getProduct(Long)"));
+        Assertions.assertTrue(visited.contains("ProductController#getProduct(Long)"));
+        Assertions.assertTrue(visited.contains("ProductService#getProduct(Long)"));
+        Assertions.assertTrue(visited.contains("ProductService#requireProduct(Long)"));
+        Assertions.assertTrue(visited.contains("ProductService#findById(Long)"));
+        // BFS 发现序：入口 Controller 先于 Service
+        List<String> ordered = new ArrayList<>(visited);
+        Assertions.assertTrue(ordered.indexOf("ProductController#getProduct(Long)")
+                < ordered.indexOf("ProductService#getProduct(Long)"));
+        Assertions.assertTrue(ordered.indexOf("ProductService#getProduct(Long)")
+                < ordered.indexOf("ProductService#requireProduct(Long)"));
+    }
+
+    @Test
+    void sameClassDepthCapStopsLongChain() {
+        // 连续同类边超过 MAX_SAME_CLASS_DEPTH(3) 应截断
+        store.add(edge(9L, "A#m0()", "A", "m1", "A#m1()", null));
+        store.add(edge(9L, "A#m1()", "A", "m2", "A#m2()", null));
+        store.add(edge(9L, "A#m2()", "A", "m3", "A#m3()", null));
+        store.add(edge(9L, "A#m3()", "A", "m4", "A#m4()", null));
+        store.add(edge(9L, "A#m4()", "A", "m5", "A#m5()", null));
+        Set<String> visited = service.resolveReachableMethods(9L, Set.of("A#m0()"));
+        Assertions.assertTrue(visited.contains("A#m0()"));
+        Assertions.assertTrue(visited.contains("A#m1()"));
+        Assertions.assertTrue(visited.contains("A#m2()"));
+        Assertions.assertTrue(visited.contains("A#m3()"));
+        // m0→m1 (1), m1→m2 (2), m2→m3 (3) 允许；m3→m4 同类深度 4 截断
+        Assertions.assertFalse(visited.contains("A#m4()"));
+        Assertions.assertFalse(visited.contains("A#m5()"));
+    }
+
+    @Test
     void emptyRoots() {
         Assertions.assertTrue(service.resolveReachableMethods(9L, new LinkedHashSet<>()).isEmpty());
         Assertions.assertTrue(service.resolveReachableMethods(null, Set.of("A#a()")).isEmpty());

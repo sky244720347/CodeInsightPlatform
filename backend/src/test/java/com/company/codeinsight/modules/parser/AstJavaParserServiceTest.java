@@ -110,7 +110,8 @@ public class UserController {
                 "should capture one userService method call");
         MethodCallInfo call = info.getMethodCalls().get(0);
         Assertions.assertEquals("detail", call.getCallerMethod());
-        Assertions.assertEquals("UserService", call.getDependencyName());
+        Assertions.assertTrue(call.getDependencyName().endsWith("UserService"),
+                "dependencyName should resolve to UserService (FQ or short), got: " + call.getDependencyName());
         Assertions.assertEquals("findById", call.getTargetMethod());
 
         // SQL 校验
@@ -211,9 +212,9 @@ public class LambdaController {
         ParsedClassInfo info = parserService.parseFile(f);
         Assertions.assertTrue(info.getDependencies().contains("userService:UserService"));
 
-        // 至少应该抓到 userService.listAll() 这一调用
+        // 至少应该抓到 userService.listAll() 这一调用（Phase 2 后 dependencyName 可能是 FQ）
         long serviceCalls = info.getMethodCalls().stream()
-                .filter(c -> "UserService".equals(c.getDependencyName()))
+                .filter(c -> c.getDependencyName() != null && c.getDependencyName().endsWith("UserService"))
                 .count();
         Assertions.assertTrue(serviceCalls >= 1,
                 "expected at least one UserService call captured via AST, got: " + info.getMethodCalls());
@@ -328,7 +329,7 @@ public class Broken {
             w.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project xmlns=\"http://maven.apache.org/POM/4.0.0\"/>\n");
         }
 
-        // JavaParserTypeSolver 按 Maven 约定按"项目根 + 包路径"寻文件，所以先建包目录
+        // 扁平布局兜底：无 src/main/java 时 TypeSolver 挂在项目根（包路径直接贴根）
         File packageDir = new File(projectDir, "com/example/polymorph");
         packageDir.mkdirs();
 
@@ -485,6 +486,157 @@ public class NotifyController {
                 "should include SmsNotifier, got: " + candidates);
         Assertions.assertFalse(candidates.contains("AbstractNotifier"),
                 "abstract class should NOT be a caller-reachable candidate, got: " + candidates);
+    }
+
+    /**
+     * 真实 Maven 布局回归：{@code src/main/java} + 跨包 interface/impl。
+     * 覆盖生产仓里 dependency_candidates 恒空的根因（TypeSolver 挂错根 + 短名查 FQ 索引 miss）。
+     */
+    @Test
+    public void testMavenLayoutPolymorphicCandidates() throws IOException {
+        File projectDir = File.createTempFile("maven-poly-", "");
+        projectDir.delete();
+        Assertions.assertTrue(projectDir.mkdir(), "should create project dir");
+        projectDir.deleteOnExit();
+
+        File pom = new File(projectDir, "pom.xml");
+        try (FileWriter w = new FileWriter(pom)) {
+            w.write("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<project xmlns=\"http://maven.apache.org/POM/4.0.0\"/>\n");
+        }
+
+        File serviceDir = new File(projectDir, "src/main/java/com/demo/service");
+        File implDir = new File(projectDir, "src/main/java/com/demo/service/impl");
+        File controllerDir = new File(projectDir, "src/main/java/com/demo/controller");
+        Assertions.assertTrue(serviceDir.mkdirs());
+        Assertions.assertTrue(implDir.mkdirs());
+        Assertions.assertTrue(controllerDir.mkdirs());
+
+        try (FileWriter w = new FileWriter(new File(serviceDir, "OrderService.java"))) {
+            w.write("""
+package com.demo.service;
+
+public interface OrderService {
+    String quote(Long id);
+}
+""");
+        }
+        try (FileWriter w = new FileWriter(new File(implDir, "OrderServiceImpl.java"))) {
+            w.write("""
+package com.demo.service.impl;
+
+import com.demo.service.OrderService;
+
+public class OrderServiceImpl implements OrderService {
+    @Override
+    public String quote(Long id) {
+        return "ok";
+    }
+}
+""");
+        }
+        try (FileWriter w = new FileWriter(new File(implDir, "OrderServiceV2Impl.java"))) {
+            w.write("""
+package com.demo.service.impl;
+
+import com.demo.service.OrderService;
+
+public class OrderServiceV2Impl implements OrderService {
+    @Override
+    public String quote(Long id) {
+        return "v2";
+    }
+}
+""");
+        }
+        File controllerFile = new File(controllerDir, "OrderController.java");
+        try (FileWriter w = new FileWriter(controllerFile)) {
+            w.write("""
+package com.demo.controller;
+
+import com.demo.service.OrderService;
+
+@RestController
+public class OrderController {
+    private final OrderService orderService;
+
+    public OrderController(OrderService orderService) {
+        this.orderService = orderService;
+    }
+
+    public String quote(Long id) {
+        return orderService.quote(id);
+    }
+}
+""");
+        }
+
+        ParsedClassInfo info = parserService.parseFile(controllerFile);
+        Assertions.assertNotNull(info);
+        Assertions.assertEquals("OrderController", info.getClassName());
+        Assertions.assertEquals(1, info.getMethodCalls().size());
+
+        MethodCallInfo call = info.getMethodCalls().get(0);
+        Assertions.assertEquals("quote", call.getTargetMethod());
+        Assertions.assertEquals("com.demo.service.OrderService", call.getDependencyName(),
+                "Maven layout should resolve interface to FQN, got: " + call.getDependencyName());
+
+        String candidates = call.getDependencyCandidates();
+        Assertions.assertNotNull(candidates,
+                "Maven layout must populate dependencyCandidates (was empty in production)");
+        Assertions.assertTrue(candidates.contains("com.demo.service.impl.OrderServiceImpl"),
+                "should include OrderServiceImpl, got: " + candidates);
+        Assertions.assertTrue(candidates.contains("com.demo.service.impl.OrderServiceV2Impl"),
+                "multi-impl strategy: all concrete impls, got: " + candidates);
+    }
+
+    /**
+     * 同类 / 无 receiver 调用应落边（getProduct → requireProduct → findById），
+     * 供文档 BFS 把 private 助手方法体一并喂给 AI。
+     */
+    @Test
+    public void testSameClassPrivateHelperCallsRecorded() throws IOException {
+        File f = writeTemp("ProductServiceSame", ".java", """
+package com.codeinsight.demo.service;
+
+import java.util.Optional;
+
+public class ProductService {
+    public ProductView getProduct(Long id) {
+        Product product = requireProduct(id);
+        return toView(product);
+    }
+
+    private Product requireProduct(Long id) {
+        return findById(id).orElseThrow();
+    }
+
+    public Optional<Product> findById(Long id) {
+        return Optional.empty();
+    }
+
+    private ProductView toView(Product product) {
+        return null;
+    }
+}
+
+class Product {}
+class ProductView {}
+""");
+        ParsedClassInfo info = parserService.parseFile(f);
+        Assertions.assertNotNull(info);
+        Assertions.assertTrue(info.getMethodCalls().stream()
+                        .anyMatch(c -> "getProduct".equals(c.getCallerMethod())
+                                && "requireProduct".equals(c.getTargetMethod())
+                                && "ProductService".equals(c.getDependencyName())),
+                "bare requireProduct() should be same-class edge, got: " + info.getMethodCalls());
+        Assertions.assertTrue(info.getMethodCalls().stream()
+                        .anyMatch(c -> "requireProduct".equals(c.getCallerMethod())
+                                && "findById".equals(c.getTargetMethod())),
+                "requireProduct → findById should be recorded, got: " + info.getMethodCalls());
+        Assertions.assertTrue(info.getMethodCalls().stream()
+                        .anyMatch(c -> "getProduct".equals(c.getCallerMethod())
+                                && "toView".equals(c.getTargetMethod())),
+                "toView() same-class call should be recorded, got: " + info.getMethodCalls());
     }
 
     // ---------- helpers ----------

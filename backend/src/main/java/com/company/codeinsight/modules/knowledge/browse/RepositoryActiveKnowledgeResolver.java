@@ -42,6 +42,7 @@ public class RepositoryActiveKnowledgeResolver {
         ctx.setVersionId(version.getId());
         ctx.setVersionNum(version.getVersionNum());
         ctx.setTaskId(version.getTaskId());
+        ctx.setPushedAt(version.getPushedAt());
         ctx.setReleaseDir(releaseDir);
         ctx.setReleaseDirExists(Files.isDirectory(releaseDir));
         return Optional.of(ctx);

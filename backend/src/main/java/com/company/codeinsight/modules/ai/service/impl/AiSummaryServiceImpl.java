@@ -517,6 +517,11 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             return true;
         }
 
+        // TODO(TEMP): 排查 Service 代码是否入 prompt，确认后删除本段日志
+        log.info("[TEMP_FULL_PROMPT] FUNCTION_DOC taskId={} target={} chars={} hasServiceHint={} prompt=\n{}",
+                taskId, label, promptInput.length(),
+                promptInput.contains("Service"), promptInput);
+
         // 3. 调 AI（可配置重试 + pipeline.log）
         AiSummaryService.AiCallMeta callMeta = new AiSummaryService.AiCallMeta();
         callMeta.setCallStage("FUNCTION_DOC");
@@ -1132,6 +1137,11 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             return;
         }
 
+        // TODO(TEMP): 排查 Service 代码是否入 prompt，确认后删除本段日志
+        log.info("[TEMP_FULL_PROMPT] MODULE_DOC taskId={} module={} chars={} hasServiceHint={} prompt=\n{}",
+                task.getId(), moduleName, promptInput.length(),
+                promptInput.contains("Service"), promptInput);
+
         // 3. 调 AI（可配置重试 + pipeline.log）
         AiSummaryService.AiCallMeta callMeta = new AiSummaryService.AiCallMeta();
         callMeta.setCallStage("MODULE_DOC");
@@ -1331,8 +1341,12 @@ public class AiSummaryServiceImpl implements AiSummaryService {
      * 输入：["com.demo.A#listUsers()", "com.demo.B#findById()", "com.demo.A#createUser()"]
      * 输出：{ "com.demo.A" → {"listUsers()", "createUser()"}, "com.demo.B" → {"findById()"} }
      */
+    /**
+     * 按 methodSignatures 的遍历序聚合到类（须为 LinkedHashSet/BFS 发现序），
+     * 使用 LinkedHashMap 保证 prompt 中类块顺序 = 入口 → 下游调用链顺序。
+     */
     private Map<String, Set<String>> groupByClass(Set<String> methodSignatures) {
-        Map<String, Set<String>> result = new java.util.HashMap<>();
+        Map<String, Set<String>> result = new LinkedHashMap<>();
         for (String sig : methodSignatures) {
             int hashIdx = sig.indexOf('#');
             if (hashIdx < 0) continue;
@@ -1344,32 +1358,42 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     }
 
     /**
-     * 按 methodName 集合截取类文件源码（用 startLine/endLine 范围）
+     * 按 methodName 集合截取类文件源码（用 startLine/endLine 范围）。
+     * 方法输出顺序跟随 {@code targetMethodSigs} 的插入序（BFS 发现序），而非源文件声明序。
      * 只输出目标方法，不输出 import / 字段 / 其他方法；调用方负责拼 FQ / package 头。
      */
     private ClassMethodSnippet filterClassToMethods(File classFile, Set<String> targetMethodSigs) {
         try {
             ParsedClassInfo info = javaParserService.parseFile(classFile);
             if (info == null) return null;
-            // 把 methodSigs 集合 → Set<methodName>（"listUsers(Integer)" → "listUsers"）
-            Set<String> targetMethodNames = new java.util.HashSet<>();
+            Map<String, ParsedClassInfo.MethodInfo> byName = new LinkedHashMap<>();
+            for (ParsedClassInfo.MethodInfo mi : info.getMethods()) {
+                if (mi.getName() != null && !byName.containsKey(mi.getName())) {
+                    byName.put(mi.getName(), mi);
+                }
+            }
+            // 按 BFS 发现序去重方法名
+            LinkedHashSet<String> orderedNames = new LinkedHashSet<>();
             for (String sig : targetMethodSigs) {
                 int parenIdx = sig.indexOf('(');
                 String methodName = parenIdx >= 0 ? sig.substring(0, parenIdx) : sig;
-                targetMethodNames.add(methodName.trim());
+                if (StringUtils.hasText(methodName)) {
+                    orderedNames.add(methodName.trim());
+                }
             }
             java.util.List<String> lines = Files.readAllLines(classFile.toPath());
             StringBuilder sb = new StringBuilder();
-            for (ParsedClassInfo.MethodInfo mi : info.getMethods()) {
-                if (targetMethodNames.contains(mi.getName())
-                        && mi.getStartLine() != null && mi.getEndLine() != null) {
-                    int start = mi.getStartLine() - 1;
-                    int end = Math.min(mi.getEndLine(), lines.size());
-                    for (int i = start; i < end; i++) {
-                        sb.append(lines.get(i)).append("\n");
-                    }
-                    sb.append("\n");
+            for (String methodName : orderedNames) {
+                ParsedClassInfo.MethodInfo mi = byName.get(methodName);
+                if (mi == null || mi.getStartLine() == null || mi.getEndLine() == null) {
+                    continue;
                 }
+                int start = mi.getStartLine() - 1;
+                int end = Math.min(mi.getEndLine(), lines.size());
+                for (int i = start; i < end; i++) {
+                    sb.append(lines.get(i)).append("\n");
+                }
+                sb.append("\n");
             }
             String body = sb.toString();
             if (!StringUtils.hasText(body)) {

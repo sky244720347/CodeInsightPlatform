@@ -56,6 +56,7 @@ import {
   getKnowledgeBrowseTree,
   listKnowledgeBrowse,
 } from '../../api/knowledge-browse';
+import { formatKnowledgePushedAt } from '../../api/knowledge-query';
 import MarkdownView from '../../components/MarkdownView';
 import type {
   KnowledgeBrowseFileType,
@@ -681,6 +682,8 @@ const KnowledgeBrowse: React.FC = () => {
     },
   ];
 
+  const pushedAtLabel = formatKnowledgePushedAt(context?.pushedAt);
+
   return (
     <div className="ci-page ci-knowledge-browse-page">
       <Card>
@@ -698,6 +701,7 @@ const KnowledgeBrowse: React.FC = () => {
             {context?.versionId != null && context?.releaseDirExists && (
               <Tag color="processing">
                 当前生效：{context.versionNum}
+                {pushedAtLabel ? ` · ${pushedAtLabel}` : ''}
                 {context.taskId != null ? ` · 任务 #${context.taskId}` : ''}
               </Tag>
             )}

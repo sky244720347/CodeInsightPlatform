@@ -20,14 +20,36 @@ import java.util.Set;
 /**
  * 方法调用链图 BFS 实现。
  * <p>流程：rootSignatures 入队 → 查出边 → 将 target 规范为 {@code 短类名#method(args)}
- * （旧数据裸方法名 + dependency_name / dependency_candidates 兜底）→ 去重入队。</p>
+ * （旧数据裸方法名 + dependency_name / dependency_candidates 兜底）→ 去重入队。
+ * 返回 {@link LinkedHashSet}，顺序为 BFS 发现序（入口 → 下游），供文档拼装保序。</p>
  */
 @Slf4j
 @Service
 public class MethodCallGraphServiceImpl implements MethodCallGraphService {
 
+    /** 正向 BFS 总深度上限（含根为 0）；防止超大图撑爆文档 prompt。 */
+    static final int MAX_BFS_DEPTH = 10;
+
+    /**
+     * 连续「同类调用」额外深度上限（跨类边会清零计数）。
+     * 用于收束 Service 内 private 助手链（requireProduct → findById → …）。
+     */
+    static final int MAX_SAME_CLASS_DEPTH = 3;
+
     @Autowired
     private MethodCallMapper methodCallMapper;
+
+    private static final class BfsNode {
+        final String signature;
+        final int depth;
+        final int sameClassDepth;
+
+        BfsNode(String signature, int depth, int sameClassDepth) {
+            this.signature = signature;
+            this.depth = depth;
+            this.sameClassDepth = sameClassDepth;
+        }
+    }
 
     @Override
     public Set<String> resolveReachableMethods(Long taskId, Set<String> rootSignatures) {
@@ -36,7 +58,7 @@ public class MethodCallGraphServiceImpl implements MethodCallGraphService {
         }
 
         Set<String> visited = new LinkedHashSet<>();
-        Deque<String> queue = new ArrayDeque<>();
+        Deque<BfsNode> queue = new ArrayDeque<>();
         for (String root : rootSignatures) {
             if (!StringUtils.hasText(root)) {
                 continue;
@@ -44,23 +66,29 @@ public class MethodCallGraphServiceImpl implements MethodCallGraphService {
             // 根签名也可能是 FQ#method，统一短类名后再入队，便于精确匹配 caller_signature
             String normalizedRoot = normalizeClassPrefix(root.trim());
             if (visited.add(normalizedRoot)) {
-                queue.add(normalizedRoot);
+                queue.add(new BfsNode(normalizedRoot, 0, 0));
             }
             if (!normalizedRoot.equals(root.trim()) && visited.add(root.trim())) {
-                queue.add(root.trim());
+                queue.add(new BfsNode(root.trim(), 0, 0));
             }
         }
 
         int edgeHits = 0;
         int rootMissEdges = 0;
         int skippedBareTarget = 0;
+        int skippedDepth = 0;
 
         while (!queue.isEmpty()) {
-            String cur = queue.poll();
+            BfsNode curNode = queue.poll();
+            String cur = curNode.signature;
             List<MethodCall> outgoing = findOutgoing(taskId, cur);
             if (outgoing.isEmpty() && rootSignatures.contains(cur)) {
                 rootMissEdges++;
             }
+            if (curNode.depth >= MAX_BFS_DEPTH) {
+                continue;
+            }
+            String curClass = classNameOf(cur);
             for (MethodCall mc : outgoing) {
                 edgeHits++;
                 List<String> nextKeys = resolveNextSignatures(taskId, mc);
@@ -71,14 +99,27 @@ public class MethodCallGraphServiceImpl implements MethodCallGraphService {
                     continue;
                 }
                 for (String next : nextKeys) {
+                    String nextClass = classNameOf(next);
+                    boolean sameClass = StringUtils.hasText(curClass)
+                            && curClass.equals(nextClass);
+                    int nextSameDepth = sameClass ? curNode.sameClassDepth + 1 : 0;
+                    if (sameClass && nextSameDepth > MAX_SAME_CLASS_DEPTH) {
+                        skippedDepth++;
+                        continue;
+                    }
+                    int nextDepth = curNode.depth + 1;
+                    if (nextDepth > MAX_BFS_DEPTH) {
+                        skippedDepth++;
+                        continue;
+                    }
                     if (visited.add(next)) {
-                        queue.add(next);
+                        queue.add(new BfsNode(next, nextDepth, nextSameDepth));
                     }
                 }
             }
         }
 
-        // 仅保留含 # 的节点，供 groupByClass / 源码截取使用
+        // 仅保留含 # 的节点，供 groupByClass / 源码截取使用（保持 LinkedHashSet 发现序）
         Set<String> result = new LinkedHashSet<>();
         for (String sig : visited) {
             if (sig != null && sig.indexOf('#') > 0) {
@@ -90,10 +131,21 @@ public class MethodCallGraphServiceImpl implements MethodCallGraphService {
             log.warn("MethodCallGraphService BFS 根签名在 ci_method_call 无出边 taskId={} roots={} rootMissEdges={} sampleRoots={}",
                     taskId, rootSignatures.size(), rootMissEdges, sampleRoots(rootSignatures, 3));
         } else {
-            log.info("MethodCallGraphService BFS taskId={} roots={} reachable={} edgeHits={} skippedBare={}",
-                    taskId, rootSignatures.size(), result.size(), edgeHits, skippedBareTarget);
+            log.info("MethodCallGraphService BFS taskId={} roots={} reachable={} edgeHits={} skippedBare={} skippedDepth={}",
+                    taskId, rootSignatures.size(), result.size(), edgeHits, skippedBareTarget, skippedDepth);
         }
         return result;
+    }
+
+    private static String classNameOf(String signature) {
+        if (!StringUtils.hasText(signature)) {
+            return null;
+        }
+        int hash = signature.indexOf('#');
+        if (hash <= 0) {
+            return null;
+        }
+        return stripPackage(signature.substring(0, hash));
     }
 
     /**

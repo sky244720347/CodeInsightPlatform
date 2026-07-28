@@ -1,7 +1,7 @@
 import React from 'react';
 import { Button, Card, Select, Space, Tag, Tooltip, Typography } from 'antd';
 import { ReloadOutlined, ToolOutlined } from '@ant-design/icons';
-import type { KnowledgeContextView } from '../../api/knowledge-query';
+import { formatKnowledgePushedAt, type KnowledgeContextView } from '../../api/knowledge-query';
 import type { Repository, System } from '../../types';
 import PageHelpHint from '../../components/PageHelpHint';
 import {
@@ -54,6 +54,7 @@ const KnowledgeContextBar: React.FC<KnowledgeContextBarProps> = ({
   });
 
   const hasActiveVersion = context?.versionId != null && context.releaseDirExists;
+  const pushedAtLabel = formatKnowledgePushedAt(context?.pushedAt);
 
   return (
     <div className="ci-knowledge-query-shell">
@@ -70,6 +71,7 @@ const KnowledgeContextBar: React.FC<KnowledgeContextBarProps> = ({
             {hasActiveVersion && (
               <Tag color="processing">
                 当前生效：{context?.versionNum}
+                {pushedAtLabel ? ` · ${pushedAtLabel}` : ''}
                 {context?.taskId != null ? ` · 任务 #${context.taskId}` : ''}
               </Tag>
             )}

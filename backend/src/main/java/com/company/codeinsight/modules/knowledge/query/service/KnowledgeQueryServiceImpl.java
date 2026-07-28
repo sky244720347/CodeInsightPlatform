@@ -61,6 +61,7 @@ public class KnowledgeQueryServiceImpl implements KnowledgeQueryService {
             view.setVersionId(ctx.getVersionId());
             view.setVersionNum(ctx.getVersionNum());
             view.setTaskId(ctx.getTaskId());
+            view.setPushedAt(ctx.getPushedAt());
             view.setReleaseDirExists(ctx.isReleaseDirExists());
         } else {
             view.setReleaseDirExists(false);
