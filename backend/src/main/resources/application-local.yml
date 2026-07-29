@@ -41,7 +41,8 @@ code-insight:
     model-name: ${LLM_MODEL_NAME:MiniMax-M3}
     hierarchy-parallelism: ${AI_HIERARCHY_PARALLELISM:4}
     retry:
-      max-attempts: ${AI_RETRY_MAX_ATTEMPTS:3}
+      hierarchy-max-attempts: ${AI_RETRY_HIERARCHY_MAX_ATTEMPTS:3}
+      doc-max-attempts: ${AI_RETRY_DOC_MAX_ATTEMPTS:5}
       backoff-ms: ${AI_RETRY_BACKOFF_MS:1000}
   token:
     limit-enabled: ${TOKEN_LIMIT_ENABLED:true}

@@ -19,12 +19,9 @@ public class TaskQueueDispatcherRemediationTest {
     @BeforeEach
     void setUp() {
         dispatcher = new TaskQueueDispatcher(
-                Mockito.mock(com.company.codeinsight.modules.task.mapper.DecompileTaskMapper.class),
                 Mockito.mock(com.company.codeinsight.modules.task.service.DecompileTaskService.class),
                 Mockito.mock(TaskStateMachineServiceImpl.class),
                 Mockito.mock(com.company.codeinsight.modules.task.service.TaskConcurrencyLimiter.class),
-                Mockito.mock(com.company.codeinsight.common.cluster.ClusterProperties.class),
-                Mockito.mock(com.company.codeinsight.common.cluster.ClusterLeaderLock.class),
                 Mockito.mock(com.company.codeinsight.modules.task.service.TaskQueueClaimService.class)
         );
         stateMachineService = Mockito.mock(TaskStateMachineServiceImpl.class);
@@ -56,7 +53,10 @@ public class TaskQueueDispatcherRemediationTest {
     @Test
     void unknownResumeThrows() {
         DecompileTask task = remediationTask("UNKNOWN");
-        Assertions.assertThrows(IllegalStateException.class, () -> invokeTransit(task));
+        Exception ex = Assertions.assertThrows(Exception.class, () -> invokeTransit(task));
+        Throwable cause = ex instanceof java.lang.reflect.InvocationTargetException
+                ? ex.getCause() : ex;
+        Assertions.assertInstanceOf(IllegalStateException.class, cause);
     }
 
     private DecompileTask remediationTask(String resumeFrom) {

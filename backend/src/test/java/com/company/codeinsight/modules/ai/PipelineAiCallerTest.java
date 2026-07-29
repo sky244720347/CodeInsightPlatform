@@ -16,6 +16,7 @@ import org.springframework.util.StringUtils;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
+import static org.mockito.Mockito.lenient;
 
 @ExtendWith(MockitoExtension.class)
 class PipelineAiCallerTest {
@@ -34,9 +35,9 @@ class PipelineAiCallerTest {
 
     @BeforeEach
     void setUp() {
-        when(retryProperties.getMaxAttempts()).thenReturn(3);
-        when(retryProperties.getBackoffMs()).thenReturn(0L);
-        when(retryProperties.getConcurrencyBackoffMs()).thenReturn(0L);
+        lenient().when(retryProperties.resolveMaxAttempts(any())).thenReturn(3);
+        lenient().when(retryProperties.getBackoffMs()).thenReturn(0L);
+        lenient().when(retryProperties.getConcurrencyBackoffMs()).thenReturn(0L);
     }
 
     @Test
@@ -130,5 +131,69 @@ class PipelineAiCallerTest {
         assertEquals("{}", result);
         verify(aiSummaryService, times(1)).summarizeWithPrompt(eq(4L), anyString(), anyString(), any());
         verify(execLog).log(eq(4L), argThat(msg -> msg.contains("non-retryable")));
+    }
+
+    @Test
+    void classifiesContextAndTimeoutFailures() {
+        org.junit.jupiter.api.Assertions.assertTrue(
+                PipelineAiCaller.isContextLengthFailure("HTTP 400: context_length_exceeded"));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                PipelineAiCaller.isTimeoutFailure("java.net.http.HttpTimeoutException: request timed out"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                PipelineAiCaller.isContextLengthFailure("structure: 缺少章节"));
+        org.junit.jupiter.api.Assertions.assertFalse(
+                PipelineAiCaller.shouldShrinkOnFailure("empty response", 80_000, 50_000));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                PipelineAiCaller.shouldShrinkOnFailure("HTTP 400: context_length_exceeded", 80_000, 50_000));
+    }
+
+    @Test
+    void retriesWithRealHttpErrorReasonInLog() {
+        when(aiSummaryService.summarizeWithPrompt(eq(5L), anyString(), anyString(), any()))
+                .thenThrow(new BusinessException("HTTP 400: {\"error\":{\"code\":\"context_length_exceeded\"}}"))
+                .thenReturn("## 一、\n## 二、\n## 三、\n## 四、\n## 五、\n## 六、\n");
+
+        String result = pipelineAiCaller.callWithRetry(
+                5L,
+                "FUNCTION_DOC",
+                "白名单查询",
+                "prompt",
+                "test-model",
+                new AiSummaryService.AiCallMeta(),
+                response -> {
+                    if (!StringUtils.hasText(response) || "{}".equals(response.trim())) {
+                        return PipelineAiCaller.ValidationResult.fail("empty response");
+                    }
+                    return PipelineAiCaller.ValidationResult.ok(response);
+                },
+                null
+        );
+
+        org.junit.jupiter.api.Assertions.assertTrue(result.contains("一、"));
+        verify(execLog).log(eq(5L), argThat(msg ->
+                msg.contains("[AI-RETRY]") && msg.contains("context_length_exceeded")));
+        verify(execLog).log(eq(5L), argThat(msg -> msg.contains("[AI-OK]")));
+    }
+
+    @Test
+    void callWithRetryOutcomeExposesLastFailureReason() {
+        when(aiSummaryService.summarizeWithPrompt(eq(6L), anyString(), anyString(), any()))
+                .thenThrow(new BusinessException("HTTP 400: context_length_exceeded"));
+
+        PipelineAiCaller.CallOutcome outcome = pipelineAiCaller.callWithRetryOutcome(
+                6L,
+                "MODULE_HIERARCHY",
+                "com.example.Foo",
+                "prompt",
+                "test-model",
+                new AiSummaryService.AiCallMeta(),
+                response -> PipelineAiCaller.ValidationResult.ok(response),
+                null
+        );
+
+        org.junit.jupiter.api.Assertions.assertFalse(outcome.success());
+        org.junit.jupiter.api.Assertions.assertFalse(outcome.hasPayload());
+        org.junit.jupiter.api.Assertions.assertTrue(
+                outcome.lastFailureReason().contains("context_length_exceeded"));
     }
 }

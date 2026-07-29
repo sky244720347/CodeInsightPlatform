@@ -15,7 +15,7 @@
        ├─ requireKnowledgeReview=true  → PENDING_REVIEW → 人工 confirmTask
        └─ false（常见）                 → 不进 PENDING_REVIEW，服务端自动确认
             ↓
-  onKnowledgeConfirmed（KnowledgePublishFacade）
+  → onKnowledgeConfirmed（KnowledgePublishFacade，事务提交后异步）
        1) 组装 docs/code-insight（无源码类 index）
        2) 建版（versionNum = v{N+1}）
        3) 删源码工作区（留 docs）+ 删 drafts 磁盘
@@ -108,13 +108,14 @@ ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS require_knowledge_review BOOLEAN DE
 
 `KnowledgePublishFacade`：
 
-- `autoConfirmAndPublish(taskId)`：草稿 CONFIRMED + `GENERATING_DOC→CONFIRMED` + `onKnowledgeConfirmed`
+- `autoConfirmAndPublish(taskId)`：草稿 CONFIRMED + `GENERATING_DOC→CONFIRMED` + **异步** `schedulePublishAfterConfirmed` → `onKnowledgeConfirmed`
 - `onKnowledgeConfirmed(taskId, confirmedBy)`：组装 → 建版 → 清源码/drafts → `enqueuePush(NAS)`
+- `schedulePublishAfterConfirmed`：事务 `afterCommit` 后投递 `knowledgePublishExecutor`（人工 confirm 与跳过复核共用）
 
 调用方：
 
-- 流水线 `finishAfterDocGenerated`（`requireKnowledgeReview=false`）
-- `DraftService.confirmTask` 末尾（人工复核通过）
+- 流水线 `finishAfterDocGenerated`（`requireKnowledgeReview=false`）→ `autoConfirmAndPublish`
+- `DraftService.confirmTask` 末尾（人工复核通过）→ 仅 CONFIRMED，再 `schedulePublishAfterConfirmed`
 
 推送成功（`PushServiceImpl` SUCCESS）：`TaskDiskCleanupService.cleanupAfterPush(taskId)`。
 

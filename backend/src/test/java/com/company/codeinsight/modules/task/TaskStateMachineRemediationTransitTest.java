@@ -49,6 +49,20 @@ public class TaskStateMachineRemediationTransitTest {
     }
 
     @Test
+    void resumeQueuedTransitionsAllowed() {
+        Assertions.assertTrue(stateMachineService.canTransit(
+                TaskStatus.ENTRYPOINT_REVIEW, TaskStatus.RESUME_QUEUED));
+        Assertions.assertTrue(stateMachineService.canTransit(
+                TaskStatus.MODULE_HIERARCHY_REVIEW, TaskStatus.RESUME_QUEUED));
+        Assertions.assertTrue(stateMachineService.canTransit(
+                TaskStatus.RESUME_QUEUED, TaskStatus.AI_ANALYZING));
+        Assertions.assertTrue(stateMachineService.canTransit(
+                TaskStatus.RESUME_QUEUED, TaskStatus.GENERATING_DOC));
+        Assertions.assertTrue(stateMachineService.canTransit(
+                TaskStatus.RESUME_QUEUED, TaskStatus.BASELINE_DOC_INHERIT));
+    }
+
+    @Test
     void generatingDocIdempotent() {
         Assertions.assertTrue(stateMachineService.canTransit(TaskStatus.GENERATING_DOC, TaskStatus.GENERATING_DOC));
     }

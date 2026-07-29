@@ -34,9 +34,17 @@ code-insight:
   ai:
     hierarchy-parallelism: 4   # 模块层级 AI 调用并发数，按模型 API 限流调整
     retry:
-      max-attempts: 3            # 单次逻辑 AI 调用最大尝试次数（模块提取 / 文档生成等）
+      # 层级提炼与文档生成次数拆分（含首次）
+      hierarchy-max-attempts: 3
+      doc-max-attempts: 5
       backoff-ms: 1000           # 重试退避基数（毫秒），实际等待 = backoff-ms × attempt
       concurrency-backoff-ms: 2000  # 并发槽位不足时退避基数（毫秒），实际等待 = concurrency-backoff-ms × attempt
+    doc:
+      # 方案 A：单次调用内裁剪；真分片见 docs/doc-generation-guarantee-plan.md §4
+      max-prompt-chars: 100000
+      max-method-body-chars: 12000
+      http-timeout-seconds: 120
+      shrink-factor: 0.5
   review:
     # true：知识复核允许未逐篇确认时直接「任务整体通过」（未确认草稿一并 CONFIRMED）
     allow-partial-pass: ${REVIEW_ALLOW_PARTIAL_PASS:false}
