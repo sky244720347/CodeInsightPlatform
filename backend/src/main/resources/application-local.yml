@@ -44,6 +44,10 @@ code-insight:
       hierarchy-max-attempts: ${AI_RETRY_HIERARCHY_MAX_ATTEMPTS:3}
       doc-max-attempts: ${AI_RETRY_DOC_MAX_ATTEMPTS:5}
       backoff-ms: ${AI_RETRY_BACKOFF_MS:1000}
+    doc:
+      parallelism: ${AI_DOC_PARALLELISM:4}
+      acquire-wait-seconds: ${AI_DOC_ACQUIRE_WAIT_SECONDS:1800}
+      http-timeout-seconds: ${AI_DOC_HTTP_TIMEOUT_SECONDS:120}
   token:
     limit-enabled: ${TOKEN_LIMIT_ENABLED:true}
     task-limit: ${TOKEN_TASK_LIMIT:100000}

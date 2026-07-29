@@ -108,12 +108,13 @@ class BatchInitialTriggerServiceImplTest {
         DecompileTask created = new DecompileTask();
         created.setId(100L);
         when(decompileTaskService.createInitialTask(
-                eq(1L), eq(10L), isNull(), isNull(), isNull(), isNull(),
+                eq(1L), eq(10L), isNull(), isNull(), eq("MiniMax-M3"), isNull(),
                 eq(Boolean.FALSE), eq(Boolean.FALSE))).thenReturn(created);
 
-        BatchInitialTriggerResult accepted = service.submitAsync();
+        BatchInitialTriggerResult accepted = service.submitAsync("MiniMax-M3");
         assertEquals(BatchInitialTriggerResult.STATUS_ACCEPTED, accepted.getStatus());
         assertEquals(1, accepted.getTotalRepos());
+        assertEquals("MiniMax-M3", accepted.getModelName());
 
         // sync executor already finished
         BatchInitialTriggerResult done = service.getJob(accepted.getJobId());
@@ -121,6 +122,9 @@ class BatchInitialTriggerServiceImplTest {
         assertEquals(1, done.getTriggered());
         assertEquals(BatchInitialItemResult.STATUS_TRIGGERED, done.getItems().get(0).getStatus());
         verify(decompileTaskService).startTask(100L);
+        verify(decompileTaskService).createInitialTask(
+                eq(1L), eq(10L), isNull(), isNull(), eq("MiniMax-M3"), isNull(),
+                eq(Boolean.FALSE), eq(Boolean.FALSE));
     }
 
     @Test
@@ -130,7 +134,7 @@ class BatchInitialTriggerServiceImplTest {
         when(systemApplicationService.getById(1L)).thenReturn(sys(1L, "SYS-A"));
         when(decompileTaskMapper.selectCount(any())).thenReturn(1L);
 
-        BatchInitialTriggerResult accepted = service.submitAsync();
+        BatchInitialTriggerResult accepted = service.submitAsync("MiniMax-M3");
         BatchInitialTriggerResult done = service.getJob(accepted.getJobId());
 
         assertEquals(1, done.getSkipped());
@@ -143,7 +147,7 @@ class BatchInitialTriggerServiceImplTest {
     void rejectsWhenLockHeld() {
         redis.put("ci:batch-initial:lock", "busy");
 
-        BusinessException ex = assertThrows(BusinessException.class, () -> service.submitAsync());
+        BusinessException ex = assertThrows(BusinessException.class, () -> service.submitAsync("MiniMax-M3"));
         assertTrue(ex.getMessage().contains("进行中"));
     }
 

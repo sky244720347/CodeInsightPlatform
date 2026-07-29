@@ -38,6 +38,9 @@ public class BatchInitialTriggerResult {
     /** 作业级说明（如失败原因） */
     private String message;
 
+    /** 作业选用的 AI 模型 identifier（提交时写入，便于结果页展示） */
+    private String modelName;
+
     @Builder.Default
     private List<BatchInitialItemResult> items = new ArrayList<>();
 }

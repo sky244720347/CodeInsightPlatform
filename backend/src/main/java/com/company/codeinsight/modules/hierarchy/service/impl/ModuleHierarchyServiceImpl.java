@@ -1181,9 +1181,17 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
             );
 
             if (!outcome.hasPayload()) {
-                execLog.log(taskId, String.format(
-                        "[AI-FAIL] stage=MODULE_HIERARCHY target=%s reason=%s (entry dropped)",
-                        entryLabel, PipelineAiCaller.truncateReason(outcome.lastFailureReason())));
+                String failReason = outcome.lastFailureReason();
+                // 等槽超时：放弃当前入口，阶段继续（保证拿到槽的入口正确执行）
+                if (failReason != null && failReason.contains("并发等待超时")) {
+                    execLog.log(taskId, String.format(
+                            "[AI-SKIP] stage=MODULE_HIERARCHY target=%s reason=%s (entry abandoned, stage continues)",
+                            entryLabel, PipelineAiCaller.truncateReason(failReason)));
+                } else {
+                    execLog.log(taskId, String.format(
+                            "[AI-FAIL] stage=MODULE_HIERARCHY target=%s reason=%s (entry dropped)",
+                            entryLabel, PipelineAiCaller.truncateReason(failReason)));
+                }
                 return null;
             }
             String aiPayload = outcome.response();

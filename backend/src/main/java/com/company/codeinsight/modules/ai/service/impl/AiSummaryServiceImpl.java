@@ -39,6 +39,8 @@ import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
 import com.company.codeinsight.modules.scanner.model.ScanScope;
 import com.company.codeinsight.modules.scanner.service.ScanScopeResolver;
 import com.company.codeinsight.modules.task.service.TaskExecutionLogger;
+import jakarta.annotation.PostConstruct;
+import jakarta.annotation.PreDestroy;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
@@ -58,6 +60,11 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
 @Service
@@ -125,6 +132,37 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
     @Autowired
     private AiDocBudgetProperties docBudgetProperties;
+
+    /** 本机文档生成固定线程池；大小 = doc.parallelism，超额任务排队不新开线程 */
+    private ExecutorService docAiExecutor;
+
+    @PostConstruct
+    public void initDocAiExecutor() {
+        int n = Math.max(1, docBudgetProperties.getParallelism());
+        docAiExecutor = Executors.newFixedThreadPool(n, r -> {
+            Thread t = new Thread(r, "doc-ai-");
+            t.setDaemon(true);
+            return t;
+        });
+        log.info("文档生成线程池已启动 parallelism={} acquireWaitSeconds={}",
+                n, docBudgetProperties.getAcquireWaitSeconds());
+    }
+
+    @PreDestroy
+    public void shutdownDocAiExecutor() {
+        if (docAiExecutor == null) {
+            return;
+        }
+        docAiExecutor.shutdown();
+        try {
+            if (!docAiExecutor.awaitTermination(60, TimeUnit.SECONDS)) {
+                docAiExecutor.shutdownNow();
+            }
+        } catch (InterruptedException e) {
+            docAiExecutor.shutdownNow();
+            Thread.currentThread().interrupt();
+        }
+    }
 
     /**
      * 包级访问器：供 DecompileTaskServiceImpl 在 AI 阶段开头读取 Mock 状态写到 pipeline.log。
@@ -454,42 +492,68 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                                                   java.util.Set<String> entryModifiedClassNames) {
         Long taskId = task.getId();
         int fnTotal = countFunctionsInHierarchy(hierarchy);
-        int fnIndex = 0;
-        int regenerated = 0;
-        int skipped = 0;
-        int failed = 0;
 
+        record FnJob(int index, com.company.codeinsight.modules.hierarchy.model.ModuleDto m,
+                     com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm,
+                     com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
+                     String label) {
+        }
+
+        List<FnJob> jobs = new ArrayList<>();
+        int fnIndex = 0;
+        int skipped = 0;
         for (com.company.codeinsight.modules.hierarchy.model.ModuleDto m : hierarchy.getModules().values()) {
             for (com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm : m.getSubModules().values()) {
                 for (com.company.codeinsight.modules.hierarchy.model.FunctionDto fn : sm.getFunctions().values()) {
                     fnIndex++;
-                    // 增量判定：function 需要重跑的条件（满足任一即可）
-                    //   ① fn.classPaths ∩ changedFqSet ≠ ∅  — 直接 git diff 命中
-                    //   ② fn.classPaths ∩ bfsHitClassNames ≠ ∅  — 反向 BFS 命中入口类
-                    //   ③ fn.classPaths ∩ entryModifiedClassNames ≠ ∅  — 入口内容变更（bodyHash 变化）
                     if (changedFqSet != null || bfsHitClassNames != null || entryModifiedClassNames != null) {
                         boolean touched = functionTouchedByIncremental(fn, changedFqSet, bfsHitClassNames, entryModifiedClassNames);
-                        if (!touched) { skipped++; continue; }
+                        if (!touched) {
+                            skipped++;
+                            continue;
+                        }
                     }
                     String label = m.getModuleName() + " / " + sm.getSubModuleName() + " / " + fn.getFunctionName();
-                    execLog.log(taskId, "  [fn " + fnIndex + "/" + fnTotal + "] " + label);
-                    try {
-                        // 方案 A：始终写出草稿（含 TEMPLATE 降级），不再软跳过留空洞
-                        generateFunctionDraft(task, ws, m, sm, fn, hierarchy, projectDir);
-                        regenerated++;
-                    } catch (Exception e) {
-                        failed++;
-                        log.error("generateFunctionDraft failed for function {}: {}", label, e.getMessage(), e);
-                        execLog.logException(taskId, "文档生成失败 function=" + label, e);
-                    }
+                    jobs.add(new FnJob(fnIndex, m, sm, fn, label));
                 }
             }
         }
+
+        int parallelism = Math.max(1, docBudgetProperties.getParallelism());
+        execLog.log(taskId, String.format(
+                "  [DOC-PARALLEL] parallelism=%d pending=%d skipped=%d acquireWaitSeconds=%d",
+                parallelism, jobs.size(), skipped, docBudgetProperties.getAcquireWaitSeconds()));
+
+        AtomicInteger regenerated = new AtomicInteger();
+        AtomicInteger failed = new AtomicInteger();
+        List<Future<?>> futures = new ArrayList<>(jobs.size());
+        for (FnJob job : jobs) {
+            futures.add(docAiExecutor.submit(() -> {
+                execLog.log(taskId, "  [fn " + job.index() + "/" + fnTotal + "] " + job.label());
+                try {
+                    generateFunctionDraft(task, ws, job.m(), job.sm(), job.fn(), hierarchy, projectDir);
+                    regenerated.incrementAndGet();
+                } catch (Exception e) {
+                    failed.incrementAndGet();
+                    log.error("generateFunctionDraft failed for function {}: {}", job.label(), e.getMessage(), e);
+                    execLog.logException(taskId, "文档生成失败 function=" + job.label(), e);
+                }
+            }));
+        }
+        for (Future<?> f : futures) {
+            try {
+                f.get();
+            } catch (Exception e) {
+                failed.incrementAndGet();
+                log.error("文档并行任务异常: {}", e.getMessage(), e);
+            }
+        }
+
         execLog.log(taskId, String.format(
                 "  文档生成汇总 = 成功 %d / 共 %d（失败 %d，跳过 %d）",
-                regenerated, fnTotal, failed, skipped));
-        log.info("generateDraftDocument done (function). taskId={} total={} regenerated={} skipped={} failed={}",
-                taskId, fnTotal, regenerated, skipped, failed);
+                regenerated.get(), fnTotal, failed.get(), skipped));
+        log.info("generateDraftDocument done (function). taskId={} total={} regenerated={} skipped={} failed={} parallelism={}",
+                taskId, fnTotal, regenerated.get(), skipped, failed.get(), parallelism);
     }
 
     /**
@@ -2328,7 +2392,15 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             logAiBlock(taskId, callMeta, e.getMessage());
             throw e;
         }
-        aiConcurrencyService.tryAcquire();
+
+        String callStage = callMeta != null && StringUtils.hasText(callMeta.getCallStage())
+                ? callMeta.getCallStage() : "PROMPT";
+        // 文档 / 模块层级：应用层排队等 AI 槽（不改 AiConcurrencyService）；其它阶段 fail-fast
+        if (shouldWaitForAiPermit(callStage)) {
+            acquireAiPermitWithWait(taskId, callStage);
+        } else {
+            aiConcurrencyService.tryAcquire();
+        }
         try {
 
         // Mock 降级
@@ -2336,8 +2408,6 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 || !StringUtils.hasText(activeApiKey)
                 || activeApiKey.startsWith("test-key")
                 || "mock".equalsIgnoreCase(activeApiKey);
-
-        String callStage = callMeta != null && StringUtils.hasText(callMeta.getCallStage()) ? callMeta.getCallStage() : "PROMPT";
 
         if (shouldMock) {
             log.info("Mock 模式已开启 (aiMock={}, apiKey={})，对 task {} / stage {} 跳过真实 AI 调用",
@@ -2462,6 +2532,63 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 ? callMeta.getClassPath() : "-";
         execLog.log(taskId, String.format("[AI-BLOCK] stage=%s target=%s reason=%s",
                 stage, target, truncateAiLogReason(reason)));
+    }
+
+    /**
+     * 文档与模块层级：慢可以，优先等槽拿到许可再调模型；其它 stage 仍 fail-fast。
+     */
+    private static boolean shouldWaitForAiPermit(String callStage) {
+        if (!StringUtils.hasText(callStage)) {
+            return false;
+        }
+        String s = callStage.trim().toUpperCase();
+        if ("MODULE_HIERARCHY".equals(s)) {
+            return true;
+        }
+        return s.contains("DOC") || "FUNCTION_DOC".equals(s) || "MODULE_DOC".equals(s);
+    }
+
+    /**
+     * 对现有 {@code tryAcquire()} 做应用层排队等待，不改动 AiConcurrencyService。
+     * <p>超时取 max(httpTimeout×2, acquireWaitSeconds)。层级超时后由 PipelineAiCaller
+     * 标记 non-retryable → 当前入口放弃，阶段继续；文档超时走既有失败/降级路径。</p>
+     */
+    private void acquireAiPermitWithWait(Long taskId, String callStage) {
+        int waitSec = Math.max(docBudgetProperties.getHttpTimeoutSeconds() * 2,
+                Math.max(60, docBudgetProperties.getAcquireWaitSeconds()));
+        long deadlineNs = System.nanoTime() + Duration.ofSeconds(waitSec).toNanos();
+        boolean loggedWait = false;
+        while (true) {
+            try {
+                aiConcurrencyService.tryAcquire();
+                return;
+            } catch (BusinessException e) {
+                String msg = e.getMessage() != null ? e.getMessage() : "";
+                if (!msg.contains("并发已达上限")) {
+                    throw e;
+                }
+                long remainingNs = deadlineNs - System.nanoTime();
+                if (remainingNs <= 0) {
+                    throw new BusinessException("AI 调用并发等待超时（" + waitSec + "s），请稍后重试");
+                }
+                if (!loggedWait) {
+                    loggedWait = true;
+                    log.info("AI 并发已满，应用层排队等待 stage={} timeout={}s", callStage, waitSec);
+                    if (taskId != null) {
+                        execLog.log(taskId, String.format(
+                                "[AI-WAIT] stage=%s waiting for ai.concurrency permit timeout=%ds",
+                                callStage, waitSec));
+                    }
+                }
+                try {
+                    long sleepMs = Math.min(500L, Math.max(50L, TimeUnit.NANOSECONDS.toMillis(remainingNs)));
+                    Thread.sleep(sleepMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw new BusinessException("AI 调用并发等待被中断");
+                }
+            }
+        }
     }
 
     private java.util.Set<String> parseRemediationModuleIds(DecompileTask task) {

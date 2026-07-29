@@ -176,6 +176,28 @@ class PipelineAiCallerTest {
     }
 
     @Test
+    void doesNotRetryOnConcurrencyWaitTimeout() {
+        when(aiSummaryService.summarizeWithPrompt(eq(7L), anyString(), anyString(), any()))
+                .thenThrow(new BusinessException("AI 调用并发等待超时（1800s），请稍后重试"));
+
+        PipelineAiCaller.CallOutcome outcome = pipelineAiCaller.callWithRetryOutcome(
+                7L,
+                "MODULE_HIERARCHY",
+                "com.example.WaitTimeout",
+                "prompt",
+                "test-model",
+                new AiSummaryService.AiCallMeta(),
+                response -> PipelineAiCaller.ValidationResult.ok(response),
+                null
+        );
+
+        org.junit.jupiter.api.Assertions.assertFalse(outcome.hasPayload());
+        org.junit.jupiter.api.Assertions.assertTrue(outcome.lastFailureReason().contains("并发等待超时"));
+        verify(aiSummaryService, times(1)).summarizeWithPrompt(eq(7L), anyString(), anyString(), any());
+        verify(execLog).log(eq(7L), argThat(msg -> msg.contains("non-retryable") && msg.contains("并发等待超时")));
+    }
+
+    @Test
     void callWithRetryOutcomeExposesLastFailureReason() {
         when(aiSummaryService.summarizeWithPrompt(eq(6L), anyString(), anyString(), any()))
                 .thenThrow(new BusinessException("HTTP 400: context_length_exceeded"));

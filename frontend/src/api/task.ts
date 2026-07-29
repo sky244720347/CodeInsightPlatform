@@ -173,12 +173,16 @@ export interface BatchInitialTriggerResult {
   skipped: number;
   failed: number;
   message?: string;
+  /** 作业选用的 AI 模型 identifier */
+  modelName?: string;
   items: BatchInitialItemResult[];
 }
 
 /** 异步提交一键全量，立刻返回 jobId */
-export const batchTriggerInitial = (): Promise<BatchInitialTriggerResult> => {
-  return request.post('/tasks/batch-initial');
+export const batchTriggerInitial = (modelName?: string): Promise<BatchInitialTriggerResult> => {
+  return request.post('/tasks/batch-initial', null, {
+    params: modelName ? { modelName } : undefined,
+  });
 };
 
 /** 轮询一键全量作业进度 */

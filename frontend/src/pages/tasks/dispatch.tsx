@@ -82,6 +82,8 @@ const TaskDispatchPage: React.FC = () => {
   const [currentStep, setCurrentStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
   const [batchLoading, setBatchLoading] = useState(false);
+  const [batchConfirmOpen, setBatchConfirmOpen] = useState(false);
+  const [batchModelName, setBatchModelName] = useState<string | undefined>();
   const [batchResult, setBatchResult] = useState<BatchInitialTriggerResult | null>(null);
   const [batchResultOpen, setBatchResultOpen] = useState(false);
 
@@ -308,37 +310,40 @@ const TaskDispatchPage: React.FC = () => {
   };
 
   const handleBatchInitial = () => {
-    Modal.confirm({
-      title: '一键全量触发',
-      content:
-        '将为全平台所有未删除仓库在后台创建全量任务并入队 PENDING（异步，不会卡住页面）。同仓已有未完成任务或未绑提示词的仓库会跳过。是否继续？',
-      okText: '确认触发',
-      cancelText: '取消',
-      onOk: async () => {
-        setBatchLoading(true);
-        try {
-          const accepted = await batchTriggerInitial();
-          if (!accepted.jobId) {
-            message.error('未返回作业 ID');
-            return;
-          }
-          setBatchResult({
-            ...accepted,
-            items: accepted.items ?? [],
-            triggered: accepted.triggered ?? 0,
-            skipped: accepted.skipped ?? 0,
-            failed: accepted.failed ?? 0,
-          });
-          setBatchResultOpen(true);
-          message.success(`已提交后台执行（共 ${accepted.totalRepos} 仓），可在弹窗查看进度`);
-          void pollBatchJob(accepted.jobId);
-        } catch (err) {
-          console.error(err);
-        } finally {
-          setBatchLoading(false);
-        }
-      },
-    });
+    const current = form.getFieldValue('modelName') as string | undefined;
+    const fallback = models.find((m) => m.isDefault === 'true')?.identifier;
+    setBatchModelName(current || fallback);
+    setBatchConfirmOpen(true);
+  };
+
+  const confirmBatchInitial = async () => {
+    if (!batchModelName) {
+      message.error('请选择 AI 模型');
+      return;
+    }
+    setBatchLoading(true);
+    try {
+      const accepted = await batchTriggerInitial(batchModelName);
+      if (!accepted.jobId) {
+        message.error('未返回作业 ID');
+        return;
+      }
+      setBatchConfirmOpen(false);
+      setBatchResult({
+        ...accepted,
+        items: accepted.items ?? [],
+        triggered: accepted.triggered ?? 0,
+        skipped: accepted.skipped ?? 0,
+        failed: accepted.failed ?? 0,
+      });
+      setBatchResultOpen(true);
+      message.success(`已提交后台执行（共 ${accepted.totalRepos} 仓），可在弹窗查看进度`);
+      void pollBatchJob(accepted.jobId);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setBatchLoading(false);
+    }
   };
 
   const pollBatchJob = async (jobId: string) => {
@@ -843,6 +848,43 @@ const TaskDispatchPage: React.FC = () => {
       </Modal>
 
       <Modal
+        title="一键全量触发"
+        open={batchConfirmOpen}
+        onCancel={() => setBatchConfirmOpen(false)}
+        okText="确认触发"
+        cancelText="取消"
+        confirmLoading={batchLoading}
+        onOk={confirmBatchInitial}
+        destroyOnHidden
+      >
+        <Space direction="vertical" size={12} style={{ width: '100%' }}>
+          <Text>
+            将为全平台所有未删除仓库在后台创建全量任务并入队 PENDING（异步，不会卡住页面）。同仓已有未完成任务或未绑提示词的仓库会跳过。
+          </Text>
+          <div>
+            <Text strong>
+              AI模型 <Text type="danger">*</Text>
+            </Text>
+            <Select
+              style={{ width: '100%', marginTop: 8 }}
+              placeholder="请选择要调用的 AI 模型"
+              value={batchModelName}
+              onChange={setBatchModelName}
+              showSearch
+              optionFilterProp="label"
+              options={models.map((m) => ({
+                value: m.identifier,
+                label: `${m.name} (${m.identifier})`,
+              }))}
+            />
+            <Text type="secondary" style={{ fontSize: 12, display: 'block', marginTop: 6 }}>
+              与下方「策略」步骤中的模型选择器相同；未选时默认带入系统默认模型。
+            </Text>
+          </div>
+        </Space>
+      </Modal>
+
+      <Modal
         title="一键全量结果"
         open={batchResultOpen}
         onCancel={() => setBatchResultOpen(false)}
@@ -880,10 +922,12 @@ const TaskDispatchPage: React.FC = () => {
               showIcon
               message={
                 batchResult.status === 'COMPLETED' || batchResult.status === 'FAILED'
-                  ? `共 ${batchResult.totalRepos} 仓：触发 ${batchResult.triggered}，跳过 ${batchResult.skipped}，失败 ${batchResult.failed}`
-                  : `后台执行中：${batchResult.processedRepos ?? 0} / ${batchResult.totalRepos}${
-                      batchResult.message ? `（${batchResult.message}）` : ''
+                  ? `共 ${batchResult.totalRepos} 仓：触发 ${batchResult.triggered}，跳过 ${batchResult.skipped}，失败 ${batchResult.failed}${
+                      batchResult.modelName ? `；模型 ${batchResult.modelName}` : ''
                     }`
+                  : `后台执行中：${batchResult.processedRepos ?? 0} / ${batchResult.totalRepos}${
+                      batchResult.modelName ? `；模型 ${batchResult.modelName}` : ''
+                    }${batchResult.message ? `（${batchResult.message}）` : ''}`
               }
             />
             {(batchResult.status === 'ACCEPTED' || batchResult.status === 'RUNNING') && (

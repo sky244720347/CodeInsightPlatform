@@ -10,8 +10,10 @@ public interface BatchInitialTriggerService {
     /**
      * 异步提交：立刻返回 jobId；后台逐仓 create+start。
      * <p>同时只允许一个作业；已有进行中作业时拒绝。</p>
+     *
+     * @param modelName AI 模型 identifier；可空则创建任务时回落到系统默认模型
      */
-    BatchInitialTriggerResult submitAsync();
+    BatchInitialTriggerResult submitAsync(String modelName);
 
     /**
      * 查询异步作业进度 / 结果。

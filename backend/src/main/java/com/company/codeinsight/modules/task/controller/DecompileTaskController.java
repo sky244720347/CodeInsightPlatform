@@ -113,8 +113,9 @@ public class DecompileTaskController {
      */
     @Operation(summary = "一键全量触发（异步提交，立刻返回 jobId）")
     @PostMapping("/batch-initial")
-    public ApiResponse<BatchInitialTriggerResult> batchTriggerInitial() {
-        return ApiResponse.success(batchInitialTriggerService.submitAsync());
+    public ApiResponse<BatchInitialTriggerResult> batchTriggerInitial(
+            @RequestParam(required = false) String modelName) {
+        return ApiResponse.success(batchInitialTriggerService.submitAsync(modelName));
     }
 
     @Operation(summary = "查询一键全量异步作业进度")

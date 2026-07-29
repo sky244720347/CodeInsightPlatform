@@ -162,17 +162,25 @@ public class PipelineAiCaller {
         return CallOutcome.fail(lastReason);
     }
 
-    /** 额度 / Token 硬限制：重试无意义。并发槽位不足可重试，不在此列。 */
+    /**
+     * 重试无意义的硬失败。
+     * <p>「并发已达上限」仍可短退避重试（未走应用层长等的阶段）。
+     * 「并发等待超时」表示已在 summarizeWithPrompt 内等满 acquire-wait，勿再空转 attempt。</p>
+     */
     private static boolean isNonRetryable(String reason) {
         if (!StringUtils.hasText(reason)) {
             return false;
         }
         return reason.contains("额度")
-                || reason.contains("Token 消耗额度超限");
+                || reason.contains("Token 消耗额度超限")
+                || reason.contains("并发等待超时")
+                || reason.contains("并发等待被中断");
     }
 
     private static boolean isConcurrencyLimit(String reason) {
-        return StringUtils.hasText(reason) && reason.contains("并发已达上限");
+        return StringUtils.hasText(reason)
+                && reason.contains("并发已达上限")
+                && !reason.contains("并发等待超时");
     }
 
     /**

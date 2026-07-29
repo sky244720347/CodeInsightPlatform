@@ -11,6 +11,7 @@ import java.io.IOException;
 import java.io.PrintWriter;
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 任务执行日志写入器
@@ -28,6 +29,9 @@ public class TaskExecutionLogger {
     public static final String PIPELINE_START_MARKER = "══════ 流水线启动";
 
     private final EnvStorageResolver storageResolver;
+
+    /** 按任务串行化 pipeline.log 追加，避免文档并行写交叉 */
+    private final ConcurrentHashMap<Long, Object> taskLogLocks = new ConcurrentHashMap<>();
 
     /**
      * 清空 pipeline.log（重试 / 新一轮 runPipeline 开始前调用）。
@@ -86,21 +90,24 @@ public class TaskExecutionLogger {
     }
 
     /**
-     * 追加一条带时间戳的日志。
+     * 追加一条带时间戳的日志（按 taskId 串行化，避免文档并行写乱行）。
      */
     public void log(Long taskId, String message) {
         if (taskId == null) return;
         String timestamp = LocalDateTime.now().format(TS_FMT);
         String line = String.format("[%s] %s%n", timestamp, message);
-        try {
-            File dir = storageResolver.taskDataDir(taskId).toFile();
-            if (!dir.exists()) dir.mkdirs();
-            try (PrintWriter pw = new PrintWriter(new FileWriter(new File(dir, "pipeline.log"), true))) {
-                pw.append(line);
-                pw.flush();
+        Object lock = taskLogLocks.computeIfAbsent(taskId, id -> new Object());
+        synchronized (lock) {
+            try {
+                File dir = storageResolver.taskDataDir(taskId).toFile();
+                if (!dir.exists()) dir.mkdirs();
+                try (PrintWriter pw = new PrintWriter(new FileWriter(new File(dir, "pipeline.log"), true))) {
+                    pw.append(line);
+                    pw.flush();
+                }
+            } catch (IOException e) {
+                log.warn("写入执行日志失败 taskId={}: {}", taskId, e.getMessage());
             }
-        } catch (IOException e) {
-            log.warn("写入执行日志失败 taskId={}: {}", taskId, e.getMessage());
         }
     }
 

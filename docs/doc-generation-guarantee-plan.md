@@ -63,9 +63,13 @@ collect SourceBundle
 
 | 键 | 默认 | 说明 |
 |----|------|------|
-| `max-prompt-chars` | `100000` | 整段 prompt 字符上限 |
+| `max-prompt-chars` | `100000` | 超限后再裁的目标上限（首调不预裁） |
 | `max-method-body-chars` | `12000` | 单 class 块方法体上限 |
-| `http-timeout-seconds` | `120` | 文档/通用 AI HTTP 超时（原硬编码 45s） |
+| `http-timeout-seconds` | `120` | 文档 AI HTTP 超时 |
+| `parallelism` | `4` | **本机**文档固定线程池大小；超额功能排队 |
+| `acquire-wait-seconds` | `1800` | 文档与模块层级阻塞等集群 `ai.concurrency` 槽；应 ≫ HTTP 超时 |
+
+文档 / `MODULE_HIERARCHY`：应用层对 `tryAcquire` 排队等待（不改 `AiConcurrencyService`）。层级等槽超时 → 放弃当前入口、阶段继续；文档超时走失败/降级路径。
 
 ### 3.4 pipeline.log 标签
 

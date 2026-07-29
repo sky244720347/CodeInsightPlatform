@@ -81,7 +81,7 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
     }
 
     @Override
-    public BatchInitialTriggerResult submitAsync() {
+    public BatchInitialTriggerResult submitAsync(String modelName) {
         Boolean locked = stringRedisTemplate.opsForValue()
                 .setIfAbsent(LOCK_KEY, "1", LOCK_TTL);
         if (!Boolean.TRUE.equals(locked)) {
@@ -95,6 +95,7 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
                             .orderByAsc(CodeRepository::getSystemId)
                             .orderByAsc(CodeRepository::getId));
 
+            String resolvedModel = StringUtils.hasText(modelName) ? modelName.trim() : null;
             BatchInitialTriggerResult accepted = BatchInitialTriggerResult.builder()
                     .jobId(jobId)
                     .status(BatchInitialTriggerResult.STATUS_ACCEPTED)
@@ -103,6 +104,7 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
                     .triggered(0)
                     .skipped(0)
                     .failed(0)
+                    .modelName(resolvedModel)
                     .message("已提交后台执行")
                     .items(new ArrayList<>())
                     .build();
@@ -113,7 +115,7 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
             OperatorContext.Snapshot snapshot = new OperatorContext.Snapshot(
                     OperatorContext.get(), OperatorContext.getUserId(), OperatorContext.getRole());
             List<CodeRepository> repoSnapshot = List.copyOf(repos);
-            batchInitialExecutor.execute(() -> runJob(jobId, repoSnapshot, snapshot));
+            batchInitialExecutor.execute(() -> runJob(jobId, repoSnapshot, snapshot, resolvedModel));
             return accepted;
         } catch (RuntimeException e) {
             releaseLockQuietly();
@@ -134,7 +136,8 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
         return job;
     }
 
-    private void runJob(String jobId, List<CodeRepository> repos, OperatorContext.Snapshot snapshot) {
+    private void runJob(String jobId, List<CodeRepository> repos, OperatorContext.Snapshot snapshot,
+                        String modelName) {
         OperatorContext.set(snapshot.username(), snapshot.userId(), snapshot.role());
         try {
             BatchInitialTriggerResult progress = BatchInitialTriggerResult.builder()
@@ -145,6 +148,7 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
                     .triggered(0)
                     .skipped(0)
                     .failed(0)
+                    .modelName(modelName)
                     .message("后台执行中")
                     .items(new ArrayList<>())
                     .build();
@@ -152,7 +156,7 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
 
             Map<Long, String> systemNameById = loadSystemNames(repos);
             for (CodeRepository repo : repos) {
-                BatchInitialItemResult item = triggerOne(repo, systemNameById.get(repo.getSystemId()));
+                BatchInitialItemResult item = triggerOne(repo, systemNameById.get(repo.getSystemId()), modelName);
                 progress.getItems().add(item);
                 progress.setProcessedRepos(progress.getProcessedRepos() + 1);
                 switch (item.getStatus()) {
@@ -166,16 +170,18 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
             }
 
             progress.setStatus(BatchInitialTriggerResult.STATUS_COMPLETED);
-            progress.setMessage(String.format("完成：触发=%d 跳过=%d 失败=%d",
-                    progress.getTriggered(), progress.getSkipped(), progress.getFailed()));
+            progress.setMessage(String.format("完成：触发=%d 跳过=%d 失败=%d%s",
+                    progress.getTriggered(), progress.getSkipped(), progress.getFailed(),
+                    StringUtils.hasText(modelName) ? " model=" + modelName : ""));
             saveJob(progress);
 
             operationLogService.logOperation(
                     null,
                     null,
                     "BATCH_TRIGGER_INITIAL",
-                    String.format("一键全量(异步)：job=%s 仓库=%d 触发=%d 跳过=%d 失败=%d",
-                            jobId, progress.getTotalRepos(), progress.getTriggered(),
+                    String.format("一键全量(异步)：job=%s model=%s 仓库=%d 触发=%d 跳过=%d 失败=%d",
+                            jobId, modelName != null ? modelName : "(default)",
+                            progress.getTotalRepos(), progress.getTriggered(),
                             progress.getSkipped(), progress.getFailed()),
                     null,
                     progress.getFailed() == 0);
@@ -186,6 +192,7 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
                 failed = BatchInitialTriggerResult.builder()
                         .jobId(jobId)
                         .totalRepos(repos.size())
+                        .modelName(modelName)
                         .items(new ArrayList<>())
                         .build();
             }
@@ -198,7 +205,7 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
         }
     }
 
-    private BatchInitialItemResult triggerOne(CodeRepository repo, String systemName) {
+    private BatchInitialItemResult triggerOne(CodeRepository repo, String systemName, String modelName) {
         Long systemId = repo.getSystemId();
         Long repositoryId = repo.getId();
         String gitUrl = repo.getGitUrl();
@@ -210,7 +217,7 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
 
             DecompileTask task = decompileTaskService.createInitialTask(
                     systemId, repositoryId,
-                    null, null, null, null,
+                    null, null, modelName, null,
                     Boolean.FALSE, Boolean.FALSE);
             task.setRequireKnowledgeReview(Boolean.FALSE);
             decompileTaskService.updateById(task);

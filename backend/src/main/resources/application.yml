@@ -40,11 +40,15 @@ code-insight:
       backoff-ms: 1000           # 重试退避基数（毫秒），实际等待 = backoff-ms × attempt
       concurrency-backoff-ms: 2000  # 并发槽位不足时退避基数（毫秒），实际等待 = concurrency-backoff-ms × attempt
     doc:
-      # 方案 A：单次调用内裁剪；真分片见 docs/doc-generation-guarantee-plan.md §4
+      # 方案 A：超限后再裁；真分片见 docs/doc-generation-guarantee-plan.md §4
       max-prompt-chars: 100000
       max-method-body-chars: 12000
       http-timeout-seconds: 120
       shrink-factor: 0.5
+      # 本机文档并行工人数（固定池；超额功能排队，不新开线程）
+      parallelism: 4
+      # 文档与 MODULE_HIERARCHY 等 AI 全局槽超时（秒），应 ≫ http-timeout；层级超时仅弃当前入口
+      acquire-wait-seconds: 1800
   review:
     # true：知识复核允许未逐篇确认时直接「任务整体通过」（未确认草稿一并 CONFIRMED）
     allow-partial-pass: ${REVIEW_ALLOW_PARTIAL_PASS:false}
