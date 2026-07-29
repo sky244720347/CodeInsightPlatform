@@ -36,7 +36,8 @@ public interface AiSummaryService {
      * @param promptInput 已渲染的完整 prompt
      * @param modelName   所用模型标识
      * @param callMeta    调用元数据（callStage / classPath），用于审计
-     * @return AI 响应文本；调用失败或 Mock 时返回 "{}"
+     * @return AI 响应文本；Mock 模式返回 "{}"
+     * @throws com.company.codeinsight.common.exception.BusinessException 真实调用失败时抛出（含 HTTP 正文 / 超时等），供 PipelineAiCaller 写入 pipeline.log
      */
     String summarizeWithPrompt(Long taskId, String promptInput, String modelName, AiCallMeta callMeta);
 

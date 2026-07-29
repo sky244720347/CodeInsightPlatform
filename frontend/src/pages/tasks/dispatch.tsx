@@ -6,6 +6,7 @@ import {
   Col,
   Form,
   Modal,
+  Progress,
   Row,
   Select,
   Space,
@@ -22,12 +23,17 @@ import {
   CloseCircleOutlined,
   ExclamationCircleOutlined,
   SyncOutlined,
+  ThunderboltOutlined,
 } from '@ant-design/icons';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   createIncrementalTask,
   createInitialTask,
+  batchTriggerInitial,
+  getBatchInitialJob,
   getRepositoryReadiness,
+  type BatchInitialItemResult,
+  type BatchInitialTriggerResult,
   type RepositoryReadiness,
 } from '../../api/task';
 import { listPrompts } from '../../api/prompt';
@@ -75,6 +81,9 @@ const TaskDispatchPage: React.FC = () => {
 
   const [currentStep, setCurrentStep] = useState(0);
   const [submitting, setSubmitting] = useState(false);
+  const [batchLoading, setBatchLoading] = useState(false);
+  const [batchResult, setBatchResult] = useState<BatchInitialTriggerResult | null>(null);
+  const [batchResultOpen, setBatchResultOpen] = useState(false);
 
   // 下拉选项
   const [systems, setSystems] = useState<System[]>([]);
@@ -298,6 +307,65 @@ const TaskDispatchPage: React.FC = () => {
     }
   };
 
+  const handleBatchInitial = () => {
+    Modal.confirm({
+      title: '一键全量触发',
+      content:
+        '将为全平台所有未删除仓库在后台创建全量任务并入队 PENDING（异步，不会卡住页面）。同仓已有未完成任务或未绑提示词的仓库会跳过。是否继续？',
+      okText: '确认触发',
+      cancelText: '取消',
+      onOk: async () => {
+        setBatchLoading(true);
+        try {
+          const accepted = await batchTriggerInitial();
+          if (!accepted.jobId) {
+            message.error('未返回作业 ID');
+            return;
+          }
+          setBatchResult({
+            ...accepted,
+            items: accepted.items ?? [],
+            triggered: accepted.triggered ?? 0,
+            skipped: accepted.skipped ?? 0,
+            failed: accepted.failed ?? 0,
+          });
+          setBatchResultOpen(true);
+          message.success(`已提交后台执行（共 ${accepted.totalRepos} 仓），可在弹窗查看进度`);
+          void pollBatchJob(accepted.jobId);
+        } catch (err) {
+          console.error(err);
+        } finally {
+          setBatchLoading(false);
+        }
+      },
+    });
+  };
+
+  const pollBatchJob = async (jobId: string) => {
+    const maxAttempts = 600; // ~15min @ 1.5s
+    for (let i = 0; i < maxAttempts; i++) {
+      try {
+        const job = await getBatchInitialJob(jobId);
+        setBatchResult(job);
+        if (job.status === 'COMPLETED' || job.status === 'FAILED') {
+          if (job.status === 'COMPLETED') {
+            message.success(
+              `一键全量完成：触发 ${job.triggered}，跳过 ${job.skipped}，失败 ${job.failed}`,
+            );
+          } else {
+            message.error(job.message || '一键全量失败');
+          }
+          return;
+        }
+      } catch (err) {
+        console.error(err);
+        return;
+      }
+      await new Promise((r) => setTimeout(r, 1500));
+    }
+    message.warning('进度查询超时，请稍后在任务查询中确认是否已入队');
+  };
+
   const handleSyncRepoScanConfig = async () => {
     const repositoryId =
       selectedRepositoryId ?? (form.getFieldValue('repositoryId') as number | undefined);
@@ -343,6 +411,17 @@ const TaskDispatchPage: React.FC = () => {
             </Button>
             <span style={{ fontWeight: 600 }}>手动下发：创建知识构建任务</span>
           </Space>
+        }
+        extra={
+          <Button
+            type="primary"
+            danger
+            icon={<ThunderboltOutlined />}
+            loading={batchLoading}
+            onClick={handleBatchInitial}
+          >
+            一键全量
+          </Button>
         }
       >
         <Steps
@@ -761,6 +840,97 @@ const TaskDispatchPage: React.FC = () => {
                 />
               </>
             )}
+      </Modal>
+
+      <Modal
+        title="一键全量结果"
+        open={batchResultOpen}
+        onCancel={() => setBatchResultOpen(false)}
+        footer={[
+          <Button key="close" onClick={() => setBatchResultOpen(false)}>
+            关闭
+          </Button>,
+          <Button
+            key="query"
+            type="primary"
+            onClick={() => {
+              setBatchResultOpen(false);
+              navigate('/tasks/query');
+            }}
+          >
+            前往任务查询
+          </Button>,
+        ]}
+        width={900}
+        destroyOnHidden
+      >
+        {batchResult && (
+          <>
+            <Alert
+              style={{ marginBottom: 12 }}
+              type={
+                batchResult.status === 'FAILED'
+                  ? 'error'
+                  : batchResult.status === 'COMPLETED'
+                    ? batchResult.failed > 0
+                      ? 'warning'
+                      : 'success'
+                    : 'info'
+              }
+              showIcon
+              message={
+                batchResult.status === 'COMPLETED' || batchResult.status === 'FAILED'
+                  ? `共 ${batchResult.totalRepos} 仓：触发 ${batchResult.triggered}，跳过 ${batchResult.skipped}，失败 ${batchResult.failed}`
+                  : `后台执行中：${batchResult.processedRepos ?? 0} / ${batchResult.totalRepos}${
+                      batchResult.message ? `（${batchResult.message}）` : ''
+                    }`
+              }
+            />
+            {(batchResult.status === 'ACCEPTED' || batchResult.status === 'RUNNING') && (
+              <Progress
+                percent={
+                  batchResult.totalRepos > 0
+                    ? Math.round(((batchResult.processedRepos ?? 0) / batchResult.totalRepos) * 100)
+                    : 0
+                }
+                status="active"
+                style={{ marginBottom: 12 }}
+              />
+            )}
+            <Table<BatchInitialItemResult>
+              size="small"
+              rowKey={(r) => `${r.repositoryId}-${r.status}-${r.taskId ?? 0}`}
+              dataSource={batchResult.items}
+              pagination={{ pageSize: 10 }}
+              scroll={{ y: 360 }}
+              columns={[
+                { title: '系统', dataIndex: 'systemName', width: 120, ellipsis: true },
+                { title: 'Git', dataIndex: 'gitUrl', ellipsis: true },
+                {
+                  title: '结果',
+                  dataIndex: 'status',
+                  width: 100,
+                  render: (s: string) => {
+                    const map: Record<string, { color: string; label: string }> = {
+                      TRIGGERED: { color: 'green', label: '已触发' },
+                      SKIPPED: { color: 'default', label: '跳过' },
+                      FAILED: { color: 'red', label: '失败' },
+                    };
+                    const m = map[s] ?? { color: 'default', label: s };
+                    return <Tag color={m.color}>{m.label}</Tag>;
+                  },
+                },
+                {
+                  title: '任务',
+                  dataIndex: 'taskId',
+                  width: 90,
+                  render: (id?: number) => (id ? <Text code>#{id}</Text> : '-'),
+                },
+                { title: '说明', dataIndex: 'message', ellipsis: true },
+              ]}
+            />
+          </>
+        )}
       </Modal>
 
       <Alert

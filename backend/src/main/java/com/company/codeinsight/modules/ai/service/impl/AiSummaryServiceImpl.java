@@ -3,6 +3,7 @@ package com.company.codeinsight.modules.ai.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.company.codeinsight.common.config.AiDocBudgetProperties;
 import com.company.codeinsight.common.config.AiRetryProperties;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.util.AiResponseJsonExtractor;
@@ -15,6 +16,7 @@ import com.company.codeinsight.modules.callchain.mapper.MethodCallMapper;
 import com.company.codeinsight.modules.ai.model.FunctionSourceBundle;
 import com.company.codeinsight.modules.ai.service.AiSummaryService;
 import com.company.codeinsight.modules.ai.service.PipelineAiCaller;
+import com.company.codeinsight.modules.ai.support.DocSourceBudgetShrinker;
 import com.company.codeinsight.modules.draft.dto.RegenerateDraftResult;
 import com.company.codeinsight.modules.draft.entity.DraftRevision;
 import com.company.codeinsight.modules.draft.entity.DraftWorkspace;
@@ -120,6 +122,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
     @Autowired
     private AiRetryProperties aiRetryProperties;
+
+    @Autowired
+    private AiDocBudgetProperties docBudgetProperties;
 
     /**
      * 包级访问器：供 DecompileTaskServiceImpl 在 AI 阶段开头读取 Mock 状态写到 pipeline.log。
@@ -469,12 +474,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     String label = m.getModuleName() + " / " + sm.getSubModuleName() + " / " + fn.getFunctionName();
                     execLog.log(taskId, "  [fn " + fnIndex + "/" + fnTotal + "] " + label);
                     try {
-                        if (generateFunctionDraft(task, ws, m, sm, fn, hierarchy, projectDir)) {
-                            regenerated++;
-                        } else {
-                            // 源码收集失败等软跳过：不算 regenerated，避免出现 regenerated=N 但无 AI/无文档
-                            skipped++;
-                        }
+                        // 方案 A：始终写出草稿（含 TEMPLATE 降级），不再软跳过留空洞
+                        generateFunctionDraft(task, ws, m, sm, fn, hierarchy, projectDir);
+                        regenerated++;
                     } catch (Exception e) {
                         failed++;
                         log.error("generateFunctionDraft failed for function {}: {}", label, e.getMessage(), e);
@@ -491,9 +493,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     }
 
     /**
-     * 按功能粒度生成单条草稿。
+     * 按功能粒度生成单条草稿。始终写出草稿（真 AI / 裁剪后 AI / TEMPLATE 降级），禁止软跳过留空洞。
      *
-     * @return true 已写出草稿（含 AI / 占位）；false 因无可达源码软跳过
+     * @return true 已写出草稿
      */
     private boolean generateFunctionDraft(DecompileTask task, DraftWorkspace ws,
                                         com.company.codeinsight.modules.hierarchy.model.ModuleDto moduleDto,
@@ -503,37 +505,47 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                                         File projectDir) {
         Long taskId = task.getId();
         String funcName = functionDto.getFunctionName();
+        String label = moduleDto.getModuleName() + " / " + subModuleDto.getSubModuleName() + " / " + funcName;
 
         FunctionSourceBundle bundle = collectFunctionSourceBundle(taskId, functionDto, projectDir);
         if (!bundle.hasPromptText()) {
-            log.warn("Function {} BFS 无可达源码，跳过（详见上方 collectFunctionSourceBundle 诊断）", funcName);
-            execLog.log(taskId, "  [skip] function=" + funcName + " 原因=BFS/源码文件不可达");
-            return false;
-        }
-        String source = bundle.getPromptText();
-
-        // 2. 渲染 prompt
-        String promptTemplate = decompilePromptService.requireTaskPromptContent(task,
-                com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION);
-        String scopedJson = buildScopedHierarchyJson(taskId, moduleDto, subModuleDto, functionDto, projectDir);
-        String label = moduleDto.getModuleName() + " / " + subModuleDto.getSubModuleName() + " / " + funcName;
-        String promptInput = promptTemplateLoader.renderModuleDoc(promptTemplate, label, scopedJson, source);
-        if (promptTemplateLoader.hasUnresolvedModuleDocPlaceholders(promptInput)) {
-            log.warn("Function {} prompt 有未替换占位符，回退占位文档", funcName);
+            log.warn("Function {} BFS 无可达源码，写 TEMPLATE 降级稿", funcName);
+            execLog.log(taskId, String.format(
+                    "[DOC-DEGRADE] stage=FUNCTION_DOC target=%s reason=source_unreachable tier=TEMPLATE",
+                    label));
             upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto,
-                    buildPlaceholderDoc(moduleDto), "PENDING_REVIEW", bundle, projectDir);
+                    buildDegradedDoc(moduleDto, subModuleDto, functionDto, bundle, "source_unreachable"),
+                    "PENDING_REVIEW", bundle, projectDir);
             return true;
         }
 
-        // 3. 调 AI（可配置重试 + pipeline.log）
+        String promptTemplate = decompilePromptService.requireTaskPromptContent(task,
+                com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION);
+        String scopedJson = buildScopedHierarchyJson(taskId, moduleDto, subModuleDto, functionDto, projectDir);
+
+        final java.util.concurrent.atomic.AtomicReference<String> sourceRef =
+                new java.util.concurrent.atomic.AtomicReference<>(bundle.getPromptText());
+        // 首调不预裁：完整源码；仅上下文超限失败后再裁（见 mutateDocPromptOnRetry）
+        String promptInput = promptTemplateLoader.renderModuleDoc(
+                promptTemplate, label, scopedJson, sourceRef.get());
+        if (promptTemplateLoader.hasUnresolvedModuleDocPlaceholders(promptInput)) {
+            log.warn("Function {} prompt 有未替换占位符，回退 TEMPLATE 稿", funcName);
+            execLog.log(taskId, String.format(
+                    "[AI-FALLBACK] stage=FUNCTION_DOC target=%s reason=unresolved_placeholders tier=TEMPLATE",
+                    label));
+            upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto,
+                    buildDegradedDoc(moduleDto, subModuleDto, functionDto, bundle, "unresolved_placeholders"),
+                    "PENDING_REVIEW", bundle, projectDir);
+            return true;
+        }
+
         AiSummaryService.AiCallMeta callMeta = new AiSummaryService.AiCallMeta();
         callMeta.setCallStage("FUNCTION_DOC");
         callMeta.setClassPath(functionDto.getId());
-        String docTarget = label;
         String aiMarkdown = pipelineAiCaller.callWithRetry(
                 taskId,
                 "FUNCTION_DOC",
-                docTarget,
+                label,
                 promptInput,
                 task.getModelName(),
                 callMeta,
@@ -547,15 +559,19 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     }
                     return PipelineAiCaller.ValidationResult.ok(response);
                 },
-                (original, current, failedAttempt, reason) -> original
-                        + "\n\n[系统提示] 上轮输出不符合要求：" + reason
-                        + "\n请补全全部六个章节（一、～六、），输出完整 Markdown。"
+                (original, current, failedAttempt, reason) ->
+                        mutateDocPromptOnRetry(taskId, "FUNCTION_DOC", label,
+                                promptTemplate, scopedJson, sourceRef, current, reason)
         );
 
-        String finalMarkdown, initialStatus;
+        String finalMarkdown;
+        String initialStatus;
         if (!StringUtils.hasText(aiMarkdown) || "{}".equals(aiMarkdown.trim())) {
-            log.warn("Function {} AI 响应为空或全部重试失败", funcName);
-            finalMarkdown = buildPlaceholderDoc(moduleDto);
+            log.warn("Function {} AI 响应为空或全部重试失败，写 TEMPLATE 降级稿", funcName);
+            execLog.log(taskId, String.format(
+                    "[AI-FALLBACK] stage=FUNCTION_DOC target=%s reason=ai_failed tier=TEMPLATE",
+                    label));
+            finalMarkdown = buildDegradedDoc(moduleDto, subModuleDto, functionDto, bundle, "ai_failed");
             initialStatus = "PENDING_REVIEW";
         } else {
             finalMarkdown = aiMarkdown;
@@ -1346,12 +1362,19 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                                     com.company.codeinsight.modules.hierarchy.model.ModuleDto moduleDto,
                                     File projectDir) {
         String moduleName = moduleDto.getModuleName();
+        Long taskId = task.getId();
 
         // 1. 收集该模块涉及的所有源码（BFS 入口可达）
-        String moduleSource = collectModuleSourceCode(task.getId(), moduleDto, projectDir);
+        String moduleSource = collectModuleSourceCode(taskId, moduleDto, projectDir);
         if (!StringUtils.hasText(moduleSource)) {
-            log.warn("模块 {} BFS 无可达源码，跳过（DTO 有 {} 个 Function）",
+            log.warn("模块 {} BFS 无可达源码，写 TEMPLATE 降级稿（DTO 有 {} 个 Function）",
                     moduleName, countFunctions(moduleDto));
+            execLog.log(taskId, String.format(
+                    "[DOC-DEGRADE] stage=MODULE_DOC target=%s reason=source_unreachable tier=TEMPLATE",
+                    moduleName));
+            upsertModuleDraft(task, ws, moduleDto,
+                    buildDegradedDoc(moduleDto, null, null, null, "source_unreachable"),
+                    "PENDING_REVIEW", projectDir);
             return;
         }
 
@@ -1360,13 +1383,21 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION);
 
         // 把当前模块（含权威 class_paths / methods）序列化成 JSON 给 AI
-        String moduleHierarchyJson = buildModuleDocHierarchyJson(task.getId(), moduleDto, projectDir);
+        String moduleHierarchyJson = buildModuleDocHierarchyJson(taskId, moduleDto, projectDir);
 
+        final java.util.concurrent.atomic.AtomicReference<String> sourceRef =
+                new java.util.concurrent.atomic.AtomicReference<>(moduleSource);
+        // 首调不预裁：完整源码；仅上下文超限失败后再裁
         String promptInput = promptTemplateLoader.renderModuleDoc(
-                promptTemplate, moduleName, moduleHierarchyJson, moduleSource);
+                promptTemplate, moduleName, moduleHierarchyJson, sourceRef.get());
         if (promptTemplateLoader.hasUnresolvedModuleDocPlaceholders(promptInput)) {
-            log.warn("模块 {} prompt 仍有未替换占位符，回退到占位文档", moduleName);
-            upsertModuleDraft(task, ws, moduleDto, buildPlaceholderDoc(moduleDto), "PENDING_REVIEW", projectDir);
+            log.warn("模块 {} prompt 仍有未替换占位符，回退 TEMPLATE 稿", moduleName);
+            execLog.log(taskId, String.format(
+                    "[AI-FALLBACK] stage=MODULE_DOC target=%s reason=unresolved_placeholders tier=TEMPLATE",
+                    moduleName));
+            upsertModuleDraft(task, ws, moduleDto,
+                    buildDegradedDoc(moduleDto, null, null, null, "unresolved_placeholders"),
+                    "PENDING_REVIEW", projectDir);
             return;
         }
 
@@ -1376,7 +1407,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         callMeta.setClassPath(moduleDto.getId());
 
         String aiMarkdown = pipelineAiCaller.callWithRetry(
-                task.getId(),
+                taskId,
                 "MODULE_DOC",
                 moduleName,
                 promptInput,
@@ -1392,16 +1423,19 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     }
                     return PipelineAiCaller.ValidationResult.ok(response);
                 },
-                (original, current, failedAttempt, reason) -> original
-                        + "\n\n[系统提示] 上轮输出不符合要求：" + reason
-                        + "\n请补全全部六个章节（一、～六、），输出完整 Markdown。"
+                (original, current, failedAttempt, reason) ->
+                        mutateDocPromptOnRetry(taskId, "MODULE_DOC", moduleName,
+                                promptTemplate, moduleHierarchyJson, sourceRef, current, reason)
         );
 
         String finalMarkdown;
         String initialStatus;
         if (!StringUtils.hasText(aiMarkdown) || "{}".equals(aiMarkdown.trim())) {
-            log.warn("模块 {} AI 响应为空或全部重试失败，写 PENDING_REVIEW 占位", moduleName);
-            finalMarkdown = buildPlaceholderDoc(moduleDto);
+            log.warn("模块 {} AI 响应为空或全部重试失败，写 PENDING_REVIEW TEMPLATE 稿", moduleName);
+            execLog.log(taskId, String.format(
+                    "[AI-FALLBACK] stage=MODULE_DOC target=%s reason=ai_failed tier=TEMPLATE",
+                    moduleName));
+            finalMarkdown = buildDegradedDoc(moduleDto, null, null, null, "ai_failed");
             initialStatus = "PENDING_REVIEW";
         } else {
             finalMarkdown = aiMarkdown;
@@ -1681,21 +1715,123 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     }
 
     /**
-     * AI 失败时的占位文档（保留子模块列表 + 入口类，便于人工补充）
+     * AI 失败 / 源码不可达时的结构化降级文档（方案 A G2）。
      */
-    private String buildPlaceholderDoc(com.company.codeinsight.modules.hierarchy.model.ModuleDto moduleDto) {
+    private String buildDegradedDoc(com.company.codeinsight.modules.hierarchy.model.ModuleDto moduleDto,
+                                    com.company.codeinsight.modules.hierarchy.model.SubModuleDto subModuleDto,
+                                    com.company.codeinsight.modules.hierarchy.model.FunctionDto functionDto,
+                                    FunctionSourceBundle bundle,
+                                    String reason) {
+        String title = moduleDto != null ? moduleDto.getModuleName() : "模块";
+        if (functionDto != null && StringUtils.hasText(functionDto.getFunctionName())) {
+            title = functionDto.getFunctionName();
+        }
         StringBuilder sb = new StringBuilder();
-        sb.append("# ").append(moduleDto.getModuleName()).append(" 模块说明\n\n");
-        sb.append("> AI 生成失败，需人工补充。\n\n");
-        sb.append("## 子模块清单\n");
-        for (com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm : moduleDto.getSubModules().values()) {
-            sb.append("- **").append(sm.getSubModuleName()).append("**\n");
-            for (com.company.codeinsight.modules.hierarchy.model.FunctionDto fn : sm.getFunctions().values()) {
-                sb.append("  - ").append(fn.getFunctionName())
-                        .append("（入口: ").append(String.join(", ", fn.getClassPaths())).append("）\n");
+        sb.append("# ").append(title).append("\n\n");
+        sb.append("> 生成档位：TEMPLATE；原因：").append(reason != null ? reason : "unknown")
+                .append("。可在知识复核窗口「重跑此篇」升档。\n\n");
+
+        sb.append("## 一、概述\n\n暂无相关信息（降级稿，待 AI/人工补充）\n\n");
+        sb.append("## 二、涉及类清单\n\n");
+        if (functionDto != null && functionDto.getClassPaths() != null && !functionDto.getClassPaths().isEmpty()) {
+            sb.append("| 序号 | 类路径 |\n| --- | --- |\n");
+            int i = 1;
+            for (String cp : functionDto.getClassPaths()) {
+                sb.append("| ").append(i++).append(" | ").append(cp).append(" |\n");
             }
+            sb.append("\n");
+        } else if (moduleDto != null) {
+            sb.append("### 子模块清单\n");
+            for (com.company.codeinsight.modules.hierarchy.model.SubModuleDto sm : moduleDto.getSubModules().values()) {
+                sb.append("- **").append(sm.getSubModuleName()).append("**\n");
+                for (com.company.codeinsight.modules.hierarchy.model.FunctionDto fn : sm.getFunctions().values()) {
+                    sb.append("  - ").append(fn.getFunctionName())
+                            .append("（入口: ").append(String.join(", ", fn.getClassPaths())).append("）\n");
+                }
+            }
+            sb.append("\n");
+        } else {
+            sb.append("暂无相关信息\n\n");
+        }
+
+        sb.append("## 三、输入输出\n\n暂无相关信息\n\n");
+        sb.append("## 四、核心业务流程图\n\n暂无相关信息\n\n");
+        sb.append("## 五、核心业务逻辑\n\n暂无相关信息\n\n");
+        sb.append("## 六、调用链路说明\n\n");
+        if (bundle != null && bundle.getRootSignatures() != null && !bundle.getRootSignatures().isEmpty()) {
+            sb.append("- ROOT 签名：").append(String.join(", ", bundle.getRootSignatures())).append("\n");
+        }
+        if (bundle != null && bundle.getRefs() != null && !bundle.getRefs().isEmpty()) {
+            sb.append("- 来源 refs：").append(bundle.getRefs().size()).append(" 条（按 bfs_order）\n");
+            int shown = 0;
+            for (FunctionSourceBundle.RefItem ref : bundle.getRefs()) {
+                if (shown >= 20) {
+                    sb.append("- …\n");
+                    break;
+                }
+                sb.append("- [").append(ref.getRefKind()).append("] ")
+                        .append(ref.getClassName() != null ? ref.getClassName() : "?");
+                if (StringUtils.hasText(ref.getMethodSignature())) {
+                    sb.append("#").append(ref.getMethodSignature());
+                }
+                sb.append("\n");
+                shown++;
+            }
+            sb.append("\n");
+        } else {
+            sb.append("暂无相关信息\n\n");
+        }
+
+        if (bundle != null && bundle.hasPromptText()) {
+            String excerpt = bundle.getPromptText();
+            int cap = 4000;
+            if (excerpt.length() > cap) {
+                excerpt = excerpt.substring(0, cap) + "\n// ... excerpt truncated ...\n";
+            }
+            sb.append("## 附：源码摘录\n\n```java\n").append(excerpt).append("\n```\n");
+        } else if (subModuleDto != null) {
+            sb.append("## 附：层级定位\n\n- 子模块：").append(subModuleDto.getSubModuleName()).append("\n");
         }
         return sb.toString();
+    }
+
+    /**
+     * 文档 AI 重试 mutator：仅上下文超限 → 裁剪源码；结构不合规 → 追加系统提示；其它（含超时）原样重试。
+     */
+    private String mutateDocPromptOnRetry(Long taskId, String stage, String target,
+                                          String promptTemplate, String hierarchyJson,
+                                          java.util.concurrent.atomic.AtomicReference<String> sourceRef,
+                                          String currentPrompt, String reason) {
+        if (PipelineAiCaller.isContextLengthFailure(reason)) {
+            // 首次超限：压到配置的 max-prompt-chars；再次超限：再按 shrinkFactor 压
+            int maxPrompt = Math.max(10_000, docBudgetProperties.getMaxPromptChars());
+            int maxBlock = Math.max(500, docBudgetProperties.getMaxMethodBodyChars());
+            String source = sourceRef.get() != null ? sourceRef.get() : "";
+            String rendered = promptTemplateLoader.renderModuleDoc(promptTemplate, target, hierarchyJson, source);
+            DocSourceBudgetShrinker.ShrinkResult sr;
+            if (rendered.length() > maxPrompt) {
+                int overhead = Math.max(0, rendered.length() - source.length());
+                int sourceBudget = Math.max(2_000, maxPrompt - overhead - 200);
+                sr = DocSourceBudgetShrinker.shrink(source, sourceBudget, maxBlock);
+            } else {
+                sr = DocSourceBudgetShrinker.shrinkFurther(
+                        source, maxBlock, docBudgetProperties.getShrinkFactor());
+            }
+            if (sr.changed() && StringUtils.hasText(sr.text())) {
+                sourceRef.set(sr.text());
+                execLog.log(taskId, String.format(
+                        "[AI-SHRINK] stage=%s target=%s %s reason=%s",
+                        stage, target, sr.summary(),
+                        reason != null && reason.length() > 80 ? reason.substring(0, 80) + "..." : reason));
+                return promptTemplateLoader.renderModuleDoc(promptTemplate, target, hierarchyJson, sr.text());
+            }
+        }
+        if (reason != null && reason.startsWith("structure:")) {
+            return currentPrompt
+                    + "\n\n[系统提示] 上轮输出不符合要求：" + reason
+                    + "\n请补全全部六个章节（一、～六、），输出完整 Markdown。";
+        }
+        return currentPrompt;
     }
 
     /**
@@ -1847,10 +1983,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         }
 
         FunctionHierarchyContext ctx = resolveFunctionHierarchyContext(draft, hierarchy);
-        boolean ok = generateFunctionDraft(task, ws, ctx.module(), ctx.subModule(), ctx.function(), hierarchy, projectDir);
-        if (!ok) {
-            throw new BusinessException("功能文档重跑失败：BFS 无可达源码或源码文件不可达");
-        }
+        generateFunctionDraft(task, ws, ctx.module(), ctx.subModule(), ctx.function(), hierarchy, projectDir);
 
         KnowledgeDraft updated = knowledgeDraftMapper.selectById(draftId);
         DraftRevision revision = new DraftRevision();
@@ -2179,12 +2312,12 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         if (isTaskTokenExceeded(taskUsed, currentEstimate)) {
             log.warn("Token 额度阻断：taskUsed={}, currentEstimate={}, taskLimit={}", taskUsed, currentEstimate, taskTokenLimit);
             logAiBlock(taskId, callMeta, "task token limit exceeded");
-            return "{}";
+            throw new BusinessException("Token 消耗额度超限: task token limit exceeded");
         }
         if (isSystemTokenExceeded(systemUsed, currentEstimate)) {
             log.warn("Token 额度阻断：systemUsed={}, currentEstimate={}, systemLimit={}", systemUsed, currentEstimate, systemMonthlyTokenLimit);
             logAiBlock(taskId, callMeta, "system token limit exceeded");
-            return "{}";
+            throw new BusinessException("Token 消耗额度超限: system monthly token limit exceeded");
         }
 
         // 基础配置 - 流量管控：用户额度 + AI 调用并发
@@ -2193,7 +2326,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         } catch (BusinessException e) {
             log.warn("用户额度阻断（summarizeWithPrompt）: {}", e.getMessage());
             logAiBlock(taskId, callMeta, e.getMessage());
-            return "{}";
+            throw e;
         }
         aiConcurrencyService.tryAcquire();
         try {
@@ -2241,7 +2374,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     .header("Authorization", "Bearer " + activeApiKey)
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
-                    .timeout(Duration.ofSeconds(45))
+                    .timeout(Duration.ofSeconds(Math.max(30, docBudgetProperties.getHttpTimeoutSeconds())))
                     .build();
 
             HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
@@ -2261,18 +2394,21 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                         null, modelToUse, inTokens, outTokens, aiText, true, null, duration, callStage);
                 return aiText;
             } else {
-                String errMsg = "HTTP " + response.statusCode() + ": " + response.body();
+                String errMsg = "HTTP " + response.statusCode() + ": " + truncateAiLogReason(response.body());
                 log.error("真实 AI 调用失败 task={} stage={} model={}: {}", taskId, callStage, modelToUse, errMsg);
                 saveCallRecordAndAudit(systemId, taskId, null, null,
                         null, modelToUse, currentEstimate, 0, "{}", false, errMsg, duration, callStage);
-                return "{}";
+                throw new BusinessException(errMsg);
             }
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception e) {
             long duration = System.currentTimeMillis() - start;
-            log.error("真实 AI 调用异常 task={} stage={} model={}: {}", taskId, callStage, modelToUse, e.getMessage());
+            String errMsg = "AI 调用异常: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+            log.error("真实 AI 调用异常 task={} stage={} model={}: {}", taskId, callStage, modelToUse, errMsg);
             saveCallRecordAndAudit(systemId, taskId, resolvePromptId(task, callStage), null,
-                    null, modelToUse, currentEstimate, 0, "{}", false, e.getMessage(), duration, callStage);
-            return "{}";
+                    null, modelToUse, currentEstimate, 0, "{}", false, errMsg, duration, callStage);
+            throw new BusinessException(errMsg);
         }
         } finally {
             // 释放并发信号量

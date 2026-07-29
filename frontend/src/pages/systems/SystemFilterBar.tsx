@@ -1,6 +1,6 @@
 import React from 'react';
 import { Button, Col, Input, Row, Space } from 'antd';
-import { PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { PlusOutlined, ReloadOutlined, SearchOutlined, UploadOutlined } from '@ant-design/icons';
 
 interface Props {
   searchName: string;
@@ -12,6 +12,7 @@ interface Props {
   onSearch: () => void;
   onReset: () => void;
   onAdd: () => void;
+  onImport: () => void;
 }
 
 /**
@@ -28,6 +29,7 @@ const SystemFilterBar: React.FC<Props> = ({
   onSearch,
   onReset,
   onAdd,
+  onImport,
 }) => (
   <Row gutter={[12, 12]} align="middle">
     <Col xs={24} md={6}>
@@ -65,6 +67,9 @@ const SystemFilterBar: React.FC<Props> = ({
         </Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={onAdd}>
           新增系统
+        </Button>
+        <Button icon={<UploadOutlined />} onClick={onImport}>
+          批量导入
         </Button>
       </Space>
     </Col>

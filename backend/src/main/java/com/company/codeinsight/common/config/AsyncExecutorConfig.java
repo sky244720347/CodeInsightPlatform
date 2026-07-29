@@ -7,12 +7,13 @@ import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
 import java.util.concurrent.Executor;
 
 /**
- * 知识确认后异步建版 / NAS 入队专用线程池。
+ * 异步线程池：知识发布、一键全量入队等后台作业。
  */
 @Configuration
 public class AsyncExecutorConfig {
 
     public static final String KNOWLEDGE_PUBLISH_EXECUTOR = "knowledgePublishExecutor";
+    public static final String BATCH_INITIAL_EXECUTOR = "batchInitialExecutor";
 
     @Bean(name = KNOWLEDGE_PUBLISH_EXECUTOR)
     public Executor knowledgePublishExecutor() {
@@ -23,6 +24,20 @@ public class AsyncExecutorConfig {
         executor.setThreadNamePrefix("knowledge-publish-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(60);
+        executor.initialize();
+        return executor;
+    }
+
+    /** 一键全量：单线程排队，避免多批并发刷库 */
+    @Bean(name = BATCH_INITIAL_EXECUTOR)
+    public Executor batchInitialExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(1);
+        executor.setQueueCapacity(8);
+        executor.setThreadNamePrefix("batch-initial-");
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(120);
         executor.initialize();
         return executor;
     }

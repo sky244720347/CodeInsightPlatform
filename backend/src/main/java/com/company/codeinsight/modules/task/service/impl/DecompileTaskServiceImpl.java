@@ -1372,7 +1372,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             execLog.log(taskId, ">>> AI_ANALYZING — AI 归纳");
             execLog.log(taskId, "  aiMock=" + aiSummaryService.isAiMock() + " | model="
                     + (task.getModelName() != null ? task.getModelName() : "(default)"));
-            execLog.log(taskId, "  aiRetry       = maxAttempts=" + aiRetryProperties.getMaxAttempts()
+            execLog.log(taskId, "  aiRetry       = hierarchyMaxAttempts=" + aiRetryProperties.getHierarchyMaxAttempts()
+                    + " docMaxAttempts=" + aiRetryProperties.getDocMaxAttempts()
                     + " backoffMs=" + aiRetryProperties.getBackoffMs());
             long aiT0 = System.currentTimeMillis();
             com.company.codeinsight.modules.callchain.model.IncrementalImpact impact = analyzeIncrementalImpact(
@@ -1842,6 +1843,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 taskCache.remove(id);
                 pipelineContextCache.remove(id);
                 impactCache.remove(id);
+                releaseParsePermitAndEvict(id);
                 taskConcurrencyLimiter.release(systemId, id);
             }
         });

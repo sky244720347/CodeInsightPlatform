@@ -154,6 +154,38 @@ export const createIncrementalTask = (data: CreateTaskPayload): Promise<Task> =>
   return request.post('/tasks/incremental', data);
 };
 
+export interface BatchInitialItemResult {
+  systemId?: number;
+  systemName?: string;
+  repositoryId?: number;
+  gitUrl?: string;
+  status: 'TRIGGERED' | 'SKIPPED' | 'FAILED' | string;
+  taskId?: number;
+  message?: string;
+}
+
+export interface BatchInitialTriggerResult {
+  jobId?: string;
+  status?: 'ACCEPTED' | 'RUNNING' | 'COMPLETED' | 'FAILED' | string;
+  totalRepos: number;
+  processedRepos?: number;
+  triggered: number;
+  skipped: number;
+  failed: number;
+  message?: string;
+  items: BatchInitialItemResult[];
+}
+
+/** 异步提交一键全量，立刻返回 jobId */
+export const batchTriggerInitial = (): Promise<BatchInitialTriggerResult> => {
+  return request.post('/tasks/batch-initial');
+};
+
+/** 轮询一键全量作业进度 */
+export const getBatchInitialJob = (jobId: string): Promise<BatchInitialTriggerResult> => {
+  return request.get(`/tasks/batch-initial/${jobId}`);
+};
+
 export const startTask = (id: number): Promise<void> => {
   return request.post(`/tasks/${id}/start`);
 };

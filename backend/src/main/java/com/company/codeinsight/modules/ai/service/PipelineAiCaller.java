@@ -49,6 +49,23 @@ public class PipelineAiCaller {
     }
 
     /**
+     * 带末次失败原因的调用结果，供调用方写入口级 / 篇章级结论日志。
+     */
+    public record CallOutcome(String response, String lastFailureReason, boolean success) {
+        public static CallOutcome ok(String response) {
+            return new CallOutcome(response, null, true);
+        }
+
+        public static CallOutcome fail(String lastFailureReason) {
+            return new CallOutcome("{}", lastFailureReason != null ? lastFailureReason : "unknown", false);
+        }
+
+        public boolean hasPayload() {
+            return success && StringUtils.hasText(response) && !"{}".equals(response.trim());
+        }
+    }
+
+    /**
      * 带重试的 AI 调用；全部失败返回 {@code "{}"}（与 {@link AiSummaryService#summarizeWithPrompt} 失败语义一致）。
      */
     public String callWithRetry(Long taskId,
@@ -58,7 +75,8 @@ public class PipelineAiCaller {
                                 String modelName,
                                 AiSummaryService.AiCallMeta callMeta,
                                 ResponseValidator validator) {
-        return callWithRetry(taskId, stage, targetLabel, promptInput, modelName, callMeta, validator, null);
+        return callWithRetryOutcome(taskId, stage, targetLabel, promptInput, modelName, callMeta, validator, null)
+                .response();
     }
 
     public String callWithRetry(Long taskId,
@@ -69,10 +87,25 @@ public class PipelineAiCaller {
                                 AiSummaryService.AiCallMeta callMeta,
                                 ResponseValidator validator,
                                 PromptMutator promptMutator) {
+        return callWithRetryOutcome(taskId, stage, targetLabel, initialPrompt, modelName, callMeta, validator, promptMutator)
+                .response();
+    }
+
+    /**
+     * 同 {@link #callWithRetry}，额外返回末次失败原因，便于上层打入口级结论日志。
+     */
+    public CallOutcome callWithRetryOutcome(Long taskId,
+                                            String stage,
+                                            String targetLabel,
+                                            String initialPrompt,
+                                            String modelName,
+                                            AiSummaryService.AiCallMeta callMeta,
+                                            ResponseValidator validator,
+                                            PromptMutator promptMutator) {
         if (taskId == null || !StringUtils.hasText(initialPrompt)) {
-            return "{}";
+            return CallOutcome.fail("empty prompt or taskId");
         }
-        int maxAttempts = Math.max(1, retryProperties.getMaxAttempts());
+        int maxAttempts = retryProperties.resolveMaxAttempts(stage);
         long backoffMs = Math.max(0L, retryProperties.getBackoffMs());
         long concurrencyBackoffMs = Math.max(0L, retryProperties.getConcurrencyBackoffMs());
         String stageTag = StringUtils.hasText(stage) ? stage : "AI";
@@ -91,7 +124,8 @@ public class PipelineAiCaller {
                                 "[AI-OK] stage=%s target=%s recovered on attempt %d/%d",
                                 stageTag, target, attempt, maxAttempts));
                     }
-                    return StringUtils.hasText(vr.normalizedResponse()) ? vr.normalizedResponse() : response;
+                    String payload = StringUtils.hasText(vr.normalizedResponse()) ? vr.normalizedResponse() : response;
+                    return CallOutcome.ok(payload);
                 }
                 lastReason = vr.failureReason();
             } catch (BusinessException e) {
@@ -99,8 +133,8 @@ public class PipelineAiCaller {
                 if (isNonRetryable(lastReason)) {
                     execLog.log(taskId, String.format(
                             "[AI-FAIL] stage=%s target=%s reason=%s (non-retryable)",
-                            stageTag, target, truncate(lastReason)));
-                    return "{}";
+                            stageTag, target, truncateReason(lastReason)));
+                    return CallOutcome.fail(lastReason);
                 }
             } catch (Exception e) {
                 lastReason = e.getMessage();
@@ -111,7 +145,7 @@ public class PipelineAiCaller {
             if (attempt < maxAttempts) {
                 execLog.log(taskId, String.format(
                         "[AI-RETRY] stage=%s target=%s attempt=%d/%d reason=%s",
-                        stageTag, target, attempt, maxAttempts, truncate(lastReason)));
+                        stageTag, target, attempt, maxAttempts, truncateReason(lastReason)));
                 long waitMs = isConcurrencyLimit(lastReason)
                         ? concurrencyBackoffMs * attempt
                         : backoffMs * attempt;
@@ -124,8 +158,8 @@ public class PipelineAiCaller {
 
         execLog.log(taskId, String.format(
                 "[AI-FAIL] stage=%s target=%s reason=%s after %d attempts",
-                stageTag, target, truncate(lastReason), maxAttempts));
-        return "{}";
+                stageTag, target, truncateReason(lastReason), maxAttempts));
+        return CallOutcome.fail(lastReason);
     }
 
     /** 额度 / Token 硬限制：重试无意义。并发槽位不足可重试，不在此列。 */
@@ -141,6 +175,60 @@ public class PipelineAiCaller {
         return StringUtils.hasText(reason) && reason.contains("并发已达上限");
     }
 
+    /**
+     * 上下文过长：重试前应裁剪 prompt。
+     * <p>不含纯超时（超时可先原样重试）。</p>
+     */
+    public static boolean isContextLengthFailure(String reason) {
+        if (!StringUtils.hasText(reason)) {
+            return false;
+        }
+        String r = reason.toLowerCase();
+        return r.contains("context_length")
+                || r.contains("context length")
+                || r.contains("maximum context")
+                || r.contains("too long")
+                || r.contains("max tokens")
+                || r.contains("token limit")
+                || r.contains("prompt is too long")
+                || r.contains("prompt_too_long")
+                || r.contains("413")
+                || reason.contains("上下文")
+                || reason.contains("过长");
+    }
+
+    public static boolean isTimeoutFailure(String reason) {
+        if (!StringUtils.hasText(reason)) {
+            return false;
+        }
+        String r = reason.toLowerCase();
+        return r.contains("timeout")
+                || r.contains("timed out")
+                || reason.contains("超时");
+    }
+
+    /**
+     * @deprecated 请用 {@link #isContextLengthFailure} / {@link #isTimeoutFailure} 区分策略
+     */
+    public static boolean isContextOrTimeoutFailure(String reason) {
+        return isContextLengthFailure(reason) || isTimeoutFailure(reason);
+    }
+
+    /**
+     * 是否应在重试前裁剪源码：仅上下文超限；纯超时 / 空响应不据此裁剪。
+     */
+    public static boolean shouldShrinkOnFailure(String reason, int promptChars, int shrinkThresholdChars) {
+        return isContextLengthFailure(reason);
+    }
+
+    public static String truncateReason(String text) {
+        if (!StringUtils.hasText(text)) {
+            return "unknown";
+        }
+        String t = text.replace('\n', ' ').trim();
+        return t.length() <= 200 ? t : t.substring(0, 200) + "...";
+    }
+
     private static void sleepBackoff(long waitMs) {
         if (waitMs <= 0) {
             return;
@@ -150,13 +238,5 @@ public class PipelineAiCaller {
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
         }
-    }
-
-    private static String truncate(String text) {
-        if (!StringUtils.hasText(text)) {
-            return "unknown";
-        }
-        String t = text.replace('\n', ' ').trim();
-        return t.length() <= 200 ? t : t.substring(0, 200) + "...";
     }
 }

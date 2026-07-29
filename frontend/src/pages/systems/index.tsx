@@ -18,6 +18,7 @@ import { getSystemColumns } from './columns';
 import SystemFilterBar from './SystemFilterBar';
 import SystemFormModal, { type SystemFormValues } from './SystemFormModal';
 import SystemWizardModal from './SystemWizardModal';
+import SystemImportModal from './SystemImportModal';
 import SystemPromptBindModal from './SystemPromptBindModal';
 import SystemBusinessKnowledgeModal from './SystemBusinessKnowledgeModal';
 import RepositoryDrawer from './RepositoryDrawer';
@@ -49,6 +50,10 @@ const Systems: React.FC = () => {
   // ===== Wizard（新增系统）=====
   const [wizardOpen, setWizardOpen] = useState(false);
   const openWizard = useCallback(() => setWizardOpen(true), []);
+
+  // ===== Excel 批量导入 =====
+  const [importOpen, setImportOpen] = useState(false);
+  const openImport = useCallback(() => setImportOpen(true), []);
 
   // ===== 编辑基本信息（name / nameCn / owner / description）=====
   const [editModalOpen, setEditModalOpen] = useState(false);
@@ -341,6 +346,7 @@ const Systems: React.FC = () => {
           onSearch={list.handleSearch}
           onReset={list.handleReset}
           onAdd={openWizard}
+          onImport={openImport}
         />
       </Card>
 
@@ -379,6 +385,12 @@ const Systems: React.FC = () => {
           list.fetch();
         }}
         onPartialSave={() => list.fetch()}
+      />
+
+      <SystemImportModal
+        open={importOpen}
+        onClose={() => setImportOpen(false)}
+        onCompleted={() => list.fetch()}
       />
 
       <SystemFormModal

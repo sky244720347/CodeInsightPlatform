@@ -1145,7 +1145,7 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
             meta.setClassPath(entryLabel);
 
             final boolean requireNonEmptyModules = rejectEmptyModules;
-            String aiPayload = pipelineAiCaller.callWithRetry(
+            PipelineAiCaller.CallOutcome outcome = pipelineAiCaller.callWithRetryOutcome(
                     taskId,
                     "MODULE_HIERARCHY",
                     entryLabel,
@@ -1180,9 +1180,13 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     }
             );
 
-            if (!StringUtils.hasText(aiPayload) || "{}".equals(aiPayload.trim())) {
+            if (!outcome.hasPayload()) {
+                execLog.log(taskId, String.format(
+                        "[AI-FAIL] stage=MODULE_HIERARCHY target=%s reason=%s (entry dropped)",
+                        entryLabel, PipelineAiCaller.truncateReason(outcome.lastFailureReason())));
                 return null;
             }
+            String aiPayload = outcome.response();
             JsonNode result = objectMapper.readTree(aiPayload);
             if (requireNonEmptyModules && isEmptyModulesPayload(result)) {
                 log.warn("callAiForEntry 重试后仍为空 modules，放弃合并增量 — entry={}", entryLabel);

@@ -10,9 +10,12 @@ import com.company.codeinsight.modules.entrypoint.service.EntrypointReviewServic
 import com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy;
 import com.company.codeinsight.modules.hierarchy.service.ModuleHierarchyService;
 import com.company.codeinsight.modules.log.service.OperationLogService;
+import com.company.codeinsight.modules.task.dto.BatchInitialTriggerResult;
 import com.company.codeinsight.modules.task.dto.IncrementalImpactDto;
 import com.company.codeinsight.modules.task.dto.TaskLogSummaryDto;
+import com.company.codeinsight.modules.task.dto.TaskProgressDto;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
+import com.company.codeinsight.modules.task.service.BatchInitialTriggerService;
 import com.company.codeinsight.modules.task.service.DecompileTaskService;
 import com.company.codeinsight.modules.task.service.IncrementalImpactQueryService;
 import com.company.codeinsight.modules.task.service.TaskExecutionLogger;
@@ -37,6 +40,9 @@ public class DecompileTaskController {
 
     @Autowired
     private DecompileTaskService decompileTaskService;
+
+    @Autowired
+    private BatchInitialTriggerService batchInitialTriggerService;
 
     @Autowired
     private DraftService draftService;
@@ -99,6 +105,22 @@ public class DecompileTaskController {
                         "（已自动启动）",
                 null, true);
         return ApiResponse.success(decompileTaskService.getById(task.getId()));
+    }
+
+    /**
+     * 全平台一键触发全量 INITIAL：异步入队 PENDING，立刻返回 jobId；各节点抢队执行流水线。
+     * <p>同仓已有未完成任务 / 未绑提示词等 → 跳过。查询进度：GET /tasks/batch-initial/{jobId}</p>
+     */
+    @Operation(summary = "一键全量触发（异步提交，立刻返回 jobId）")
+    @PostMapping("/batch-initial")
+    public ApiResponse<BatchInitialTriggerResult> batchTriggerInitial() {
+        return ApiResponse.success(batchInitialTriggerService.submitAsync());
+    }
+
+    @Operation(summary = "查询一键全量异步作业进度")
+    @GetMapping("/batch-initial/{jobId}")
+    public ApiResponse<BatchInitialTriggerResult> getBatchInitialJob(@PathVariable String jobId) {
+        return ApiResponse.success(batchInitialTriggerService.getJob(jobId));
     }
 
     /**
@@ -500,16 +522,6 @@ public class DecompileTaskController {
         task.setRequireKnowledgeReview(kr == null ? Boolean.TRUE : kr);
         decompileTaskService.updateById(task);
         decompileTaskService.startTask(task.getId());
-    }
-
-    /**
-     * 任务进度快速返回传输对象
-     */
-    @Data
-    public static class TaskProgressDto {
-        private String status;
-        private Integer progress;
-        private String errorReason;
     }
 }
 

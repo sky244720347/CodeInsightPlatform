@@ -110,6 +110,9 @@ public class DraftServiceImpl implements DraftService {
     @Autowired
     private com.company.codeinsight.common.storage.TaskWorkspacePaths taskWorkspacePaths;
 
+    @Autowired
+    private com.company.codeinsight.modules.parser.service.TaskParseMemoryService taskParseMemoryService;
+
     /** 无 Redis 时兜底：记录重跑前状态 / 失败原因 */
     private final java.util.concurrent.ConcurrentHashMap<Long, String> regenPrevStatusLocal =
             new java.util.concurrent.ConcurrentHashMap<>();
@@ -947,9 +950,10 @@ public class DraftServiceImpl implements DraftService {
         draftMapper.updateById(draft);
 
         final Long id = draftId;
+        final Long taskId = task.getId();
         final String opAuthor = author;
         final String opRemark = remark;
-        Runnable job = () -> runRegenerateAsync(id, opAuthor, opRemark, prevStatus);
+        Runnable job = () -> runRegenerateAsync(id, taskId, opAuthor, opRemark, prevStatus);
         if (org.springframework.transaction.support.TransactionSynchronizationManager.isSynchronizationActive()) {
             org.springframework.transaction.support.TransactionSynchronizationManager.registerSynchronization(
                     new org.springframework.transaction.support.TransactionSynchronization() {
@@ -1019,7 +1023,7 @@ public class DraftServiceImpl implements DraftService {
         return regenPrevStatusLocal.get(draftId);
     }
 
-    private void runRegenerateAsync(Long draftId, String author, String remark, String prevStatus) {
+    private void runRegenerateAsync(Long draftId, Long taskId, String author, String remark, String prevStatus) {
         try {
             var result = aiSummaryService.regenerateFunctionDocument(draftId);
             if (result != null) {
@@ -1048,6 +1052,9 @@ public class DraftServiceImpl implements DraftService {
             log.error("异步重跑失败 draftId={}", draftId, e);
             restoreStatusAfterRegenFailure(draftId, prevStatus);
             rememberRegenError(draftId, e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
+        } finally {
+            // 重跑会再 parseFile 灌满 AST/SymbolSolver 缓存，结束必须驱逐
+            taskParseMemoryService.evict(taskId);
         }
     }
 

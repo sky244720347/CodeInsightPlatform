@@ -96,6 +96,13 @@
             <version>${springdoc.version}</version>
         </dependency>
 
+        <!-- EasyExcel：系统批量导入解析 .xlsx -->
+        <dependency>
+            <groupId>com.alibaba</groupId>
+            <artifactId>easyexcel</artifactId>
+            <version>3.3.4</version>
+        </dependency>
+
         <!-- Lombok -->
         <dependency>
             <groupId>org.projectlombok</groupId>

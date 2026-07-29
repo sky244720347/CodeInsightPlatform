@@ -4,15 +4,21 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.company.codeinsight.common.response.ApiResponse;
 import com.company.codeinsight.common.response.PageResult;
 import com.company.codeinsight.modules.log.service.OperationLogService;
+import com.company.codeinsight.modules.system.dto.SystemImportResult;
 import com.company.codeinsight.modules.system.entity.SystemApplication;
 import com.company.codeinsight.modules.system.service.SystemApplicationService;
+import com.company.codeinsight.modules.system.service.SystemImportService;
 import com.company.codeinsight.modules.system.vo.SystemSummaryVO;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 /**
  * 业务系统应用管理控制器
@@ -28,6 +34,9 @@ public class SystemApplicationController {
     private SystemApplicationService systemApplicationService;
 
     @Autowired
+    private SystemImportService systemImportService;
+
+    @Autowired
     private OperationLogService operationLogService;
 
     @Operation(summary = "新增系统（向导 Step 1：基本信息）")
@@ -36,6 +45,24 @@ public class SystemApplicationController {
         SystemApplication created = systemApplicationService.createSystemDraft(system);
         operationLogService.logOperation(created.getId(), null, "CREATE_SYSTEM", "创建系统: " + created.getName(), null, true);
         return ApiResponse.success(created);
+    }
+
+    @Operation(summary = "Excel 批量导入系统与仓库（仅上传文件；已有系统/仓库 URL 则跳过）")
+    @PostMapping(value = "/import-excel", consumes = MediaType.MULTIPART_FORM_DATA_VALUE)
+    public ApiResponse<SystemImportResult> importSystemsFromExcel(@RequestPart("file") MultipartFile file) {
+        return ApiResponse.success(systemImportService.importFromExcel(file));
+    }
+
+    @Operation(summary = "下载系统批量导入 Excel 模板")
+    @GetMapping("/import-excel/template")
+    public ResponseEntity<byte[]> downloadImportTemplate() {
+        byte[] body = systemImportService.buildImportTemplate();
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION,
+                        "attachment; filename=\"system-import-template.xlsx\"")
+                .contentType(MediaType.parseMediaType(
+                        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"))
+                .body(body);
     }
 
     @Operation(summary = "编辑系统基本信息（name + component 查重）")
