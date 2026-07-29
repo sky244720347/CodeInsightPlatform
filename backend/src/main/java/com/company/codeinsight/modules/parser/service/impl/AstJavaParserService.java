@@ -619,6 +619,51 @@ public class AstJavaParserService implements JavaParserService {
         return idx >= 0 ? abs.substring(idx + 1) : abs;
     }
 
+    @Override
+    public void evictTaskCaches(Long taskId) {
+        if (taskId == null) {
+            return;
+        }
+        String prefix = "task_" + taskId + "/";
+        int parseRemoved = 0;
+        for (String key : parseCache.keySet()) {
+            if (key != null && key.startsWith(prefix) && parseCache.remove(key) != null) {
+                parseRemoved++;
+            }
+        }
+        int solverRemoved = evictPathKeyedCache(SYMBOL_SOLVER_CACHE, taskId);
+        int subtypeRemoved = evictPathKeyedCache(SUBTYPE_INDEX_CACHE, taskId);
+        if (parseRemoved > 0 || solverRemoved > 0 || subtypeRemoved > 0) {
+            log.info("evictTaskCaches taskId={} parse={} symbolSolver={} subtypeIndex={}",
+                    taskId, parseRemoved, solverRemoved, subtypeRemoved);
+        }
+    }
+
+    private static <V> int evictPathKeyedCache(ConcurrentHashMap<String, V> cache, Long taskId) {
+        int removed = 0;
+        for (String key : cache.keySet()) {
+            if (matchesTaskWorkspacePath(key, taskId) && cache.remove(key) != null) {
+                removed++;
+            }
+        }
+        return removed;
+    }
+
+    /** workspace / SymbolSolver 绝对路径是否属于 task_{id} */
+    public static boolean matchesTaskWorkspacePath(String path, Long taskId) {
+        if (path == null || taskId == null) {
+            return false;
+        }
+        String n = path.replace('\\', '/');
+        String token = "task_" + taskId;
+        int idx = n.indexOf(token);
+        if (idx < 0) {
+            return false;
+        }
+        int after = idx + token.length();
+        return after >= n.length() || n.charAt(after) == '/' || n.charAt(after) == '-';
+    }
+
     private static String simpleName(String annotation) {
         int dot = annotation.lastIndexOf('.');
         return dot >= 0 ? annotation.substring(dot + 1) : annotation;

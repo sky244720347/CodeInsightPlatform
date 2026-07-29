@@ -28,12 +28,7 @@ export interface PermitClearResult {
   removedBefore: number;
 }
 
-/** 清空任务 Redis 并发许可（运维） */
-export const clearTaskPermits = (): Promise<PermitClearResult> => {
-  return request.post('/system-config/permits/task/clear');
-};
-
-/** 清空 AI Redis 并发许可（运维） */
+/** 清空 AI Redis 并发许可（运维；集群总闸） */
 export const clearAiPermits = (): Promise<PermitClearResult> => {
   return request.post('/system-config/permits/ai/clear');
 };

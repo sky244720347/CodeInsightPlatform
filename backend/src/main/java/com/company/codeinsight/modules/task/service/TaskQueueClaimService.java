@@ -11,8 +11,9 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 
 /**
- * 集群模式下在事务内预留 PENDING 任务行（SKIP LOCKED），避免多节点重复调度；
+ * 在事务内预留 PENDING / RESUME_QUEUED 任务行（{@code FOR UPDATE SKIP LOCKED}），避免多节点重复调度；
  * 并提供租约续租 / CAS 接管（孤儿任务恢复）。
+ * <p>每个调度节点均可调用；认领写入本机 {@link ClusterInstanceId}。</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -23,7 +24,7 @@ public class TaskQueueClaimService {
     private final ClusterProperties clusterProperties;
 
     /**
-     * 预留一条 PENDING 任务：写入 claimed_by / lease，状态仍为 PENDING。
+     * 预留一条 PENDING 或 RESUME_QUEUED 任务：写入 claimed_by / lease，状态不变。
      */
     @Transactional
     public DecompileTask reserveNextPending() {

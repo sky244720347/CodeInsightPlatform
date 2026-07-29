@@ -91,6 +91,16 @@ public interface DecompileTaskService extends IService<DecompileTask> {
     void runPipeline(Long taskId);
 
     /**
+     * 调度器 / 确认瞬间已占本机任务槽后：从入口复核后续跑（状态应为 AI_ANALYZING）。
+     */
+    void runResumeAfterEntrypoint(Long taskId);
+
+    /**
+     * 调度器 / 确认瞬间已占本机任务槽后：从层级复核后续跑（状态应为 RESUME_QUEUED）。
+     */
+    void runResumeAfterHierarchy(Long taskId);
+
+    /**
      * 本 JVM 是否正在执行该任务流水线线程（taskCache 命中）。
      * 用于孤儿判定时排除「本节点活任务」。
      */

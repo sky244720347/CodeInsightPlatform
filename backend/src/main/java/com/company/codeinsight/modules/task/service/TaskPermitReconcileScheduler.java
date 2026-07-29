@@ -11,7 +11,8 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 
 /**
- * 集群模式下：实例心跳 + 任务/AI 并发许可对账与续租；
+ * 集群模式下：实例心跳 + AI 集群闸对账续租 + 系统级任务闸（maxConcurrentTasks）对账续租。
+ * 本机 task.concurrency / parse.concurrency 不经 Redis。
  * 另对流水线任务 DB 租约做续租（单机/集群均执行）。
  */
 @Slf4j
@@ -37,9 +38,9 @@ public class TaskPermitReconcileScheduler {
         }
         try {
             int n = taskConcurrencyLimiter.reconcileWithDatabase();
-            log.info("启动任务并发许可对账完成，清理 {} 个僵尸 holder", n);
+            log.info("启动系统任务闸对账完成，清理 {} 个僵尸 holder", n);
         } catch (Exception e) {
-            log.warn("启动任务并发许可对账失败: {}", e.getMessage());
+            log.warn("启动系统任务闸对账失败: {}", e.getMessage());
         }
         try {
             int n = aiConcurrencyService.reconcileLocalOrphans();
@@ -62,7 +63,7 @@ public class TaskPermitReconcileScheduler {
         try {
             taskConcurrencyLimiter.reconcileWithDatabase();
         } catch (Exception e) {
-            log.warn("周期任务并发许可对账失败: {}", e.getMessage());
+            log.warn("周期系统任务闸对账失败: {}", e.getMessage());
         }
         try {
             aiConcurrencyService.reconcileLocalOrphans();
@@ -72,7 +73,7 @@ public class TaskPermitReconcileScheduler {
         try {
             taskConcurrencyLimiter.renewLocalHeldPermits();
         } catch (Exception e) {
-            log.warn("任务并发许可续租失败: {}", e.getMessage());
+            log.warn("系统任务闸续租失败: {}", e.getMessage());
         }
         try {
             aiConcurrencyService.renewLocalHeldPermits();
@@ -81,7 +82,6 @@ public class TaskPermitReconcileScheduler {
         }
     }
 
-    /** 流水线任务 DB 租约续租（集群 / 单机均执行） */
     @Scheduled(fixedDelayString = "${code-insight.cluster.task-lease-renew-interval-ms:120000}")
     public void scheduledRenewTaskLeases() {
         try {

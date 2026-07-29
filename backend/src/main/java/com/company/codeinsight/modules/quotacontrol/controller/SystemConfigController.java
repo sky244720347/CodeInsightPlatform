@@ -6,6 +6,7 @@ import com.company.codeinsight.modules.quotacontrol.dto.SystemConfigUpdateReques
 import com.company.codeinsight.modules.quotacontrol.entity.SystemConfig;
 import com.company.codeinsight.modules.quotacontrol.service.AiConcurrencyService;
 import com.company.codeinsight.modules.quotacontrol.service.SystemConfigService;
+import com.company.codeinsight.modules.task.service.ParseConcurrencyLimiter;
 import com.company.codeinsight.modules.task.service.TaskConcurrencyLimiter;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -28,6 +29,9 @@ public class SystemConfigController {
     @Autowired
     private TaskConcurrencyLimiter taskConcurrencyLimiter;
 
+    @Autowired
+    private ParseConcurrencyLimiter parseConcurrencyLimiter;
+
     @Operation(summary = "列出所有配置")
     @GetMapping
     public ApiResponse<List<SystemConfig>> list() {
@@ -44,7 +48,6 @@ public class SystemConfigController {
     @PutMapping("/{key}")
     public ApiResponse<Void> put(@PathVariable String key, @RequestBody SystemConfigUpdateRequest body) {
         String desc = body.getDescription();
-        // 保留旧 description：调用方没传时不覆盖
         if (desc == null) {
             SystemConfig old = systemConfigService.getById(key);
             if (old != null) {
@@ -64,17 +67,16 @@ public class SystemConfigController {
             } catch (NumberFormatException ignored) {
             }
         }
+        if ("parse.concurrency".equals(key)) {
+            try {
+                parseConcurrencyLimiter.rebuild(Integer.parseInt(body.getValue()));
+            } catch (NumberFormatException ignored) {
+            }
+        }
         return ApiResponse.success();
     }
 
-    @Operation(summary = "清空任务 Redis 并发许可（运维）")
-    @PostMapping("/permits/task/clear")
-    public ApiResponse<PermitClearResult> clearTaskPermits() {
-        long removed = taskConcurrencyLimiter.clearAllRedisPermits();
-        return ApiResponse.success(new PermitClearResult("task", removed));
-    }
-
-    @Operation(summary = "清空 AI Redis 并发许可（运维）")
+    @Operation(summary = "清空 AI Redis 并发许可（运维；AI 为集群总闸）")
     @PostMapping("/permits/ai/clear")
     public ApiResponse<PermitClearResult> clearAiPermits() {
         long removed = aiConcurrencyService.clearAllRedisPermits();

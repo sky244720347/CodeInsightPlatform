@@ -462,7 +462,7 @@ COMMENT ON COLUMN ci_task.source_commit IS '本任务扫描时的源代码 Commi
 COMMENT ON COLUMN ci_task.remediation_kind IS '知识纠错类型：ENTRYPOINT / HIERARCHY / DOCUMENT（trigger_source=KNOWLEDGE_REMEDIATION 时）';
 COMMENT ON COLUMN ci_task.base_version_id IS '纠错所依据的已发布知识版本 ID';
 COMMENT ON COLUMN ci_task.base_task_id IS '纠错克隆来源任务 ID（last_published_task_id）';
-COMMENT ON COLUMN ci_task.resume_from IS '纠错续跑起点：AI_ANALYZING / GENERATING_DOC';
+COMMENT ON COLUMN ci_task.resume_from IS '续跑起点：纠错 AI_ANALYZING/GENERATING_DOC；断点 AFTER_ENTRYPOINT/AFTER_HIERARCHY';
 COMMENT ON COLUMN ci_task.remediation_scope_json IS '纠错范围 JSON（如 moduleIds / relativePath）';
 
 
@@ -1406,6 +1406,15 @@ COMMENT ON COLUMN ci_system_config.key IS '配置键（业务语义名，如 tok
 COMMENT ON COLUMN ci_system_config.value IS '配置值（文本型，由业务侧按需 parse）';
 COMMENT ON COLUMN ci_system_config.description IS '配置说明';
 COMMENT ON COLUMN ci_system_config.updated_by IS '最后修改人';
+
+-- 本机解析并发默认值（每节点同时重解析任务数上限；与集群 AI 闸解耦）
+INSERT INTO ci_system_config (key, value, description, updated_by, created_by)
+VALUES ('parse.concurrency', '1', '【本机】同时进行重解析（AST/入口发现/层级构建）的任务数上限', 'sys', 'sys')
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO ci_system_config (key, value, description, updated_by, created_by)
+VALUES ('task.concurrency', '2', '【本机】同时运行的任务流水线数上限（控制内存）', 'sys', 'sys')
+ON CONFLICT (key) DO NOTHING;
 
 
 -- ============================================================

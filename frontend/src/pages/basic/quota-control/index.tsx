@@ -31,7 +31,6 @@ import {
 import {
   listSystemConfig,
   putSystemConfig,
-  clearTaskPermits,
   clearAiPermits,
   type SystemConfig,
 } from '../../../api/system-config';
@@ -49,14 +48,14 @@ interface QuotaFormValues {
 /**
  * 「流量管控」页面：
  *  1) 全局限流配置（含任务/AI 并发）
- *  2) Redis 并发许可运维清空
+ *  2) AI Redis 并发许可运维清空
  *  3) 用户额度表（CRUD）
  */
 const QuotaControlPage: React.FC = () => {
   const [configs, setConfigs] = useState<SystemConfig[]>([]);
   const [configsLoading, setConfigsLoading] = useState(false);
   const [configSaving, setConfigSaving] = useState<string | null>(null);
-  const [clearingPool, setClearingPool] = useState<'task' | 'ai' | null>(null);
+  const [clearingPool, setClearingPool] = useState<'ai' | null>(null);
 
   const [quotas, setQuotas] = useState<UserQuota[]>([]);
   const [quotasLoading, setQuotasLoading] = useState(false);
@@ -119,28 +118,6 @@ const QuotaControlPage: React.FC = () => {
     } finally {
       setConfigSaving(null);
     }
-  };
-
-  const handleClearTaskPermits = () => {
-    Modal.confirm({
-      title: '清空任务 Redis 并发许可？',
-      content:
-        '将删除 ci:permits:task:* 中全部 holder。若仍有任务在跑，可能导致短暂超卖（多跑任务）。仅在队列假满/许可残留时使用。',
-      okText: '确认清空',
-      okType: 'danger',
-      cancelText: '取消',
-      onOk: async () => {
-        setClearingPool('task');
-        try {
-          const res = await clearTaskPermits();
-          message.success(`已清空任务并发许可（清理前 ${res.removedBefore} 个）`);
-        } catch {
-          // ignore
-        } finally {
-          setClearingPool(null);
-        }
-      },
-    });
   };
 
   const handleClearAiPermits = () => {
@@ -239,14 +216,20 @@ const QuotaControlPage: React.FC = () => {
     },
     {
       key: 'task.concurrency',
-      label: '任务全局最大并发数',
-      help: '同时处于流水线执行中的任务上限（task.concurrency）',
+      label: '单机任务最大并发数',
+      help: '【单机】同时跑几条流水线；系统 maxConcurrentTasks 另为集群闸',
+      type: 'int',
+    },
+    {
+      key: 'parse.concurrency',
+      label: '单机解析最大并发数',
+      help: '【单机】同时重解析（AST/入口/层级）的任务上限',
       type: 'int',
     },
     {
       key: 'ai.concurrency',
       label: 'AI 调用最大并发数',
-      help: '全平台同时打 LLM 的上限；超出后提示「AI 调用并发已达上限」',
+      help: '【集群】全平台同时打 LLM 的上限；超出后提示「AI 调用并发已达上限」',
       type: 'int',
     },
   ];
@@ -316,33 +299,24 @@ const QuotaControlPage: React.FC = () => {
           >
             <Spin spinning={configsLoading}>
               <Paragraph type="secondary" style={{ marginBottom: 12 }}>
-                修改后即时生效。任务并发与 AI 并发相互独立：前者限制同时跑几个任务，后者限制同时打几路
-                LLM。
+                修改后即时生效。task.concurrency / parse.concurrency 为单机上限（护内存）；AI
+                并发为集群总闸（护大模型）。系统 maxConcurrentTasks 在系统配置页维护，为集群级闸。
               </Paragraph>
               {GLOBAL_CONFIG_KEYS.map(renderConfigRow)}
               <Alert
                 style={{ marginTop: 16 }}
                 type="warning"
                 showIcon
-                message="Redis 并发许可运维"
+                message="AI Redis 并发许可运维"
                 description={
                   <Space direction="vertical" size="small" style={{ width: '100%' }}>
                     <Text type="secondary">
-                      集群模式下若出现队列假满或「AI 调用并发已达上限」且确认为崩溃残留，可手动清空对应
-                      Redis Set。开发环境（dev）无 Redis 许可时按钮无实际成员可清。
+                      若出现「AI 调用并发已达上限」且确认为崩溃残留，可手动清空 AI Redis
+                      Set。任务/解析并发为单机 Semaphore，无 Redis 清空入口。
                     </Text>
-                    <Space wrap>
-                      <Button
-                        danger
-                        loading={clearingPool === 'task'}
-                        onClick={handleClearTaskPermits}
-                      >
-                        清空任务 Redis 并发
-                      </Button>
-                      <Button danger loading={clearingPool === 'ai'} onClick={handleClearAiPermits}>
-                        清空 AI Redis 并发
-                      </Button>
-                    </Space>
+                    <Button danger loading={clearingPool === 'ai'} onClick={handleClearAiPermits}>
+                      清空 AI Redis 并发
+                    </Button>
                   </Space>
                 }
               />

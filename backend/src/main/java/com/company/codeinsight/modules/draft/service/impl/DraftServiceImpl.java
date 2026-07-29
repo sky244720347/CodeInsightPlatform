@@ -685,7 +685,8 @@ public class DraftServiceImpl implements DraftService {
 
     /**
      * 任务级「确认通过」：把 task 下整组草稿一次性置为 CONFIRMED，
-     * workspace → COMPLETED，任务状态机推进到 CONFIRMED。
+     * workspace → COMPLETED，任务状态机推进到 CONFIRMED；
+     * 事务提交后异步建版并 NAS 入队（不阻塞本方法返回）。
      *
      * <p>这是复核工作区工具栏「确认通过」按钮的真实语义入口 —
      * 操作粒度是任务，而非单文件。详见 {@link DraftService#confirmTask}。</p>
@@ -775,14 +776,8 @@ public class DraftServiceImpl implements DraftService {
             }
         }
 
-        // 人工知识复核通过后：组装发布包 → 清源码/drafts → 建版 → NAS 推送
-        try {
-            knowledgePublishFacade.onKnowledgeConfirmed(taskId, author);
-        } catch (Exception e) {
-            log.error("知识确认后自动发布失败 taskId={}", taskId, e);
-            throw e instanceof BusinessException ? (BusinessException) e
-                    : new BusinessException("自动建版推送失败: " + e.getMessage());
-        }
+        // 确认成功后异步建版 / NAS 入队（事务提交后投递，不阻塞本接口）
+        knowledgePublishFacade.schedulePublishAfterConfirmed(taskId, author);
     }
 
     @Override

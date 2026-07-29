@@ -149,7 +149,7 @@ public class DecompileTaskController {
 
     /**
      * 任务级「确认通过」：把任务下整组草稿一次性置为 CONFIRMED，
-     * 工作区晋升 COMPLETED，任务推进到 CONFIRMED。
+     * 工作区晋升 COMPLETED，任务推进到 CONFIRMED；建版与 NAS 入队在事务提交后异步执行。
      *
      * <p>这是复核工作区「确认通过」按钮的真实语义入口 — 操作粒度是任务，不是单个文件。
      * 细粒度的单文件确认仍可使用 {@code POST /drafts/{id}/confirm}，但不会再触发级联状态升级。</p>

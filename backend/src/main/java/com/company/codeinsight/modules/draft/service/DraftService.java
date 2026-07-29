@@ -83,6 +83,7 @@ public interface DraftService {
      *   <li>workspace.status → COMPLETED</li>
      *   <li>若任务当前处于 PENDING_REVIEW / REVIEWING，状态机推进到 CONFIRMED</li>
      *   <li>若 {@code comment} 非空，往工作区下第一篇草稿挂一条 type=PASS 的复核意见（带「任务级通过」前缀）</li>
+     *   <li>事务提交后异步触发建版与 NAS 入队（失败不回滚本次确认）</li>
      * </ol>
      *
      * <p>推送锁定：任务处于 PUSHING / PUSHED 时本方法抛出 {@link com.company.codeinsight.common.exception.BusinessException}。</p>

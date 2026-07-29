@@ -122,7 +122,7 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
 
         // 根据所处阶段，自动分配标准进度百分比，供前端进度条进行直观展示
         switch (targetStatus) {
-            case PENDING -> task.setProgress(0);
+            case PENDING, RESUME_QUEUED -> task.setProgress(0);
             case PULLING_CODE -> task.setProgress(10);
             case PARSING_CODE -> task.setProgress(35);
             case SPLITTING_TASK -> task.setProgress(40);
@@ -255,10 +255,14 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
                     || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case SPLITTING_TASK -> target == TaskStatus.ENTRYPOINT_REVIEW || target == TaskStatus.AI_ANALYZING
                     || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
-            case ENTRYPOINT_REVIEW -> target == TaskStatus.AI_ANALYZING || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
+            case ENTRYPOINT_REVIEW -> target == TaskStatus.RESUME_QUEUED || target == TaskStatus.AI_ANALYZING
+                    || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case AI_ANALYZING -> target == TaskStatus.MODULE_HIERARCHY || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case MODULE_HIERARCHY -> target == TaskStatus.MODULE_HIERARCHY_REVIEW || target == TaskStatus.BASELINE_DOC_INHERIT || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
-            case MODULE_HIERARCHY_REVIEW -> target == TaskStatus.BASELINE_DOC_INHERIT || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
+            case MODULE_HIERARCHY_REVIEW -> target == TaskStatus.RESUME_QUEUED || target == TaskStatus.BASELINE_DOC_INHERIT
+                    || target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
+            case RESUME_QUEUED -> target == TaskStatus.AI_ANALYZING || target == TaskStatus.BASELINE_DOC_INHERIT
+                    || target == TaskStatus.GENERATING_DOC || target == TaskStatus.CANCELLED || target == TaskStatus.FAILED;
             case BASELINE_DOC_INHERIT -> target == TaskStatus.GENERATING_DOC || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case GENERATING_DOC -> target == TaskStatus.PENDING_REVIEW || target == TaskStatus.CONFIRMED
                     || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;

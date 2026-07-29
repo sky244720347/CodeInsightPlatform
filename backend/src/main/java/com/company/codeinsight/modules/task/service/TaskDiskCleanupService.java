@@ -3,6 +3,7 @@ package com.company.codeinsight.modules.task.service;
 import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.common.util.DirectoryCleanupUtil;
+import com.company.codeinsight.modules.parser.service.TaskParseMemoryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -27,12 +28,14 @@ public class TaskDiskCleanupService {
 
     private final EnvStorageResolver storageResolver;
     private final TaskWorkspacePaths taskWorkspacePaths;
+    private final TaskParseMemoryService taskParseMemoryService;
 
     /** 知识确认完成后：删 drafts + 工作区源码，保留 docs/code-insight。 */
     public void cleanupAfterKnowledgeConfirmed(Long taskId) {
         if (taskId == null) {
             return;
         }
+        taskParseMemoryService.evict(taskId);
         deleteQuietly("drafts", storageResolver.draftsRoot().resolve("task_" + taskId), taskId);
         stripWorkspaceKeepDocs(taskId);
     }
@@ -44,6 +47,7 @@ public class TaskDiskCleanupService {
         if (taskId == null) {
             return;
         }
+        taskParseMemoryService.evict(taskId);
         deleteQuietly("workspace", taskWorkspacePaths.taskProjectPath(taskId), taskId);
         deleteQuietly("drafts", storageResolver.draftsRoot().resolve("task_" + taskId), taskId);
     }
@@ -53,6 +57,7 @@ public class TaskDiskCleanupService {
         if (taskId == null) {
             return;
         }
+        taskParseMemoryService.evict(taskId);
         deleteQuietly("workspace", taskWorkspacePaths.taskProjectPath(taskId), taskId);
         deleteQuietly("taskData", storageResolver.taskDataDir(taskId), taskId);
         deleteQuietly("drafts", storageResolver.draftsRoot().resolve("task_" + taskId), taskId);

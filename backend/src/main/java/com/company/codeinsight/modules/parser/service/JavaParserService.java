@@ -25,5 +25,15 @@ public interface JavaParserService {
      * @return 解析完成的类信息元数据列表
      */
     List<ParsedClassInfo> parseDirectory(File directory);
+
+    /**
+     * 释放指定任务相关的解析缓存（parseCache / SymbolSolver / subtypeIndex），
+     * 避免任务结束后仍占用堆内存。幂等。
+     *
+     * @param taskId 任务 ID；null 时无操作
+     */
+    default void evictTaskCaches(Long taskId) {
+        // 默认空实现，供测试桩等轻量实现使用
+    }
 }
 

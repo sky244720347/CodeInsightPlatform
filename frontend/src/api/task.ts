@@ -160,6 +160,7 @@ export const startTask = (id: number): Promise<void> => {
 
 /**
  * 任务级「确认通过」：整组草稿置 CONFIRMED，工作区升 COMPLETED，任务升 CONFIRMED。
+ * 建版与 NAS 入队由后端在确认成功后异步触发，本接口只等待确认完成。
  * 这是复核工作区工具栏「确认通过」按钮的真实语义入口 —
  * 操作粒度是任务，不是单文件。
  *

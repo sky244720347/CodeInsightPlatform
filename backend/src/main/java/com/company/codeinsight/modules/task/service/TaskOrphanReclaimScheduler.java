@@ -1,7 +1,6 @@
 package com.company.codeinsight.modules.task.service;
 
 import com.company.codeinsight.common.cluster.ClusterInstanceId;
-import com.company.codeinsight.common.cluster.ClusterLeaderLock;
 import com.company.codeinsight.common.cluster.ClusterProperties;
 import com.company.codeinsight.common.cluster.InstanceHeartbeat;
 import com.company.codeinsight.modules.draft.enums.DraftStatus;
@@ -28,13 +27,12 @@ import java.util.Set;
 /**
  * 孤儿流水线任务自动接管：租约过期 ∨ 认领实例心跳已死 → CAS 抢占 → 从当前阶段重入。
  * <p>判定用「或」而非「且」，避免重启后 lease 未过期却长期无法续跑。</p>
+ * <p>每个节点均可扫描与续跑（有本机槽才真正拉起）；不再依赖 Leader 独占执行。</p>
  */
 @Slf4j
 @Component
 @RequiredArgsConstructor
 public class TaskOrphanReclaimScheduler {
-
-    private static final String LEADER_KEY = "ci:leader:task-orphan-reclaim";
 
     private static final Set<String> RECLAIMABLE_STATUSES = Set.of(
             TaskStatus.PULLING_CODE.name(),
@@ -53,7 +51,6 @@ public class TaskOrphanReclaimScheduler {
     private final ClusterProperties clusterProperties;
     private final ClusterInstanceId clusterInstanceId;
     private final InstanceHeartbeat instanceHeartbeat;
-    private final ClusterLeaderLock leaderLock;
     private final OperationLogService operationLogService;
     private final KnowledgeDraftMapper knowledgeDraftMapper;
     private final DraftService draftService;
@@ -93,9 +90,6 @@ public class TaskOrphanReclaimScheduler {
     }
 
     public int reclaimOnce(String trigger) {
-        if (clusterProperties.isEnabled() && !leaderLock.tryAcquireLeader(LEADER_KEY)) {
-            return 0;
-        }
         List<DecompileTask> candidates = taskMapper.selectList(
                 new LambdaQueryWrapper<DecompileTask>()
                         .in(DecompileTask::getStatus, RECLAIMABLE_STATUSES)

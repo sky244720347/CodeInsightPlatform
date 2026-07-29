@@ -17,7 +17,6 @@ import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
 import java.time.LocalDateTime;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -27,21 +26,21 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Semaphore;
 
 /**
- * 知识构建任务并发闸门。
+ * 任务并发双闸：
  * <ul>
- *   <li>集群模式（非 {@code code-insight.env=dev}）：Redis Set 分布式计数 + 启动/周期 DB 对账</li>
- *   <li>单机模式：JVM {@link Semaphore}（兼容开发环境）</li>
+ *   <li>{@code task.concurrency} — <b>本机</b> JVM Semaphore（护内存）</li>
+ *   <li>系统 {@code maxConcurrentTasks} — <b>集群</b> Redis {@code task:sys:{systemId}}
+ *       （单机/无 Redis 时退化为本机 Semaphore；防同系统多节点互刷知识）</li>
  * </ul>
  */
 @Slf4j
 @Service
 public class TaskConcurrencyLimiter {
 
-    private static final String POOL_GLOBAL = "task:global";
     private static final String POOL_SYS_PREFIX = "task:sys:";
 
-    /** 流水线进行中应继续占用 Redis 许可的状态（与 finally release 时机对齐） */
-    private static final Set<String> PERMIT_HOLDING_STATUSES = Set.of(
+    /** 流水线占用系统集群闸期间的典型状态（对账用） */
+    private static final Set<String> SYSTEM_PERMIT_HOLDING_STATUSES = Set.of(
             TaskStatus.PULLING_CODE.name(),
             TaskStatus.PARSING_CODE.name(),
             TaskStatus.SPLITTING_TASK.name(),
@@ -70,10 +69,13 @@ public class TaskConcurrencyLimiter {
     @Autowired
     private DecompileTaskMapper taskMapper;
 
-    private volatile Semaphore globalLocal;
+    /** 本机任务总闸 */
+    private volatile Semaphore nodeLocal;
+
+    /** 单机模式下的 per-system 闸；集群模式系统闸走 Redis */
     private final ConcurrentMap<Long, Semaphore> perSystemLocal = new ConcurrentHashMap<>();
 
-    /** 本节点当前持有的 taskId → systemId（集群续租 / 优雅停机） */
+    /** 本节点当前持有的 taskId → systemId */
     private final ConcurrentMap<Long, Long> localHeldTasks = new ConcurrentHashMap<>();
 
     @PostConstruct
@@ -83,144 +85,113 @@ public class TaskConcurrencyLimiter {
 
     public synchronized void rebuildGlobal(int permits) {
         int n = Math.max(1, permits);
-        this.globalLocal = new Semaphore(n, true);
-        log.info("TaskConcurrencyLimiter 全局并发已重建: permits={}, cluster={}", n, clusterProperties.isEnabled());
+        this.nodeLocal = new Semaphore(n, true);
+        perSystemLocal.clear();
+        log.info("TaskConcurrencyLimiter 本机任务闸已重建: nodePermits={}, systemGate={}",
+                n, useClusterSystemGate() ? "redis-cluster" : "local-semaphore");
     }
 
     /**
-     * @param taskId 非空时作为 Redis holder（task:{id}）
+     * 先占本机任务槽，再占系统闸（集群 Redis / 本机 Semaphore）。
      */
     public boolean tryAcquire(Long systemId, Long taskId) {
-        if (clusterProperties.isEnabled()) {
-            return tryAcquireCluster(systemId, taskId);
+        if (nodeLocal == null) {
+            rebuildGlobal(systemConfigService.getInt("task.concurrency", 2));
         }
-        return tryAcquireLocal(systemId, taskId);
+        if (taskId != null && localHeldTasks.containsKey(taskId)) {
+            return true;
+        }
+        if (!nodeLocal.tryAcquire()) {
+            return false;
+        }
+        if (!tryAcquireSystem(systemId, taskId)) {
+            nodeLocal.release();
+            return false;
+        }
+        if (taskId != null) {
+            localHeldTasks.put(taskId, systemId);
+        }
+        return true;
     }
 
-    /** 兼容旧调用（单机路径无 taskId） */
     public boolean tryAcquire(Long systemId) {
         return tryAcquire(systemId, null);
     }
 
-    /** 本节点是否仍持有该任务的并发许可（运行中） */
     public boolean isHeldLocally(Long taskId) {
         return taskId != null && localHeldTasks.containsKey(taskId);
     }
 
-    /** 本节点持有的全部 taskId（供租约续租） */
-    public java.util.Set<Long> localHeldTaskIds() {
-        return java.util.Set.copyOf(localHeldTasks.keySet());
+    public Set<Long> localHeldTaskIds() {
+        return Set.copyOf(localHeldTasks.keySet());
     }
 
     public void release(Long systemId, Long taskId) {
         if (taskId != null) {
-            localHeldTasks.remove(taskId);
-        }
-        if (clusterProperties.isEnabled() && taskId != null && redisPermits != null) {
-            redisPermits.release(POOL_GLOBAL, holderToken(taskId));
-            if (systemId != null) {
-                redisPermits.release(systemPool(systemId), holderToken(taskId));
+            Long heldSys = localHeldTasks.remove(taskId);
+            if (heldSys == null) {
+                return;
             }
-            return;
+            systemId = heldSys;
         }
-        releaseLocal(systemId);
+        releaseSystem(systemId, taskId);
+        if (nodeLocal != null) {
+            try {
+                nodeLocal.release();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
     public void release(Long systemId) {
-        release(systemId, null);
+        releaseSystem(systemId, null);
+        if (nodeLocal != null) {
+            try {
+                nodeLocal.release();
+            } catch (Exception ignored) {
+            }
+        }
     }
 
+    /** 本机尚可拉起的任务槽位数。 */
     public int globalAvailablePermits() {
-        if (clusterProperties.isEnabled() && redisPermits != null) {
-            int max = systemConfigService.getInt("task.concurrency", 2);
-            long used = redisPermits.count(POOL_GLOBAL);
-            return Math.max(0, max - (int) used);
-        }
-        return globalLocal == null ? 0 : globalLocal.availablePermits();
+        return nodeLocal == null ? 0 : nodeLocal.availablePermits();
     }
 
     /**
-     * 按 DB 状态 + lease + 认领节点心跳清理 Redis 孤儿/僵尸 holder。
-     *
-     * @return 从 global 清理的 holder 数量
+     * 对账集群系统闸孤儿 holder（任务已终态 / 租约失效 / 认领节点心跳已死）。
      */
     public int reconcileWithDatabase() {
-        if (!clusterProperties.isEnabled() || redisPermits == null) {
+        if (!useClusterSystemGate()) {
             return 0;
         }
-        Set<String> holders = redisPermits.members(POOL_GLOBAL);
-        Set<String> stale = new HashSet<>();
-        for (String holder : holders) {
-            if (isStaleTaskHolder(holder)) {
-                stale.add(holder);
-            }
-        }
-
-        // 系统池双向：孤立或不合法成员
         Set<String> sysPools = redisPermits.listPoolsByPrefix(POOL_SYS_PREFIX);
-        Map<String, Set<String>> sysStale = new HashMap<>();
+        int removed = 0;
         for (String sysPool : sysPools) {
-            Set<String> sysMembers = redisPermits.members(sysPool);
-            Set<String> remove = new HashSet<>();
-            for (String h : sysMembers) {
-                if (!holders.contains(h) || isStaleTaskHolder(h)) {
-                    remove.add(h);
+            Set<String> members = redisPermits.members(sysPool);
+            Set<String> stale = new HashSet<>();
+            for (String holder : members) {
+                if (isStaleSystemHolder(holder)) {
+                    stale.add(holder);
                 }
             }
-            if (!remove.isEmpty()) {
-                sysStale.put(sysPool, remove);
-            }
-        }
-
-        if (stale.isEmpty() && sysStale.isEmpty()) {
-            return 0;
-        }
-        if (!stale.isEmpty()) {
-            redisPermits.reconcileStale(POOL_GLOBAL, stale);
-            for (String sysPool : sysPools) {
+            if (!stale.isEmpty()) {
                 redisPermits.reconcileStale(sysPool, stale);
+                removed += stale.size();
             }
-            redisPermits.reconcileStale(systemPool(null), stale);
         }
-        for (Map.Entry<String, Set<String>> e : sysStale.entrySet()) {
-            redisPermits.reconcileStale(e.getKey(), e.getValue());
+        if (removed > 0) {
+            log.warn("系统并发许可对账完成：清理僵尸 holder={} pools={}", removed, sysPools.size());
         }
-        int removed = stale.size() + sysStale.values().stream().mapToInt(Set::size).sum();
-        log.warn("任务并发许可对账完成：globalStale={} sysExtra={} 示例={}",
-                stale.size(),
-                sysStale.values().stream().mapToInt(Set::size).sum(),
-                stale.stream().limit(5).toList());
         return removed;
     }
 
-    /**
-     * 运维：清空全部任务 Redis 并发许可（global + 所有 sys 池），并清空本机 held 登记。
-     *
-     * @return 删除前 global 成员数
-     */
-    public long clearAllRedisPermits() {
-        localHeldTasks.clear();
-        if (!clusterProperties.isEnabled() || redisPermits == null) {
-            log.info("清空任务 Redis 并发：非集群或无 Redis，仅清空本机登记");
-            return 0;
-        }
-        long globalBefore = redisPermits.deletePool(POOL_GLOBAL);
-        Set<String> sysPools = redisPermits.listPoolsByPrefix(POOL_SYS_PREFIX);
-        for (String sysPool : sysPools) {
-            redisPermits.deletePool(sysPool);
-        }
-        redisPermits.deletePool(systemPool(null));
-        log.warn("已清空任务 Redis 并发许可 globalBefore={} sysPools={}", globalBefore, sysPools.size());
-        return globalBefore;
-    }
-
-    /** 对本节点持有的许可续租 Redis key TTL */
+    /** 续租本节点已占用的系统 Redis 池 TTL。 */
     public void renewLocalHeldPermits() {
-        if (!clusterProperties.isEnabled() || redisPermits == null || localHeldTasks.isEmpty()) {
+        if (!useClusterSystemGate() || localHeldTasks.isEmpty()) {
             return;
         }
         long ttl = clusterProperties.getTaskPermitTtlSeconds();
-        redisPermits.touchExpire(POOL_GLOBAL, ttl);
         Set<Long> sysIds = new HashSet<>(localHeldTasks.values());
         for (Long sysId : sysIds) {
             if (sysId != null) {
@@ -244,10 +215,43 @@ public class TaskConcurrencyLimiter {
         }
     }
 
-    /**
-     * holder 是否应删除。合法保留：本机 localHeld，或 DB 应占许可且 lease 有效且认领节点心跳仍在。
-     */
-    boolean isStaleTaskHolder(String holder) {
+    private boolean tryAcquireSystem(Long systemId, Long taskId) {
+        int sysMax = resolveSystemMax(systemId);
+        if (useClusterSystemGate()) {
+            if (taskId == null) {
+                log.warn("集群系统闸需要 taskId，拒绝 acquire systemId={}", systemId);
+                return false;
+            }
+            String holder = holderToken(taskId);
+            long ttl = clusterProperties.getTaskPermitTtlSeconds();
+            return redisPermits.tryAcquire(systemPool(systemId), holder, sysMax, ttl);
+        }
+        Semaphore sys = getOrCreateSystemSemaphoreLocal(systemId, sysMax);
+        return sys.tryAcquire();
+    }
+
+    private void releaseSystem(Long systemId, Long taskId) {
+        if (useClusterSystemGate()) {
+            if (taskId != null) {
+                redisPermits.release(systemPool(systemId), holderToken(taskId));
+            }
+            return;
+        }
+        Long key = systemId == null ? -1L : systemId;
+        Semaphore sys = perSystemLocal.get(key);
+        if (sys != null) {
+            try {
+                sys.release();
+            } catch (Exception ignored) {
+            }
+        }
+    }
+
+    private boolean useClusterSystemGate() {
+        return clusterProperties.isEnabled() && redisPermits != null;
+    }
+
+    private boolean isStaleSystemHolder(String holder) {
         Long taskId = parseTaskId(holder);
         if (taskId == null) {
             return true;
@@ -257,97 +261,29 @@ public class TaskConcurrencyLimiter {
         }
         DecompileTask task = taskMapper.selectById(taskId);
         if (task == null || !StringUtils.hasText(task.getStatus())
-                || !PERMIT_HOLDING_STATUSES.contains(task.getStatus())) {
+                || !SYSTEM_PERMIT_HOLDING_STATUSES.contains(task.getStatus())) {
             return true;
         }
-        // T3：lease 过期 → 僵尸
         LocalDateTime leaseUntil = task.getLeaseUntil();
         if (leaseUntil != null && leaseUntil.isBefore(LocalDateTime.now())) {
             return true;
         }
-        // T3：认领节点心跳已死 → 崩溃残留（重启后 ClusterInstanceId 变化）
         String claimedBy = task.getClaimedBy();
         if (StringUtils.hasText(claimedBy) && instanceHeartbeat != null
                 && !instanceHeartbeat.isAlive(claimedBy)) {
             return true;
         }
-        // 无认领信息且非本机 held：单机崩溃后常见，视为僵尸
         if (!StringUtils.hasText(claimedBy) && leaseUntil == null) {
             return true;
         }
         return false;
     }
 
-    private boolean tryAcquireCluster(Long systemId, Long taskId) {
-        if (redisPermits == null || taskId == null) {
-            log.warn("集群模式需要 RedisDistributedPermits 与 taskId");
-            return false;
-        }
-        int globalMax = systemConfigService.getInt("task.concurrency", 2);
-        String holder = holderToken(taskId);
-        long ttl = clusterProperties.getTaskPermitTtlSeconds();
-        if (!redisPermits.tryAcquire(POOL_GLOBAL, holder, globalMax, ttl)) {
-            return false;
-        }
-        int sysMax = resolveSystemMax(systemId);
-        if (!redisPermits.tryAcquire(systemPool(systemId), holder, sysMax, ttl)) {
-            redisPermits.release(POOL_GLOBAL, holder);
-            return false;
-        }
-        localHeldTasks.put(taskId, systemId);
-        return true;
-    }
-
-    private boolean tryAcquireLocal(Long systemId, Long taskId) {
-        if (globalLocal == null) {
-            rebuildGlobal(systemConfigService.getInt("task.concurrency", 2));
-        }
-        Semaphore sys = getOrCreateSystemSemaphoreLocal(systemId);
-        boolean gotGlobal = globalLocal.tryAcquire();
-        if (!gotGlobal) {
-            return false;
-        }
-        boolean gotSys = sys.tryAcquire();
-        if (!gotSys) {
-            globalLocal.release();
-            return false;
-        }
-        if (taskId != null) {
-            localHeldTasks.put(taskId, systemId);
-        }
-        return true;
-    }
-
-    private boolean tryAcquireLocal(Long systemId) {
-        return tryAcquireLocal(systemId, null);
-    }
-
-    private void releaseLocal(Long systemId) {
-        if (systemId != null) {
-            Semaphore sys = perSystemLocal.get(systemId);
-            if (sys != null) {
-                try {
-                    sys.release();
-                } catch (Exception ignored) {
-                }
-            }
-        }
-        if (globalLocal != null) {
-            try {
-                globalLocal.release();
-            } catch (Exception ignored) {
-            }
-        }
-    }
-
-    private Semaphore getOrCreateSystemSemaphoreLocal(Long systemId) {
-        if (systemId == null) {
-            return perSystemLocal.computeIfAbsent(-1L, k -> new Semaphore(1, true));
-        }
-        return perSystemLocal.computeIfAbsent(systemId, k -> {
-            int permits = resolveSystemMax(systemId);
-            log.info("TaskConcurrencyLimiter 系统 {} 初始化并发(local): permits={}", systemId, permits);
-            return new Semaphore(permits, true);
+    private Semaphore getOrCreateSystemSemaphoreLocal(Long systemId, int sysMax) {
+        Long key = systemId == null ? -1L : systemId;
+        return perSystemLocal.computeIfAbsent(key, k -> {
+            log.info("TaskConcurrencyLimiter 系统 {} 本机系统闸: permits={}", systemId, sysMax);
+            return new Semaphore(Math.max(1, sysMax), true);
         });
     }
 
@@ -370,7 +306,6 @@ public class TaskConcurrencyLimiter {
         if (!StringUtils.hasText(holder) || !holder.startsWith("task:")) {
             return null;
         }
-        // 排除 task:sys:xxx
         String rest = holder.substring("task:".length()).trim();
         if (rest.startsWith("sys:")) {
             return null;

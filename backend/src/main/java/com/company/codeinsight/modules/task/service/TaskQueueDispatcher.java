@@ -1,62 +1,53 @@
 package com.company.codeinsight.modules.task.service;
 
-import com.company.codeinsight.common.cluster.ClusterLeaderLock;
-import com.company.codeinsight.common.cluster.ClusterProperties;
 import com.company.codeinsight.modules.knowledge.remediation.KnowledgeRemediationConstants;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.enums.TaskStatus;
-import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import com.company.codeinsight.modules.task.service.impl.TaskStateMachineServiceImpl;
+import com.company.codeinsight.modules.task.support.TaskResumeConstants;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 
-import java.util.List;
-
 /**
  * 知识构建任务队列调度器。
- * <p>集群模式：仅 Leader 节点调度 + DB SKIP LOCKED 预留 + Redis 分布式并发。</p>
- * <p>单机模式：各节点均可调度 + JVM Semaphore（兼容开发环境）。</p>
+ * <p>每个节点均可调度：用 DB {@code FOR UPDATE SKIP LOCKED} 抢 {@code PENDING}/{@code RESUME_QUEUED}，
+ * 再占用<strong>本机</strong> {@link TaskConcurrencyLimiter} 槽位后拉起流水线或断点续跑。
+ * 任务/解析并发按机器限流；AI 并发仍为集群总闸。</p>
  */
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class TaskQueueDispatcher {
 
-    private static final String LEADER_KEY = "ci:leader:task-dispatcher";
-
-    private final DecompileTaskMapper taskMapper;
     private final DecompileTaskService decompileTaskService;
     private final TaskStateMachineServiceImpl stateMachineService;
     private final TaskConcurrencyLimiter limiter;
-    private final ClusterProperties clusterProperties;
-    private final ClusterLeaderLock leaderLock;
     private final TaskQueueClaimService claimService;
 
     @Scheduled(fixedDelayString = "${code-insight.task.queue-dispatch-interval-ms:5000}")
     public void dispatch() {
-        if (clusterProperties.isEnabled() && !leaderLock.tryAcquireLeader(LEADER_KEY)) {
-            return;
-        }
         try {
-            if (clusterProperties.isEnabled()) {
-                dispatchCluster();
-            } else {
-                dispatchLocal();
-            }
+            dispatchPending();
         } catch (Exception e) {
             log.error("任务队列调度异常", e);
         }
     }
 
-    private void dispatchCluster() {
+    /**
+     * 本机有空槽才抢库；抢到后 tryAcquire，失败则退回认领，供其他节点或下个 tick 再抢。
+     */
+    private void dispatchPending() {
         int permits = limiter.globalAvailablePermits();
         if (permits <= 0) {
             return;
         }
         int attempts = Math.max(permits * 2, 4);
         for (int i = 0; i < attempts; i++) {
+            if (limiter.globalAvailablePermits() <= 0) {
+                break;
+            }
             DecompileTask reserved = claimService.reserveNextPending();
             if (reserved == null) {
                 break;
@@ -65,11 +56,15 @@ public class TaskQueueDispatcher {
             Long systemId = reserved.getSystemId();
             if (!limiter.tryAcquire(systemId, taskId)) {
                 claimService.clearReservation(taskId);
-                continue;
+                break;
             }
             try {
-                transitPendingToExecutionStart(reserved);
-                decompileTaskService.runPipeline(taskId);
+                if (TaskStatus.RESUME_QUEUED.name().equals(reserved.getStatus())) {
+                    startResumeQueued(reserved);
+                } else {
+                    transitPendingToExecutionStart(reserved);
+                    decompileTaskService.runPipeline(taskId);
+                }
             } catch (Exception e) {
                 limiter.release(systemId, taskId);
                 claimService.clearReservation(taskId);
@@ -78,42 +73,22 @@ public class TaskQueueDispatcher {
         }
     }
 
-    private void dispatchLocal() {
-        int permits = limiter.globalAvailablePermits();
-        if (permits <= 0) {
-            return;
-        }
-        int limit = Math.max(permits * 2, 4);
-        List<DecompileTask> pending = taskMapper.selectList(
-                new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<DecompileTask>()
-                        .eq(DecompileTask::getStatus, TaskStatus.PENDING.name())
-                        .orderByDesc(DecompileTask::getPriority)
-                        .orderByAsc(DecompileTask::getCreatedDate)
-                        .last("LIMIT " + limit)
-        );
-        if (pending.isEmpty()) {
-            return;
-        }
-        for (DecompileTask t : pending) {
-            if (!limiter.tryAcquire(t.getSystemId(), t.getId())) {
-                continue;
-            }
-            try {
-                claimService.renewLease(t.getId());
-                transitPendingToExecutionStart(t);
-                decompileTaskService.runPipeline(t.getId());
-            } catch (Exception e) {
-                limiter.release(t.getSystemId(), t.getId());
-                claimService.clearReservation(t.getId());
-                log.error("dispatcher 触发任务 #{} 失败", t.getId(), e);
-            }
+    private void startResumeQueued(DecompileTask task) {
+        String resume = task.getResumeFrom();
+        if (TaskResumeConstants.AFTER_ENTRYPOINT.equals(resume)) {
+            stateMachineService.transitTo(task, TaskStatus.AI_ANALYZING, null);
+            decompileTaskService.runResumeAfterEntrypoint(task.getId());
+        } else if (TaskResumeConstants.AFTER_HIERARCHY.equals(resume)) {
+            decompileTaskService.runResumeAfterHierarchy(task.getId());
+        } else {
+            throw new IllegalStateException("未知断点续跑起点: " + resume);
         }
     }
 
     /**
      * 普通任务从 PULLING_CODE 起跑；知识纠错任务按 resume_from 直接进入续跑阶段。
      */
-    private void transitPendingToExecutionStart(DecompileTask task) {
+    void transitPendingToExecutionStart(DecompileTask task) {
         if (KnowledgeRemediationConstants.TRIGGER_SOURCE.equals(task.getTriggerSource())) {
             String resume = task.getResumeFrom();
             if (KnowledgeRemediationConstants.RESUME_AI_ANALYZING.equals(resume)) {

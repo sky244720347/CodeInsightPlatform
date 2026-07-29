@@ -58,6 +58,7 @@ const { RangePicker } = DatePicker;
 
 const runningStatuses = [
   'PENDING',
+  'RESUME_QUEUED',
   'PULLING_CODE',
   'PARSING_CODE',
   'ENTRYPOINT_REVIEW',
@@ -74,6 +75,7 @@ const runningStatuses = [
 const statusMeta: Record<string, { color: string; label: string; loading?: boolean }> = {
   DRAFT: { color: 'default', label: '草稿' },
   PENDING: { color: 'blue', label: '排队中', loading: true },
+  RESUME_QUEUED: { color: 'blue', label: '排队续跑', loading: true },
   PULLING_CODE: { color: 'blue', label: '拉取代码', loading: true },
   PARSING_CODE: { color: 'cyan', label: '解析代码', loading: true },
   /** @deprecated 历史任务 */
@@ -97,7 +99,7 @@ type GroupKey = 'ALL' | 'RUNNING' | 'PENDING_REVIEW' | 'CONFIRMED' | 'CLOSED';
 
 const GROUP_STATUSES: Record<GroupKey, string[] | null> = {
   ALL: null,
-  RUNNING: ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'GENERATING_DOC', 'PUSHING'],
+  RUNNING: ['PENDING', 'RESUME_QUEUED', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'MODULE_HIERARCHY', 'MODULE_HIERARCHY_REVIEW', 'BASELINE_DOC_INHERIT', 'GENERATING_DOC', 'PUSHING'],
   PENDING_REVIEW: ['PENDING_REVIEW', 'REVIEWING'],
   CONFIRMED: ['CONFIRMED', 'PUSHED'],
   CLOSED: ['FAILED', 'CANCELLED', 'ARCHIVED'],

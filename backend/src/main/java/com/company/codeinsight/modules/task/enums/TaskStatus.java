@@ -14,6 +14,11 @@ public enum TaskStatus {
      */
     PENDING,
     /**
+     * 人工断点通过后排队续跑（等待本机任务槽；由调度器或确认瞬间立即拉起）。
+     * {@code resume_from} 区分入口后 / 层级后，见 {@link com.company.codeinsight.modules.task.support.TaskResumeConstants}。
+     */
+    RESUME_QUEUED,
+    /**
      * 代码拉取中（克隆 Git 库或复制本地文件）
      */
     PULLING_CODE,

@@ -4,13 +4,13 @@
 <mapper namespace="com.company.codeinsight.modules.task.mapper.DecompileTaskMapper">
 
     <!--
-      认领队列中下一条 PENDING 任务（PostgreSQL SKIP LOCKED，集群下避免多节点重复调度）。
-      跳过已被其他节点预留（claimed_by 非空且 lease 未过期）的行。
+      认领下一条可调度任务：新建 PENDING 或断点续跑 RESUME_QUEUED
+      （PostgreSQL SKIP LOCKED）。跳过已被其他节点预留且 lease 未过期的行。
     -->
     <select id="selectNextPendingIdForUpdate" resultType="long">
         SELECT id
         FROM ci_task
-        WHERE status = 'PENDING'
+        WHERE status IN ('PENDING', 'RESUME_QUEUED')
           AND is_deleted = 0
           AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until &lt; NOW())
         ORDER BY priority DESC, created_date ASC

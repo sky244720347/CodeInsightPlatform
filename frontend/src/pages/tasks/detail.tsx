@@ -28,6 +28,7 @@ const { Text, Title } = Typography;
 // 包含人工复核断点与发布段：处于这些状态时轮询详情
 const runningStatuses = [
   'PENDING',
+  'RESUME_QUEUED',
   'PULLING_CODE',
   'PARSING_CODE',
   'ENTRYPOINT_REVIEW',
@@ -46,6 +47,8 @@ const runningStatuses = [
  * → 基线复制(6) → 生成文档(7) → 知识复核(8) → 建版(9) → NAS推送(10) → 完成(11)
  */
 const FLOW_STEP_ENTRY_REVIEW = 3;
+const FLOW_STEP_AI = 4;
+const FLOW_STEP_HIERARCHY_REVIEW = 5;
 const FLOW_STEP_BASELINE = 6;
 const FLOW_STEP_DOC_GEN = 7;
 const FLOW_STEP_KNOWLEDGE_REVIEW = 8;
@@ -53,15 +56,21 @@ const FLOW_STEP_CREATE_VERSION = 9;
 const FLOW_STEP_PUSH = 10;
 const FLOW_STEP_DONE = 11;
 
+/** 与后端 TaskResumeConstants 对齐 */
+const RESUME_AFTER_ENTRYPOINT = 'AFTER_ENTRYPOINT';
+const RESUME_AFTER_HIERARCHY = 'AFTER_HIERARCHY';
+
 const statusMeta: Record<string, { color: string; label: string; step: number }> = {
   DRAFT: { color: 'default', label: '草稿', step: -1 },
   PENDING: { color: 'blue', label: '排队中', step: 0 },
+  /** step 由 resolveFlowStep 按 resumeFrom 动态计算，此处仅作兜底 */
+  RESUME_QUEUED: { color: 'blue', label: '排队续跑', step: FLOW_STEP_AI },
   PULLING_CODE: { color: 'blue', label: '拉取代码', step: 1 },
   PARSING_CODE: { color: 'cyan', label: '解析代码', step: 2 },
   ENTRYPOINT_REVIEW: { color: 'cyan', label: '入口复核', step: FLOW_STEP_ENTRY_REVIEW },
-  AI_ANALYZING: { color: 'orange', label: 'AI 分析中', step: 4 },
-  MODULE_HIERARCHY: { color: 'gold', label: '模块层级提炼', step: 4 },
-  MODULE_HIERARCHY_REVIEW: { color: 'geekblue', label: '模块层级复核', step: 5 },
+  AI_ANALYZING: { color: 'orange', label: 'AI 分析中', step: FLOW_STEP_AI },
+  MODULE_HIERARCHY: { color: 'gold', label: '模块层级提炼', step: FLOW_STEP_AI },
+  MODULE_HIERARCHY_REVIEW: { color: 'geekblue', label: '模块层级复核', step: FLOW_STEP_HIERARCHY_REVIEW },
   BASELINE_DOC_INHERIT: { color: 'cyan', label: '基线文档继承', step: FLOW_STEP_BASELINE },
   GENERATING_DOC: { color: 'gold', label: '生成文档', step: FLOW_STEP_DOC_GEN },
   PENDING_REVIEW: { color: 'magenta', label: '知识复核', step: FLOW_STEP_KNOWLEDGE_REVIEW },
@@ -74,6 +83,22 @@ const statusMeta: Record<string, { color: string; label: string; step: number }>
   FAILED: { color: 'red', label: '失败', step: -1 },
   CANCELLED: { color: 'default', label: '已取消', step: -1 },
 };
+
+/** RESUME_QUEUED：进度停在下一执行步，副标题「排队中」 */
+function resolveResumeQueuedFlowStep(task: Task): number {
+  if (task.resumeFrom === RESUME_AFTER_HIERARCHY) {
+    return task.type === 'INCREMENTAL' ? FLOW_STEP_BASELINE : FLOW_STEP_DOC_GEN;
+  }
+  // AFTER_ENTRYPOINT 或未知：落在 AI 分析
+  return FLOW_STEP_AI;
+}
+
+function resolveFlowStep(task: Task): number {
+  if (task.status === 'RESUME_QUEUED') {
+    return resolveResumeQueuedFlowStep(task);
+  }
+  return statusMeta[task.status]?.step ?? -1;
+}
 
 /**
  * 任务执行详情监控组件 (TaskDetail)
@@ -261,7 +286,12 @@ const TaskDetail: React.FC = () => {
     prevTaskStatusRef.current = cur;
   }, [task, clearExecutionLogs, loadSummary]);
 
-  const meta = task ? statusMeta[task.status] ?? { color: 'default', label: task.status, step: -1 } : null;
+  const meta = task
+    ? {
+        ...(statusMeta[task.status] ?? { color: 'default', label: task.status, step: -1 }),
+        step: resolveFlowStep(task),
+      }
+    : null;
 
 /** 把单个阶段统计转成 antd Timeline 的 item 配置 */
 const timelineItem = (s: PipelineStageStat) => {
@@ -385,6 +415,20 @@ const timelineItem = (s: PipelineStageStat) => {
   };
 
   // 上排固定 6：全量 6+5，增量含基线 6+6
+  const resumeQueuedWaiting =
+    task.status === 'RESUME_QUEUED' ? '排队中' : undefined;
+  const resumeOnAi =
+    task.status === 'RESUME_QUEUED'
+    && (task.resumeFrom === RESUME_AFTER_ENTRYPOINT || !task.resumeFrom);
+  const resumeOnBaseline =
+    task.status === 'RESUME_QUEUED'
+    && task.resumeFrom === RESUME_AFTER_HIERARCHY
+    && isIncremental;
+  const resumeOnDocGen =
+    task.status === 'RESUME_QUEUED'
+    && task.resumeFrom === RESUME_AFTER_HIERARCHY
+    && !isIncremental;
+
   const allStepItems: StepItem[] = [
     makeItem('排队', toDisplayIndex(0)),
     makeItem('拉取代码', toDisplayIndex(1)),
@@ -393,10 +437,18 @@ const timelineItem = (s: PipelineStageStat) => {
       forced: entryReviewSkipped ? 'finish' : !entryReviewEnabled ? 'wait' : undefined,
       description: entryReviewEnabled ? undefined : (entryReviewSkipped ? '已跳过' : '未启用'),
     }),
-    makeItem('AI 分析', toDisplayIndex(4)),
-    makeItem('模块层级复核', toDisplayIndex(5)),
-    ...(isIncremental ? [makeItem('基线复制', toDisplayIndex(FLOW_STEP_BASELINE))] : []),
-    makeItem('生成文档', toDisplayIndex(FLOW_STEP_DOC_GEN)),
+    makeItem('AI 分析', toDisplayIndex(FLOW_STEP_AI), {
+      description: resumeOnAi ? resumeQueuedWaiting : undefined,
+    }),
+    makeItem('模块层级复核', toDisplayIndex(FLOW_STEP_HIERARCHY_REVIEW)),
+    ...(isIncremental
+      ? [makeItem('基线复制', toDisplayIndex(FLOW_STEP_BASELINE), {
+          description: resumeOnBaseline ? resumeQueuedWaiting : undefined,
+        })]
+      : []),
+    makeItem('生成文档', toDisplayIndex(FLOW_STEP_DOC_GEN), {
+      description: resumeOnDocGen ? resumeQueuedWaiting : undefined,
+    }),
     makeItem('知识复核', toDisplayIndex(FLOW_STEP_KNOWLEDGE_REVIEW), {
       forced: knowledgeReviewSkipped ? 'finish' : !knowledgeReviewEnabled ? 'wait' : undefined,
       description: knowledgeReviewEnabled

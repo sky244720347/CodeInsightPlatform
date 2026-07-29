@@ -20,6 +20,7 @@ public final class TaskExecutionDuration {
             TaskStatus.SPLITTING_TASK,
             TaskStatus.AI_ANALYZING,
             TaskStatus.MODULE_HIERARCHY,
+            TaskStatus.BASELINE_DOC_INHERIT,
             TaskStatus.GENERATING_DOC,
             TaskStatus.PUSHING
     );
@@ -27,6 +28,7 @@ public final class TaskExecutionDuration {
     private static final Set<TaskStatus> PAUSED = EnumSet.of(
             TaskStatus.DRAFT,
             TaskStatus.PENDING,
+            TaskStatus.RESUME_QUEUED,
             TaskStatus.ENTRYPOINT_REVIEW,
             TaskStatus.MODULE_HIERARCHY_REVIEW,
             TaskStatus.PENDING_REVIEW,

@@ -89,6 +89,11 @@ export interface Task {
   scheduleId?: number;
   /** 队列优先级 0-100，越大越优先；TaskQueueDispatcher 按此字段排序调度 */
   priority?: number;
+  /**
+   * 续跑起点：纠错 AI_ANALYZING/GENERATING_DOC；
+   * 断点排队 RESUME_QUEUED 时为 AFTER_ENTRYPOINT / AFTER_HIERARCHY
+   */
+  resumeFrom?: string;
   createdDate: string;
   updatedDate: string;
 }

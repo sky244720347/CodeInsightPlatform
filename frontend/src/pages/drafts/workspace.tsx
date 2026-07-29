@@ -299,6 +299,8 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
   /** 正在异步重跑的草稿 ID（本页发起或刷新后发现 REGENERATING） */
   const [regeneratingDraftId, setRegeneratingDraftId] = useState<number | null>(null);
   const regenPollTimerRef = useRef<number | null>(null);
+  /** 整体通过后轮询任务 CONFIRMED → PUSHING → PUSHED */
+  const publishPollTimerRef = useRef<number | null>(null);
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [autoSaveRetrying, setAutoSaveRetrying] = useState(false);
   const editorRef = useRef<any>(null);
@@ -1113,9 +1115,68 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
     }
   };
 
+  const clearPublishPoll = useCallback(() => {
+    if (publishPollTimerRef.current != null) {
+      window.clearTimeout(publishPollTimerRef.current);
+      publishPollTimerRef.current = null;
+    }
+  }, []);
+
+  /**
+   * 确认接口返回后轮询任务状态：CONFIRMED（建版中）→ PUSHING → PUSHED。
+   * 后端发布已异步，本轮询只负责页面反馈，不阻塞确认按钮。
+   */
+  const pollPublishUntilDone = useCallback(
+    (taskId: number) => {
+      clearPublishPoll();
+      let attempts = 0;
+      const maxAttempts = 60;
+      let sawPushing = false;
+      const tick = async () => {
+        attempts += 1;
+        try {
+          const t = await getTask(taskId);
+          setSelectedTask(t);
+          if (t.status === 'PUSHED') {
+            message.success('知识已推送完成');
+            clearPublishPoll();
+            return;
+          }
+          if (t.status === 'PUSHING') {
+            if (!sawPushing) {
+              sawPushing = true;
+              message.info('建版完成，正在推送到 NAS…');
+            }
+          } else if (t.status === 'FAILED') {
+            message.error('自动建版推送失败，请查看任务日志或推送记录');
+            clearPublishPoll();
+            return;
+          }
+          if (attempts >= maxAttempts) {
+            message.warning('建版推送仍在进行，可稍后在推送记录中查看进度');
+            clearPublishPoll();
+            return;
+          }
+          publishPollTimerRef.current = window.setTimeout(tick, 2000);
+        } catch {
+          if (attempts >= maxAttempts) {
+            clearPublishPoll();
+            return;
+          }
+          publishPollTimerRef.current = window.setTimeout(tick, 3000);
+        }
+      };
+      publishPollTimerRef.current = window.setTimeout(tick, 1500);
+    },
+    [clearPublishPoll],
+  );
+
+  useEffect(() => () => clearPublishPoll(), [clearPublishPoll]);
+
   /**
    * 弹窗内点「确认通过」时触发 — 任务级入口：
    * 把当前 task 下整组草稿一次性置为 CONFIRMED，工作区升 COMPLETED，任务升 CONFIRMED。
+   * 建版与 NAS 推送由后端异步触发；本接口只等待确认完成。
    * 意见可选填：填写则作为任务级通过意见留痕（前缀 `[任务级通过]`）；不填也直接通过。
    *
    * <p>操作粒度是任务，不是单文件 — 即使当前只展示了某一篇 draft，点确认后整组都会通过。</p>
@@ -1134,7 +1195,7 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
         getCurrentOperator(),
         confirmComment.trim() || undefined,
       );
-      message.success('任务已整体确认，正在自动建版并 NAS 推送');
+      message.success('任务已整体确认，已进入自动建版与 NAS 推送');
       setConfirmModalOpen(false);
       setConfirmComment('');
       await syncWorkspaceTreeFromServer();
@@ -1150,13 +1211,13 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
       } catch {
         /* 忽略，工作区状态在 treeData 中已经反映 */
       }
-      // 重新拉取任务列表（确认后任务状态已变为 CONFIRMED，tasks 数组需要同步刷新）
       try {
         const updated = await getTask(selectedTaskId);
         setSelectedTask(updated);
       } catch {
         /* 忽略 */
       }
+      pollPublishUntilDone(selectedTaskId);
     } catch {
       message.error('确认失败，请重试');
     } finally {
@@ -1504,10 +1565,10 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                   : allowPartialPass
                     ? unconfirmedDraftCount > 0
                       ? `允许部分通过：尚有 ${unconfirmedDraftCount} 篇未逐篇确认，整体通过时将一并确认`
-                      : '点击完成任务整体确认后将自动建版并 NAS 推送'
+                      : '确认后任务进入 CONFIRMED，随后自动建版并 NAS 推送'
                     : unconfirmedDraftCount > 0
                       ? `尚有 ${unconfirmedDraftCount} 篇文档未逐篇「通过」`
-                      : '全部文档已逐篇通过，点击完成任务整体确认后将自动建版并 NAS 推送'
+                      : '全部文档已逐篇通过；确认后进入建版与 NAS 推送'
           }
         >
           <Button

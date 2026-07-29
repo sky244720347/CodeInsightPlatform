@@ -44,6 +44,23 @@ public class RegexJavaParserService implements JavaParserService {
         return idx >= 0 ? abs.substring(idx + 1) : abs;
     }
 
+    @Override
+    public void evictTaskCaches(Long taskId) {
+        if (taskId == null) {
+            return;
+        }
+        String prefix = "task_" + taskId + "/";
+        int removed = 0;
+        for (String key : parseCache.keySet()) {
+            if (key != null && key.startsWith(prefix) && parseCache.remove(key) != null) {
+                removed++;
+            }
+        }
+        if (removed > 0) {
+            log.info("RegexJavaParserService.evictTaskCaches taskId={} parse={}", taskId, removed);
+        }
+    }
+
     // 正则表达式：解析包名定义
     private static final Pattern PACKAGE_PATTERN = Pattern.compile("^\\s*package\\s+([\\w.]+);");
     // 正则表达式：解析类/接口/枚举/注解的声明头结构

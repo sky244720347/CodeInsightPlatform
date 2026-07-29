@@ -48,6 +48,7 @@ const emptyTokenStats: TokenStats = {
 const statusMeta: Record<string, { color: string; label: string }> = {
   DRAFT: { color: 'default', label: '草稿' },
   PENDING: { color: 'blue', label: '排队中' },
+  RESUME_QUEUED: { color: 'blue', label: '排队续跑' },
   PULLING_CODE: { color: 'blue', label: '拉取代码' },
   PARSING_CODE: { color: 'cyan', label: '解析代码' },
   ENTRYPOINT_REVIEW: { color: 'gold', label: '入口复核' },
