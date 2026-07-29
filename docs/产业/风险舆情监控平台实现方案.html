@@ -1,0 +1,995 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>风险舆情监控平台实现方案</title>
+<style>
+  :root {
+    --bg: #f8fafc;
+    --primary-50: #eff6ff;
+    --primary-100: #dbeafe;
+    --primary-200: #bfdbfe;
+    --primary-300: #93c5fd;
+    --primary-400: #60a5fa;
+    --primary-500: #1d4ed8;
+    --primary-600: #1e40af;
+    --primary-700: #1d3557;
+    --primary-800: #0f172a;
+    --cyan-50: #ecfeff;
+    --cyan-100: #cffafe;
+    --cyan-500: #06b6d4;
+    --cyan-600: #0891b2;
+    --cyan-700: #0e7490;
+    --amber-50: #fffbeb;
+    --amber-100: #fef3c7;
+    --amber-600: #d97706;
+    --green-50: #f0fdf4;
+    --green-100: #dcfce7;
+    --green-600: #16a34a;
+    --red-50: #fef2f2;
+    --red-100: #fee2e2;
+    --red-600: #dc2626;
+    --gray-50: #fafafa;
+    --gray-100: #f5f5f5;
+    --gray-200: #e5e5e5;
+    --gray-300: #d4d4d4;
+    --gray-400: #a3a3a3;
+    --gray-500: #737373;
+    --gray-600: #525252;
+    --gray-700: #404040;
+    --gray-800: #262626;
+    --gray-900: #0f172a;
+    --shadow-sm: 0 1px 2px rgba(15, 23, 42, .05);
+    --shadow-md: 0 4px 6px -1px rgba(15, 23, 42, .08), 0 2px 4px -2px rgba(15, 23, 42, .08);
+    --shadow-lg: 0 10px 15px -3px rgba(15, 23, 42, .08), 0 4px 6px -4px rgba(15, 23, 42, .08);
+    --shadow-xl: 0 20px 25px -5px rgba(15, 23, 42, .08), 0 8px 10px -6px rgba(15, 23, 42, .08);
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg); color: var(--gray-900);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.65; padding: 40px 24px; font-size: 15px;
+  }
+  .container { max-width: 1420px; margin: 0 auto; }
+  .header {
+    text-align: center; margin-bottom: 44px; padding: 40px 28px 34px;
+    border-bottom: 3px solid var(--primary-200);
+    background: linear-gradient(135deg, var(--primary-700) 0%, var(--primary-800) 100%);
+    color: #fff; border-radius: 18px; box-shadow: var(--shadow-lg);
+    position: relative; overflow: hidden;
+  }
+  .header::before {
+    content: ""; position: absolute; top: -80px; left: -80px;
+    width: 220px; height: 220px; background: rgba(6, 182, 212, .15); border-radius: 50%;
+  }
+  .header::after {
+    content: ""; position: absolute; right: -100px; bottom: -100px;
+    width: 260px; height: 260px; background: rgba(29, 78, 216, .15); border-radius: 50%;
+  }
+  .header h1 { position: relative; z-index: 1; font-size: 34px; font-weight: 900; color: #fff; letter-spacing: .4px; }
+  .header .subtitle { position: relative; z-index: 1; font-size: 15px; color: var(--primary-200); margin-top: 10px; font-weight: 500; }
+  .badge-row { position: relative; z-index: 1; display: flex; justify-content: center; gap: 12px; margin-top: 16px; flex-wrap: wrap; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 7px; padding: 7px 15px; border-radius: 999px;
+    font-size: 12px; font-weight: 700; background: rgba(255, 255, 255, .1); color: var(--cyan-100);
+    border: 1px solid rgba(255, 255, 255, .15); box-shadow: var(--shadow-sm); backdrop-filter: blur(4px);
+  }
+  .badge::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--cyan-500); }
+  .section-title { display: flex; align-items: center; gap: 12px; margin: 48px 0 22px; }
+  .section-title .num {
+    width: 38px; height: 38px; display: flex; align-items: center; justify-content: center;
+    background: var(--primary-600); color: #fff; border-radius: 10px; font-weight: 900; font-size: 16px;
+    box-shadow: var(--shadow-md); flex-shrink: 0;
+  }
+  .section-title h2 { font-size: 23px; font-weight: 800; color: var(--gray-900); }
+  .section-title .line { flex: 1; height: 2px; background: var(--primary-100); border-radius: 1px; }
+  .sub-title { font-size: 17px; font-weight: 800; color: var(--primary-700); margin: 22px 0 12px; }
+  .text-muted { color: var(--gray-600); font-size: 14px; }
+  .summary-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; align-items: stretch; margin-bottom: 24px; }
+  .summary-card {
+    border-radius: 16px; background: #fff; border: 1px solid var(--gray-200);
+    box-shadow: var(--shadow-md); padding: 24px; height: 100%; display: flex; flex-direction: column;
+  }
+  .summary-card h3 { font-size: 20px; color: var(--primary-700); margin-bottom: 12px; font-weight: 800; display: flex; gap: 8px; align-items: center; }
+  .summary-card p, .summary-card li { color: var(--gray-700); font-size: 14px; }
+  .quote-box {
+    margin-top: 14px; padding: 14px 16px; background: var(--primary-50);
+    border-left: 4px solid var(--primary-500); border-radius: 10px;
+    color: var(--primary-800); font-size: 14px; font-weight: 700;
+  }
+  .check-list { list-style: none; display: grid; gap: 10px; }
+  .check-list li {
+    position: relative; padding: 11px 12px 11px 34px;
+    border: 1px solid var(--gray-200); border-radius: 10px; background: var(--gray-50);
+  }
+  .check-list li::before {
+    content: ""; position: absolute; left: 14px; top: 17px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--cyan-500);
+  }
+  .biz-highlight { display: grid; grid-template-columns: repeat(4, 1fr); gap: 16px; margin-bottom: 24px; }
+  .biz-highlight.three-col { grid-template-columns: repeat(3, 1fr); }
+  .biz-highlight.two-col { grid-template-columns: repeat(2, 1fr); }
+  .biz-highlight .item {
+    background: #fff; border: 1px solid var(--gray-200);
+    border-radius: 15px; padding: 20px; box-shadow: var(--shadow-md);
+  }
+  .biz-highlight .icon { font-size: 28px; margin-bottom: 10px; }
+  .biz-highlight h4 { font-size: 16px; color: var(--primary-700); margin-bottom: 6px; font-weight: 800; }
+  .biz-highlight p { font-size: 13px; color: var(--gray-600); }
+  .role-scope { font-size: 11px; color: var(--gray-400); margin-bottom: 8px; }
+  .role-scope-k { font-weight: 700; color: var(--primary-500); }
+  .md-table {
+    width: 100%; border-collapse: collapse; margin: 16px 0;
+    box-shadow: var(--shadow-sm); border: 1px solid var(--gray-200);
+    border-radius: 8px; overflow: hidden; background: #fff;
+  }
+  .md-table th { background: var(--primary-700); color: #fff; padding: 12px 14px; font-size: 13px; text-align: left; font-weight: 700; }
+  .md-table td { padding: 12px 14px; font-size: 13px; border-bottom: 1px solid var(--gray-100); color: var(--gray-700); vertical-align: top; }
+  .md-table tr:last-child td { border-bottom: none; }
+  .md-table tr:hover td { background: var(--primary-50); }
+  .pill {
+    display: inline-flex; align-items: center; padding: 3px 9px; border-radius: 999px;
+    font-size: 11px; font-weight: 800; margin: 2px 4px 2px 0; white-space: nowrap;
+  }
+  .pill-blue { background: var(--primary-50); color: var(--primary-600); border: 1px solid var(--primary-100); }
+  .pill-cyan { background: var(--cyan-50); color: var(--cyan-600); border: 1px solid var(--cyan-100); }
+  .pill-amber { background: var(--amber-50); color: var(--amber-600); border: 1px solid var(--amber-100); }
+  .pill-green { background: var(--green-50); color: var(--green-600); border: 1px solid var(--green-100); }
+  .pill-red { background: var(--red-50); color: var(--red-600); border: 1px solid var(--red-100); }
+  .mermaid-wrap {
+    border-radius: 15px; background: #fff; border: 2px solid var(--gray-200);
+    box-shadow: var(--shadow-lg); padding: 28px 20px; margin: 18px 0; overflow-x: auto;
+  }
+  .mermaid-wrap .mermaid { display: flex; justify-content: center; min-width: 900px; }
+  .arch-dual-layout {
+    display: flex; flex-direction: column; gap: 10px; align-items: stretch;
+    max-width: 1360px; margin: 12px auto 0;
+  }
+  .arch-svg-panel {
+    border-radius: 8px; background: #fff; border: 1px solid var(--gray-200);
+    box-shadow: var(--shadow-sm); padding: 8px; margin: 0; overflow: hidden;
+    height: fit-content; align-self: stretch;
+  }
+  .arch-svg-panel img,
+  .arch-svg-panel > svg {
+    display: block; width: 100%; height: auto; max-width: 100%;
+  }
+  .arch-bridge {
+    display: flex; flex-direction: row; align-items: center; justify-content: center;
+    align-self: center;
+    gap: 56px; padding: 6px 2px; font-size: 11px; color: var(--gray-500); text-align: center;
+  }
+  .arch-bridge .bridge-item {
+    display: flex; flex-direction: column; align-items: center; gap: 6px;
+    max-width: none; line-height: 1.35; font-weight: 700;
+  }
+  .arch-bridge .bridge-arrow {
+    display: block; width: 2px; height: 28px; border-radius: 1px; position: relative;
+  }
+  .arch-bridge .bridge-item.cfg .bridge-arrow {
+    background: var(--primary-500);
+  }
+  .arch-bridge .bridge-item.cfg .bridge-arrow::before {
+    content: ""; position: absolute; top: -1px; left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent; border-bottom-color: var(--primary-500);
+  }
+  .arch-bridge .bridge-item.data .bridge-arrow {
+    background: var(--cyan-600);
+  }
+  .arch-bridge .bridge-item.data .bridge-arrow::after {
+    content: ""; position: absolute; bottom: -1px; left: 50%;
+    transform: translateX(-50%);
+    border: 5px solid transparent; border-top-color: var(--cyan-600);
+  }
+  .arch-bridge .bridge-item.cfg { color: var(--primary-500); }
+  .arch-bridge .bridge-item.data { color: var(--cyan-600); }
+  @media (max-width: 1200px) {
+    .arch-dual-layout { grid-template-columns: 1fr; }
+    .arch-bridge { flex-direction: row; justify-content: center; gap: 24px; padding: 12px 0; }
+    .arch-bridge .bridge-item { max-width: none; }
+  }
+  .plan-strip { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 16px 0; }
+  .plan-unit {
+    border-radius: 14px; padding: 18px 12px; text-align: center;
+    border: 2px solid var(--primary-200); background: #fff;
+    box-shadow: var(--shadow-md); position: relative;
+  }
+  .plan-unit::after {
+    content: "→"; position: absolute; right: -13px; top: 50%;
+    transform: translateY(-50%); color: var(--primary-400); font-size: 22px; font-weight: 900;
+  }
+  .plan-unit:last-child::after { display: none; }
+  .plan-unit.hl { background: var(--cyan-50); border-color: var(--cyan-500); }
+  .plan-unit .icon { font-size: 26px; margin-bottom: 8px; display: block; }
+  .plan-unit h4 { color: var(--primary-700); font-size: 13.5px; margin-bottom: 6px; font-weight: 800; }
+  .plan-unit p { color: var(--gray-600); font-size: 12px; line-height: 1.5; }
+  .crawler-status-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; margin-top: 16px; }
+  .crawler-card {
+    background: #fff; border: 1px solid var(--gray-200); border-radius: 14px;
+    padding: 18px; box-shadow: var(--shadow-sm);
+  }
+  .crawler-card h4 { font-size: 15px; color: var(--primary-700); margin-bottom: 8px; font-weight: 800; }
+  .crawler-card .meta { font-size: 11px; color: var(--gray-400); margin-bottom: 10px; }
+  .crawler-card p { font-size: 12.5px; color: var(--gray-600); margin-bottom: 6px; }
+  .crawler-card .tag-row { margin-top: 10px; }
+  .knowledge-layout { display: grid; grid-template-columns: 1fr 1.35fr; gap: 20px; align-items: stretch; margin-top: 24px; }
+  .ui-side-card {
+    background: #fff; border: 1px solid var(--gray-200); border-radius: 16px;
+    box-shadow: var(--shadow-xl); padding: 24px; display: flex; flex-direction: column;
+  }
+  .ui-mock-page {
+    border: 1px solid var(--gray-200); border-radius: 12px;
+    background: var(--gray-50); overflow: hidden; flex: 1; display: flex; flex-direction: column;
+  }
+  .ui-mock-card { background: #fff; padding: 12px 14px; border-bottom: 1px solid var(--gray-200); }
+  .ui-mock-alert {
+    padding: 10px; border-radius: 8px; background: var(--primary-50);
+    border: 1px solid var(--primary-100); font-size: 11px;
+    margin-bottom: 12px; color: var(--primary-700);
+  }
+  .ui-mock-tree-panel { background: #fff; border: 1px solid var(--gray-200); border-radius: 8px; padding: 12px; }
+  .ui-tree-root { display: flex; flex-direction: column; gap: 6px; }
+  .ui-tree-row {
+    display: flex; align-items: center; gap: 6px; font-size: 12.5px;
+    padding: 5px 6px; border-radius: 6px; color: var(--gray-700);
+  }
+  .ui-tree-row.active { background: var(--primary-50); color: var(--primary-700); font-weight: 700; border: 1px dashed var(--primary-200); }
+  .ui-tag { display: inline-block; padding: 2px 6px; border-radius: 4px; font-size: 10px; font-weight: 800; }
+  .ui-tag.mod { background: var(--primary-100); color: var(--primary-700); }
+  .ui-tag.sub { background: var(--cyan-100); color: var(--cyan-700); }
+  .ui-tag.fn { background: var(--gray-200); color: var(--gray-700); }
+  .ui-preview-panel {
+    background: #fff; border: 1px solid var(--gray-200); border-radius: 16px;
+    box-shadow: var(--shadow-xl); display: flex; flex-direction: column; overflow: hidden;
+  }
+  .ui-preview-header {
+    background: var(--gray-900); padding: 14px 20px;
+    display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--gray-800);
+  }
+  .ui-preview-title { color: #fff; font-size: 14px; font-weight: 700; flex: 1; }
+  .email-preview { background: #f4f4f4; padding: 20px; flex: 1; overflow-y: auto; }
+  .email-envelope {
+    background: #fff; border: 1px solid var(--gray-200); border-radius: 8px;
+    box-shadow: var(--shadow-md); max-width: 100%; overflow: hidden;
+  }
+  .email-header-bar { background: var(--gray-50); padding: 14px 18px; border-bottom: 1px solid var(--gray-200); font-size: 12px; }
+  .email-header-bar .row { display: flex; gap: 8px; margin-bottom: 4px; color: var(--gray-600); }
+  .email-header-bar .label { color: var(--gray-400); min-width: 52px; }
+  .email-header-bar .subject { font-weight: 800; color: var(--gray-900); font-size: 14px; margin-top: 6px; }
+  .email-body { padding: 20px 18px; font-size: 13px; color: var(--gray-700); line-height: 1.7; }
+  .email-greeting { margin-bottom: 16px; }
+  .email-section-title {
+    font-size: 15px; font-weight: 800; color: var(--primary-800);
+    margin: 20px 0 10px; padding-bottom: 6px; border-bottom: 2px solid var(--primary-200);
+  }
+  .email-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 8px; }
+  .email-table th {
+    background: #e8e8e8; padding: 8px 10px; text-align: left;
+    font-weight: 700; color: var(--gray-700); border: 1px solid #d0d0d0; white-space: nowrap;
+  }
+  .email-table td { padding: 10px; border: 1px solid #e0e0e0; vertical-align: top; color: var(--gray-700); }
+  .email-table tr:nth-child(even) td { background: #fafafa; }
+  .email-table .title-link { color: #1677ff; font-weight: 700; text-decoration: none; display: block; margin-bottom: 4px; }
+  .email-table .summary { color: var(--gray-600); font-size: 11.5px; line-height: 1.55; }
+  .email-table .score { color: var(--gray-400); font-size: 10.5px; margin-top: 4px; }
+  .email-footer-note {
+    margin-top: 18px; padding-top: 12px; border-top: 1px dashed var(--gray-200);
+    font-size: 11px; color: var(--gray-400);
+  }
+  .json-preview-box {
+    margin: 16px 0 8px; border-radius: 10px; overflow: hidden;
+    border: 1px solid #334155; background: #0f172a;
+  }
+  .json-preview-box .json-head {
+    display: flex; justify-content: space-between; align-items: center;
+    padding: 8px 12px; background: #1e293b; border-bottom: 1px solid #334155;
+    font-size: 11px; font-weight: 700; color: #94a3b8;
+  }
+  .json-preview-box pre {
+    margin: 0; padding: 12px 14px; font-family: Consolas, "Courier New", monospace;
+    font-size: 11.5px; line-height: 1.55; color: #e2e8f0; overflow-x: auto;
+    max-height: 260px;
+  }
+  .json-preview-box .jk { color: #7dd3fc; }
+  .json-preview-box .js { color: #86efac; }
+  .json-preview-box .jn { color: #fbbf24; }
+  .footer {
+    margin-top: 56px; padding-top: 24px; border-top: 1px solid var(--gray-200);
+    color: var(--gray-400); font-size: 12px; text-align: center;
+  }
+  @media (max-width: 1200px) {
+    .knowledge-layout { grid-template-columns: 1fr; }
+    .biz-highlight, .biz-highlight.three-col { grid-template-columns: repeat(2, 1fr); }
+    .plan-strip { grid-template-columns: 1fr; }
+    .plan-unit::after { display: none; }
+    .crawler-status-grid { grid-template-columns: 1fr; }
+    .mermaid-wrap .mermaid { min-width: 0; }
+  }
+  @media print {
+    body { background: #fff; padding: 18px; }
+    .header, .summary-card, .md-table, .ui-side-card, .ui-preview-panel { box-shadow: none; }
+    .section-title { break-after: avoid; }
+    .knowledge-layout { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header class="header">
+    <span style="font-weight: 700; font-size: 12px; letter-spacing: 1px;">📡 RISK MONITOR · 风险舆情监控</span>
+    <h1 style="margin-top: 10px;">风险舆情监控平台实现方案</h1>
+    <p class="subtitle">
+      统一信息订阅引擎 · 外网部署 · 覆盖网站 / 视频 / 公众号等多通道 · AI 写脚本与自愈 · 结构化数据回传公司 API
+    </p>
+    <div class="badge-row">
+      <span class="badge">外网部署</span>
+      <span class="badge">智能找源</span>
+      <span class="badge">AI 写脚本</span>
+      <span class="badge">失败自愈</span>
+      <span class="badge">多通道采集</span>
+      <span class="badge">公司 API</span>
+    </div>
+  </header>
+
+  <!-- 0 方案建设背景 -->
+  <section>
+    <div class="section-title">
+      <span class="num">0</span>
+      <h2>方案建设背景</h2>
+      <span class="line"></span>
+    </div>
+    <div class="summary-grid" style="grid-template-columns: 1fr;">
+      <div class="summary-card">
+        <h3>📋 业务背景与智能体感知诉求</h3>
+        <p>
+          集团数据蓝图与风控预警能力建设要求，持续加强对区域、市场、客户相关公开信息的监测与早预警。当前风险与舆情线索广泛分布在政府及行业网站、抖音 / B 站等视频平台、微信公众号 / 微博等自媒体中，信息来源多、更新快、结构不统一，人工跟踪与脚本维护成本高。例如：一是网站公开信息（政策、处罚、经营异常等）可提前反映客户或区域风险；二是短视频与直播场景中的黑产导流、违规宣传等线索传播快、易发酵；三是公众号与微博等文字内容常成为舆情扩散的第一现场；四是现有采集仍依赖人工维护 RPA / 爬虫脚本，目标增减与页面改版后难以及时扩展。因此，有必要建设<strong>风险舆情监控平台</strong>（亦可作为统一信息订阅能力独立运行），以 AI 自动编写采集 / RPA 脚本、动态任务下发与结构化回传为核心，为总部风险分析等业务方提供可配置的全网检索数据源。
+        </p>
+      </div>
+    </div>
+
+    <h3 class="sub-title">📦 公司现有数据采集现状（项目起点）</h3>
+    <p class="text-muted" style="margin-bottom: 4px;">
+      针对不同的数据主体，公司已有三类爬虫方案。
+    </p>
+    <div class="crawler-status-grid">
+      <div class="crawler-card">
+        <h4>1 · 法院网：涉诉失信信息爬虫</h4>
+        <div class="meta">Python · 阿里云外网 · 未使用 AI</div>
+        <p><strong>实现方式：</strong>Python 直写爬虫，阿里云独立部署，经 IP 池代理访问法院网。</p>
+        <p><strong>使用人员：</strong>审批坐席人员</p>
+        <p><strong>存在问题：</strong>并发稍高即易崩溃，IP 易被拉黑</p>
+        <div class="tag-row">
+          <span class="pill pill-amber">独立部署</span>
+          <span class="pill pill-red">需采购代理IP</span>
+        </div>
+      </div>
+      <div class="crawler-card">
+        <h4>2 · 抖音 / 微信视频号：黑产信息爬虫</h4>
+        <div class="meta">Java + 类RPA · 办公网 · 未使用 AI</div>
+        <p><strong>实现方式：</strong>Java + RPA 驱动多部手机分账号在抖音/微信视频号搜索「融易免征信」等黑产关键词，访问视频截图后 OCR 提取视频标题和描述，获取视频链接后推送打击黑产专项平台。</p>
+        <p><strong>使用人员：</strong>客服(专项打击黑产团队)</p>
+        <p><strong>存在问题：</strong>准确率逐步下降（80%->40%）；多部手机 24h 运行，电池损耗大，每年需更换</p>
+        <div class="tag-row">
+          <span class="pill pill-green">正常运营</span>
+          <span class="pill pill-amber">OCR + 截图</span>
+          <span class="pill pill-red">准确率低</span>
+          <span class="pill pill-red">需备手机</span>
+          <span class="pill pill-red">需备账号</span>
+        </div>
+      </div>
+      <div class="crawler-card">
+        <h4>3 · 微信公众号：产业舆情新闻爬虫</h4>
+        <div class="meta">Java + 类RPA · 外网 · 已使用 AI 总结</div>
+        <p><strong>实现方式：</strong>Java + RPA 驱动手机搜索固定公众号产业舆情新闻，访问文章信息截图后 OCR 提取文字，AI 总结后定时邮件推送。</p>
+        <p><strong>使用人员：</strong>消金商务部人员</p>
+        <p><strong>存在问题：</strong>扩展性弱，需自行探索产业信息公众号；多部手机 24h 运行，电池损耗大，每年需更换</p>
+        <div class="tag-row">
+          <span class="pill pill-green">每日大量使用</span>
+          <span class="pill pill-cyan">AI 摘要</span>
+          <span class="pill pill-blue">邮件推送</span>
+          <span class="pill pill-red">需备手机</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 1 一句话定位 -->
+  <section>
+    <div class="section-title">
+      <span class="num">1</span>
+      <h2>平台定位：解决什么问题</h2>
+      <span class="line"></span>
+    </div>
+    <div class="summary-grid">
+      <div class="summary-card">
+        <h3>🎯 项目定位与目标</h3>
+        <p>
+          风险舆情监控平台是风控情报能力的<strong>数据底座与统一订阅入口</strong>。
+          它将传统零散的、一次性的人工检索与手写脚本，升级为<strong>可配置、可追踪、可自愈</strong>的智能采集与订阅引擎。
+          平台覆盖网站公开信息、视频平台（抖音 / 视频号 / B 站等）与公众号 / 微博等文字渠道，通过大模型自动生成并验证采集 / RPA 脚本，将配置动态下发至外网执行单元，持续抓取后统一为结构化数据，经公司 API 回传下游系统。
+        </p>
+        <div class="quote-box">
+          核心价值：通过「自动化找源 → AI 写脚本 / RPA → 验证 → 定时复用与自愈 → 结构化回传」闭环，为总部风险分析等业务方提供标准化原始数据表，支撑全网检索与后续模型研判。
+        </div>
+      </div>
+      <div class="summary-card">
+        <h3>⚠️ 核心解决的痛点</h3>
+        <ul class="check-list">
+          <li><strong>信息渠道分散</strong>：网站、视频、公众号 / 微博各自为政，难以形成统一情报视角与标准数据表。</li>
+          <li><strong>脚本人工维护成本高</strong>：RPA / 爬虫依赖人工编写，目标增减与页面改版后扩展慢、失败后难自愈。</li>
+          <li><strong>业务自助订阅不足</strong>：风控与分析部门难以及时按关键字 / 提示词配置全网检索，数据回传链路不统一。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 2 解决方案：AI找源写码自愈 -->
+  <section>
+    <div class="section-title">
+      <span class="num">2</span>
+      <h2>解决方案：AI找源写码自愈</h2>
+      <span class="line"></span>
+    </div>
+    <p class="text-muted" style="max-width:1480px; margin:0 auto 12px; font-size:13px;">
+      本方案以 <strong>AI 贯穿找源—写脚本（含 RPA）—验证—自愈</strong>，降低人工运维成本，并将多通道采集结果经公司 API 回传，形成可订阅的情报数据闭环。
+    </p>
+    <div class="biz-highlight three-col" style="max-width:1480px; margin:0 auto 8px;">
+      <div class="item">
+        <div class="icon">🤖</div>
+        <h4>AI 找源与写脚本</h4>
+        <p>平台可由 AI 联网发现网站数据源并生成爬虫脚本；视频 / 公众号等由管理员指定目标后 AI 生成 RPA 脚本。经<strong>验证</strong>（网站可走隔离环境，RPA 须真机试跑）后入库复用，新增目标时无需人工手写。</p>
+      </div>
+      <div class="item">
+        <div class="icon">🔁</div>
+        <h4>失败自愈，少靠人盯</h4>
+        <p>访问被拒时自动切换代理 IP；页面改版或元素定位失败时回流 AI 诊断并重写脚本再验证，把「改版 / 封禁」从人工运维转为自动修复。</p>
+      </div>
+      <div class="item">
+        <div class="icon">🔗</div>
+        <h4>与公司 API 闭环协同</h4>
+        <p>内网完成订阅与任务配置，外网执行采集后按统一字段结构化回传公司 API，供总部模型研判或下游系统订阅消费。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 整体架构 -->
+  <section>
+    <div class="section-title">
+      <span class="num">3</span>
+      <h2>整体架构</h2>
+      <span class="line"></span>
+    </div>
+    <p class="text-muted" style="margin-bottom:12px; font-size:13px; max-width:1480px; margin-left:auto; margin-right:auto;">
+      上下分布：上方为<strong>订阅平台</strong>（配置 + 三条独立采集流程 + 存储），下方为<strong>公司 API</strong>（接入与分发）。引擎层按通道拆成三条互不混用的链路——仅<strong>网站</strong>支持 AI 检索找源与渠道增强；<strong>视频</strong>与<strong>公众号 / 微博</strong>走 RPA，目标靠手动指定，验证须真机。
+    </p>
+    <div class="arch-dual-layout">
+      <!-- 上：订阅平台 -->
+      <div class="arch-svg-panel" style="border-color: var(--primary-300);">
+        <svg id="arch-subscribe" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 640" width="1180" height="640" role="img" aria-label="订阅平台·三通道独立流程">
+          <defs>
+            <marker id="arr" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#64748B"/></marker>
+            <marker id="arr-c" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#0891b2"/></marker>
+            <marker id="arr-d" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#94a3b8"/></marker>
+            <marker id="arr-w" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#1d4ed8"/></marker>
+          </defs>
+          <style>
+            #arch-subscribe .title { font: 700 15px/1.2 "trebuchet ms",verdana,arial,sans-serif; fill: #1e40af; }
+            #arch-subscribe .layer-t { font: 700 12px/1.2 "trebuchet ms",verdana,arial,sans-serif; fill: #1e40af; }
+            #arch-subscribe .layer-t.eng { fill: #0e7490; }
+            #arch-subscribe .layer-t.store { fill: #15803d; }
+            #arch-subscribe .lane-t { font: 700 11.5px/1.2 "trebuchet ms",verdana,arial,sans-serif; fill: #1d4ed8; }
+            #arch-subscribe .nt { font: 700 10.5px/1.1 "trebuchet ms",verdana,arial,sans-serif; fill: #1e40af; }
+            #arch-subscribe .nd { font: 500 9.5px/1.1 "trebuchet ms",verdana,arial,sans-serif; fill: #334155; }
+            #arch-subscribe .edge { font: 600 9.5px/1 "trebuchet ms",verdana,arial,sans-serif; fill: #64748B; }
+            #arch-subscribe .n { fill: #EEF5FF; stroke: #1d4ed8; stroke-width: 1.2; }
+            #arch-subscribe .n-eng { fill: #ECFEFF; stroke: #0891b2; stroke-width: 1.2; }
+            #arch-subscribe .n-mm { fill: #F3E8FF; stroke: #a855f7; stroke-width: 1.5; }
+            #arch-subscribe .n-end { fill: #DCFCE7; stroke: #16a34a; stroke-width: 1.4; }
+            #arch-subscribe .n-web { fill: #EFF6FF; stroke: #1d4ed8; stroke-width: 1.2; }
+            #arch-subscribe .sg-cfg { fill: #EEF5FF; stroke: #1d4ed8; stroke-width: 1.3; }
+            #arch-subscribe .sg-eng { fill: #F8FAFC; stroke: #0891b2; stroke-width: 1.3; }
+            #arch-subscribe .sg-store { fill: #F0FDF4; stroke: #16a34a; stroke-width: 1.3; }
+            #arch-subscribe .sg-flow { fill: #F8FAFF; stroke: #93c5fd; stroke-width: 1.2; }
+            #arch-subscribe .ln-c { stroke: #0891b2; stroke-width: 1.4; fill: none; marker-end: url(#arr-c); }
+            #arch-subscribe .ln-d { stroke: #94a3b8; stroke-width: 1.1; fill: none; stroke-dasharray: 4 3; marker-end: url(#arr-d); }
+            #arch-subscribe .ln-w { stroke: #1d4ed8; stroke-width: 1.25; fill: none; marker-end: url(#arr-w); }
+          </style>
+
+          <text x="590" y="20" text-anchor="middle" class="title">订阅平台 · 外网采集（三通道独立流程）</text>
+
+          <rect class="sg-cfg" x="8" y="32" width="1164" height="86" rx="4"/>
+          <text x="20" y="52" class="layer-t">① 配置层（共享）</text>
+          <g transform="translate(40,60)"><rect class="n" width="200" height="44" rx="3"/><text class="nt" x="100" y="18" text-anchor="middle">订阅主题配置</text><text class="nd" x="100" y="34" text-anchor="middle">网站 · 视频 · 自媒体</text></g>
+          <g transform="translate(270,60)"><rect class="n" width="200" height="44" rx="3"/><text class="nt" x="100" y="18" text-anchor="middle">订阅管理</text><text class="nd" x="100" y="34" text-anchor="middle">机构 · 关键字 / 提示词</text></g>
+          <g transform="translate(500,60)"><rect class="n" width="200" height="44" rx="3"/><text class="nt" x="100" y="18" text-anchor="middle">采集任务配置</text><text class="nd" x="100" y="34" text-anchor="middle">通道类型 · 频率</text></g>
+          <g transform="translate(730,60)"><rect class="n" width="200" height="44" rx="3"/><text class="nt" x="100" y="18" text-anchor="middle">执行单元池</text><text class="nd" x="100" y="34" text-anchor="middle">代理 IP · 手机 / 账号</text></g>
+          <g transform="translate(960,60)"><rect class="n" width="180" height="44" rx="3"/><text class="nt" x="90" y="18" text-anchor="middle">执行日志</text><text class="nd" x="90" y="34" text-anchor="middle">采集 · 验证状态</text></g>
+
+          <path class="ln-c" d="M590,118 L590,134"/>
+
+          <rect class="sg-eng" x="8" y="140" width="1164" height="376" rx="4"/>
+          <text x="20" y="162" class="layer-t eng">② 引擎层 · 三条独立流程（互不混用）</text>
+
+          <!-- 流程1 网站 -->
+          <rect class="sg-flow" x="18" y="172" width="1144" height="100" rx="4"/>
+          <text x="28" y="190" class="lane-t">流程① 网站公开信息 · 爬虫（支持 AI 找源 / 渠道增强）</text>
+          <text x="1148" y="190" text-anchor="end" class="nd" fill="#1d4ed8">✓ 可 AI 找源</text>
+          <g transform="translate(36.0,200)"><rect class="n-end" width="78" height="38" rx="19"/><text class="nt" x="39.0" y="15" text-anchor="middle" fill="#15803d">开始</text><text class="nd" x="39.0" y="29" text-anchor="middle" fill="#166534">找源</text></g>
+          <path class="ln-w" d="M114.0,219 L137.6,219"/>
+          <g transform="translate(137.6,200)"><rect class="n-mm" width="92" height="38" rx="3"/><text class="nt" x="46.0" y="15" text-anchor="middle" fill="#6b21a8">AI 检索</text><text class="nd" x="46.0" y="29" text-anchor="middle" fill="#6b21a8">联网找源</text></g>
+          <path class="ln-w" d="M229.6,219 L253.1,219"/>
+          <g transform="translate(253.1,200)"><rect class="n-eng" width="92" height="38" rx="3"/><text class="nt" x="46.0" y="15" text-anchor="middle" fill="#0e7490">渠道增强</text><text class="nd" x="46.0" y="29" text-anchor="middle">源库扩充</text></g>
+          <path class="ln-w" d="M345.1,219 L368.7,219"/>
+          <g transform="translate(368.7,200)"><rect class="n-web" width="92" height="38" rx="3"/><text class="nt" x="46.0" y="15" text-anchor="middle">手动指定</text><text class="nd" x="46.0" y="29" text-anchor="middle">站点 / RSS</text></g>
+          <path class="ln-w" d="M460.7,219 L484.2,219"/>
+          <g transform="translate(484.2,200)"><rect class="n-mm" width="98" height="38" rx="3"/><text class="nt" x="49.0" y="15" text-anchor="middle" fill="#6b21a8">AI 写爬虫</text><text class="nd" x="49.0" y="29" text-anchor="middle" fill="#6b21a8">Python 脚本</text></g>
+          <path class="ln-w" d="M582.2,219 L605.8,219"/>
+          <g transform="translate(605.8,200)"><rect class="n-eng" width="88" height="38" rx="3"/><text class="nt" x="44.0" y="15" text-anchor="middle" fill="#0e7490">验证</text><text class="nd" x="44.0" y="29" text-anchor="middle">隔离环境</text></g>
+          <path class="ln-w" d="M693.8,219 L717.3,219"/>
+          <g transform="translate(717.3,200)"><rect class="n-web" width="82" height="38" rx="3"/><text class="nt" x="41.0" y="15" text-anchor="middle">调度</text><text class="nd" x="41.0" y="29" text-anchor="middle">定时并行</text></g>
+          <path class="ln-w" d="M799.3,219 L822.9,219"/>
+          <g transform="translate(822.9,200)"><rect class="n-web" width="92" height="38" rx="3"/><text class="nt" x="46.0" y="15" text-anchor="middle">代理 IP</text><text class="nd" x="46.0" y="29" text-anchor="middle">拒访换 IP</text></g>
+          <path class="ln-w" d="M914.9,219 L938.4,219"/>
+          <g transform="translate(938.4,200)"><rect class="n-web" width="98" height="38" rx="3"/><text class="nt" x="49.0" y="15" text-anchor="middle">HTTP 抓取</text><text class="nd" x="49.0" y="29" text-anchor="middle">解析页面</text></g>
+          <path class="ln-w" d="M1036.4,219 L1060.0,219"/>
+          <g transform="translate(1060.0,200)"><rect class="n-end" width="88" height="38" rx="19"/><text class="nt" x="44.0" y="15" text-anchor="middle" fill="#15803d">结束</text><text class="nd" x="44.0" y="29" text-anchor="middle" fill="#166534">标准落表</text></g>
+          <path class="ln-d" d="M987.4,241 L987.4,253 L868.9,253 L868.9,241"/>
+          <text class="edge" x="928.2" y="265" text-anchor="middle">拒访·换IP</text>
+
+          <!-- 流程2 视频 -->
+          <rect class="sg-flow" x="18" y="284" width="1144" height="100" rx="4"/>
+          <text x="28" y="302" class="lane-t">流程② 视频平台 · 手机 RPA（抖音 / 视频号 / B站 · 支持 AI 写脚本）</text>
+          <text x="1148" y="302" text-anchor="end" class="nd" fill="#1d4ed8">✓ AI 写脚本</text>
+          <g transform="translate(36.0,312)"><rect class="n-end" width="90" height="38" rx="19"/><text class="nt" x="45" y="15" text-anchor="middle" fill="#15803d">开始</text><text class="nd" x="45" y="29" text-anchor="middle" fill="#166534">任务就绪</text></g>
+          <path class="ln-w" d="M126.0,331 L153.1,331"/>
+          <g transform="translate(153.1,312)"><rect class="n-web" width="126" height="38" rx="3"/><text class="nt" x="63" y="15" text-anchor="middle">手动指定</text><text class="nd" x="63" y="29" text-anchor="middle">博主 · 关键词</text></g>
+          <path class="ln-w" d="M279.1,331 L306.3,331"/>
+          <g transform="translate(306.3,312)"><rect class="n-mm" width="120" height="38" rx="3"/><text class="nt" x="60" y="15" text-anchor="middle" fill="#6b21a8">AI 写 RPA</text><text class="nd" x="60" y="29" text-anchor="middle" fill="#6b21a8">手机操作脚本</text></g>
+          <path class="ln-w" d="M426.3,331 L453.4,331"/>
+          <g transform="translate(453.4,312)"><rect class="n-eng" width="110" height="38" rx="3"/><text class="nt" x="55" y="15" text-anchor="middle" fill="#0e7490">验证</text><text class="nd" x="55" y="29" text-anchor="middle">真机试跑</text></g>
+          <path class="ln-w" d="M563.4,331 L590.6,331"/>
+          <g transform="translate(590.6,312)"><rect class="n-web" width="110" height="38" rx="3"/><text class="nt" x="55" y="15" text-anchor="middle">定时调度</text><text class="nd" x="55" y="29" text-anchor="middle">按手机分派</text></g>
+          <path class="ln-w" d="M700.6,331 L727.7,331"/>
+          <g transform="translate(727.7,312)"><rect class="n-web" width="126" height="38" rx="3"/><text class="nt" x="63" y="15" text-anchor="middle">任务下发手机</text><text class="nd" x="63" y="29" text-anchor="middle">绑定执行单元</text></g>
+          <path class="ln-w" d="M853.7,331 L880.9,331"/>
+          <g transform="translate(880.9,312)"><rect class="n-web" width="140" height="38" rx="3"/><text class="nt" x="70" y="15" text-anchor="middle">App操作/截图OCR</text><text class="nd" x="70" y="29" text-anchor="middle">搜·点·滑·提取</text></g>
+          <path class="ln-w" d="M1020.9,331 L1048.0,331"/>
+          <g transform="translate(1048.0,312)"><rect class="n-end" width="100" height="38" rx="19"/><text class="nt" x="50" y="15" text-anchor="middle" fill="#15803d">结束</text><text class="nd" x="50" y="29" text-anchor="middle" fill="#166534">标准落表</text></g>
+          <path class="ln-d" d="M950.9,353 L950.9,365 L790.7,365 L790.7,353"/>
+          <text class="edge" x="870.8" y="377" text-anchor="middle">账号异常·换机/号</text>
+
+          <!-- 流程3 自媒体 -->
+          <rect class="sg-flow" x="18" y="396" width="1144" height="100" rx="4"/>
+          <text x="28" y="414" class="lane-t">流程③ 自媒体文字 · 手机 RPA（公众号 / 微博 · 支持 AI 写脚本）</text>
+          <text x="1148" y="414" text-anchor="end" class="nd" fill="#1d4ed8">✓ AI 写脚本</text>
+          <g transform="translate(36.0,424)"><rect class="n-end" width="90" height="38" rx="19"/><text class="nt" x="45" y="15" text-anchor="middle" fill="#15803d">开始</text><text class="nd" x="45" y="29" text-anchor="middle" fill="#166534">任务就绪</text></g>
+          <path class="ln-w" d="M126.0,443 L151.7,443"/>
+          <g transform="translate(151.7,424)"><rect class="n-web" width="136" height="38" rx="3"/><text class="nt" x="68" y="15" text-anchor="middle">手动指定</text><text class="nd" x="68" y="29" text-anchor="middle">公号列表 · 话题</text></g>
+          <path class="ln-w" d="M287.7,443 L313.4,443"/>
+          <g transform="translate(313.4,424)"><rect class="n-mm" width="120" height="38" rx="3"/><text class="nt" x="60" y="15" text-anchor="middle" fill="#6b21a8">AI 写 RPA</text><text class="nd" x="60" y="29" text-anchor="middle" fill="#6b21a8">手机操作脚本</text></g>
+          <path class="ln-w" d="M433.4,443 L459.1,443"/>
+          <g transform="translate(459.1,424)"><rect class="n-eng" width="110" height="38" rx="3"/><text class="nt" x="55" y="15" text-anchor="middle" fill="#0e7490">验证</text><text class="nd" x="55" y="29" text-anchor="middle">真机试跑</text></g>
+          <path class="ln-w" d="M569.1,443 L594.9,443"/>
+          <g transform="translate(594.9,424)"><rect class="n-web" width="110" height="38" rx="3"/><text class="nt" x="55" y="15" text-anchor="middle">定时调度</text><text class="nd" x="55" y="29" text-anchor="middle">按手机分派</text></g>
+          <path class="ln-w" d="M704.9,443 L730.6,443"/>
+          <g transform="translate(730.6,424)"><rect class="n-web" width="126" height="38" rx="3"/><text class="nt" x="63" y="15" text-anchor="middle">任务下发手机</text><text class="nd" x="63" y="29" text-anchor="middle">绑定执行单元</text></g>
+          <path class="ln-w" d="M856.6,443 L882.3,443"/>
+          <g transform="translate(882.3,424)"><rect class="n-web" width="140" height="38" rx="3"/><text class="nt" x="70" y="15" text-anchor="middle">App操作/截图OCR</text><text class="nd" x="70" y="29" text-anchor="middle">搜·点·读·提取</text></g>
+          <path class="ln-w" d="M1022.3,443 L1048.0,443"/>
+          <g transform="translate(1048.0,424)"><rect class="n-end" width="100" height="38" rx="19"/><text class="nt" x="50" y="15" text-anchor="middle" fill="#15803d">结束</text><text class="nd" x="50" y="29" text-anchor="middle" fill="#166534">标准落表</text></g>
+          <path class="ln-d" d="M952.3,465 L952.3,477 L793.6,477 L793.6,465"/>
+          <text class="edge" x="872.9" y="489" text-anchor="middle">账号异常·换机/号</text>
+
+          <path class="ln-c" d="M590,524 L590,538"/><text class="edge" x="598" y="532" fill="#0891b2">三流程汇合写入</text>
+          <rect class="sg-store" x="8" y="544" width="1164" height="74" rx="4"/>
+          <text x="20" y="566" class="layer-t store">③ 存储层 · PostgreSQL</text>
+          <ellipse cx="590" cy="590" rx="140" ry="9" fill="#ECFDF5" stroke="#16a34a" stroke-width="1.3"/>
+          <ellipse cx="590" cy="584" rx="140" ry="9" fill="#ECFDF5" stroke="#16a34a" stroke-width="1.3"/>
+          <rect x="450" y="584" width="280" height="26" fill="#ECFDF5" stroke="none"/>
+          <path d="M450,584 L450,610" stroke="#16a34a" stroke-width="1.3" fill="none"/>
+          <path d="M730,584 L730,610" stroke="#16a34a" stroke-width="1.3" fill="none"/>
+          <path d="M450,610 L730,610" stroke="#16a34a" stroke-width="1.3" fill="none"/>
+          <text class="nt" x="590" y="600" text-anchor="middle" fill="#15803d" style="font-size:12px">PostgreSQL · 原始数据 · 爬虫/RPA脚本 · 执行日志</text>
+        </svg>
+      </div>
+
+      <div class="arch-bridge">
+        <div class="bridge-item cfg">
+          <span>接入鉴权 ↑</span>
+          <span class="bridge-arrow" aria-hidden="true"></span>
+        </div>
+        <div class="bridge-item data">
+          <span>数据回传 ↓</span>
+          <span class="bridge-arrow" aria-hidden="true"></span>
+        </div>
+      </div>
+
+      <!-- 下：公司 API -->
+      <div class="arch-svg-panel" style="border-color: var(--cyan-500);">
+        <svg id="arch-nebula" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1180 280" width="1180" height="280" role="img" aria-label="公司API">
+          <defs>
+            <marker id="arrR" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#64748B"/></marker>
+            <marker id="arrRc" viewBox="0 0 12 12" refX="10" refY="6" markerWidth="7" markerHeight="7" orient="auto"><path d="M2,2 L10,6 L2,10 Z" fill="#0891b2"/></marker>
+          </defs>
+          <style>
+            #arch-nebula .title { font: 700 15px/1.2 "trebuchet ms",verdana,arial,sans-serif; fill: #0e7490; }
+            #arch-nebula .layer-t { font: 700 12px/1.2 "trebuchet ms",verdana,arial,sans-serif; fill: #1e40af; }
+            #arch-nebula .layer-t.eng { fill: #b45309; }
+            #arch-nebula .layer-t.store { fill: #15803d; }
+            #arch-nebula .nt { font: 700 12px/1.15 "trebuchet ms",verdana,arial,sans-serif; fill: #1e40af; }
+            #arch-nebula .nd { font: 500 10.5px/1.15 "trebuchet ms",verdana,arial,sans-serif; fill: #334155; }
+            #arch-nebula .edge { font: 600 10px/1 "trebuchet ms",verdana,arial,sans-serif; fill: #64748B; }
+            #arch-nebula .n { fill: #EEF5FF; stroke: #1d4ed8; stroke-width: 1.3; }
+            #arch-nebula .n-push { fill: #FFF7ED; stroke: #d97706; stroke-width: 1.3; }
+            #arch-nebula .sg-cfg { fill: #EEF5FF; stroke: #1d4ed8; stroke-width: 1.3; }
+            #arch-nebula .sg-eng { fill: #FFFBEB; stroke: #d97706; stroke-width: 1.3; }
+            #arch-nebula .sg-store { fill: #F0FDF4; stroke: #16a34a; stroke-width: 1.3; }
+            #arch-nebula .ln { stroke: #64748B; stroke-width: 1.3; fill: none; marker-end: url(#arrR); }
+            #arch-nebula .ln-c { stroke: #0891b2; stroke-width: 1.45; fill: none; marker-end: url(#arrRc); }
+          </style>
+
+          <text x="590" y="20" text-anchor="middle" class="title">公司 API · 接入与分发</text>
+
+          <rect class="sg-cfg" x="8" y="32" width="1164" height="86" rx="4"/>
+          <text x="20" y="52" class="layer-t">① 配置层</text>
+          <g transform="translate(220,60)"><rect class="n" width="220" height="44" rx="3"/><text class="nt" x="110" y="18" text-anchor="middle">API 接入配置</text><text class="nd" x="110" y="34" text-anchor="middle">鉴权 · 配额 · 白名单</text></g>
+          <g transform="translate(480,60)"><rect class="n" width="220" height="44" rx="3"/><text class="nt" x="110" y="18" text-anchor="middle">下游消费方</text><text class="nd" x="110" y="34" text-anchor="middle">分析 · 打击 · 告警</text></g>
+          <g transform="translate(740,60)"><rect class="n" width="220" height="44" rx="3"/><text class="nt" x="110" y="18" text-anchor="middle">回传日志</text><text class="nd" x="110" y="34" text-anchor="middle">接收 · 校验状态</text></g>
+
+          <path class="ln-c" d="M590,118 L590,134"/>
+
+          <rect class="sg-eng" x="8" y="140" width="700" height="102" rx="4"/>
+          <text x="20" y="162" class="layer-t eng">② 引擎层 · 回传</text>
+          <g transform="translate(70,170)"><rect class="n-push" width="160" height="52" rx="3"/><text class="nt" x="80" y="20" text-anchor="middle" fill="#b45309">数据接收</text><text class="nd" x="80" y="38" text-anchor="middle">批量 / 实时 JSON</text></g>
+          <path class="ln" d="M230,196 L250,196"/>
+          <g transform="translate(252,170)"><rect class="n-push" width="200" height="52" rx="3"/><text class="nt" x="100" y="20" text-anchor="middle" fill="#b45309">标准字段校验</text><text class="nd" x="100" y="38" text-anchor="middle">标题·描述·来源·时间·链接</text></g>
+          <path class="ln" d="M452,196 L472,196"/>
+          <g transform="translate(474,170)"><rect class="n-push" width="180" height="52" rx="3"/><text class="nt" x="90" y="20" text-anchor="middle" fill="#b45309">下游分发</text><text class="nd" x="90" y="38" text-anchor="middle">表 / 推送 / 邮件</text></g>
+
+          <rect class="sg-store" x="724" y="140" width="448" height="102" rx="4"/>
+          <text x="736" y="162" class="layer-t store">③ 存储层 · PostgreSQL</text>
+          <ellipse cx="948" cy="198" rx="120" ry="10" fill="#ECFDF5" stroke="#16a34a" stroke-width="1.3"/>
+          <ellipse cx="948" cy="192" rx="120" ry="10" fill="#ECFDF5" stroke="#16a34a" stroke-width="1.3"/>
+          <rect x="828" y="192" width="240" height="32" fill="#ECFDF5" stroke="none"/>
+          <path d="M828,192 L828,224" stroke="#16a34a" stroke-width="1.3" fill="none"/>
+          <path d="M1068,192 L1068,224" stroke="#16a34a" stroke-width="1.3" fill="none"/>
+          <path d="M828,224 L1068,224" stroke="#16a34a" stroke-width="1.3" fill="none"/>
+          <text class="nt" x="948" y="208" text-anchor="middle" fill="#15803d">结构化情报 · 回传日志</text>
+
+          <text class="nd" x="590" y="268" text-anchor="middle" fill="#64748B">三通道采集结果经统一 JSON 契约回传，下游按消费方订阅拉取</text>
+        </svg>
+      </div>
+    </div>
+    <div class="summary-grid" style="margin-top:14px; max-width:1480px; margin-left:auto; margin-right:auto; grid-template-columns: 1fr 1fr;">
+      <div class="summary-card" style="padding:18px;">
+        <h3 style="font-size:16px;">三条独立流程</h3>
+        <p style="font-size:13px;">
+          <strong>① 网站</strong>：AI 检索 → 渠道增强 → 写爬虫 → <em>验证（隔离环境）</em> → 代理 IP → HTTP 抓取。<br/>
+          <strong>② 视频 RPA</strong>：手动指定博主/词 → 写 RPA → <em>验证（真机）</em> → 下发手机 → App/OCR。<br/>
+          <strong>③ 自媒体 RPA</strong>：手动指定公号/话题 → 写 RPA → <em>验证（真机）</em> → 下发手机 → App/OCR。<br/>
+          ① 突出 <strong>AI 找源 / 渠道增强</strong>；②③ 突出 <strong>AI 写 RPA</strong>。代理 IP 仅属于网站链路。
+        </p>
+      </div>
+      <div class="summary-card" style="padding:18px;">
+        <h3 style="font-size:16px;">协同与自愈要点</h3>
+        <ul class="check-list">
+          <li style="font-size:12.5px; padding:8px 10px 8px 30px;"><strong>验证语义</strong>：统称「验证」——网站可用隔离环境；RPA 必须真机试跑，避免「沙箱」歧义。</li>
+          <li style="font-size:12.5px; padding:8px 10px 8px 30px;"><strong>网站自愈</strong>：拒访换代理 IP；改版失败回流 AI 重写爬虫。</li>
+          <li style="font-size:12.5px; padding:8px 10px 8px 30px;"><strong>RPA 自愈</strong>：账号异常换机/号；元素失效回流 AI 重写 RPA。</li>
+          <li style="font-size:12.5px; padding:8px 10px 8px 30px;"><strong>数据回传</strong>：三流程汇合为统一字段，经 JSON 推入公司 API。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 业务闭环：AI 自动写爬虫 -->
+  <section>
+    <div class="section-title">
+      <span class="num">4</span>
+      <h2>业务闭环：AI 自动写爬虫与脚本复用</h2>
+      <span class="line"></span>
+    </div>
+    <div class="quote-box" style="margin-bottom:16px;">
+      一句话概括：<strong>确定数据源 → AI 一次性写脚本（爬虫 / RPA）→ 验证落库 → 每日复用执行 → 失败自动修复 → 结构化回传公司 API</strong>。
+    </div>
+    <div class="plan-strip">
+      <div class="plan-unit"><span class="icon">🔍</span><h4>数据源发现</h4><p>网站可 AI 检索<br>RPA 靠手动指定</p></div>
+      <div class="plan-unit hl"><span class="icon">🤖</span><h4>AI 写脚本</h4><p>大模型生成<br>爬虫 / RPA</p></div>
+      <div class="plan-unit hl"><span class="icon">✅</span><h4>验证</h4><p>网站隔离验证<br>RPA 真机试跑</p></div>
+      <div class="plan-unit"><span class="icon">⏰</span><h4>定时复用</h4><p>每日并行执行<br>零 Token 消耗</p></div>
+      <div class="plan-unit"><span class="icon">🔌</span><h4>API 回传</h4><p>标准字段封装<br>下游分发消费</p></div>
+    </div>
+    <div class="summary-grid" style="margin-top:18px;">
+      <div class="summary-card">
+        <h3>核心技术：一次生成，持续复用</h3>
+        <p>当确定一个新的数据源（如政府网站 RSS、抖音关键词任务、固定公众号列表）后，AI 模型自动编写对应的 Python 爬虫或手机端 RPA 脚本，并立即<strong>验证</strong>：网站脚本可在隔离环境执行，RPA 脚本须在真机试跑，确保能成功抓取结构化数据并落库。验证通过后脚本进入脚本库，<strong>后续每日定时任务直接复用该脚本</strong>，不再调用大模型，Token 消耗从「每次交互」降低为「一次生成」。</p>
+        <p style="margin-top:10px;">若某脚本连续执行失败 2–3 次（如目标 App 改版、元素定位失败），系统自动触发 AI 诊断并重写脚本再验证，实现<strong>自我修复</strong>，保证多通道采集持续可用。</p>
+      </div>
+      <div class="summary-card">
+        <h3>完整业务闭环</h3>
+        <ul class="check-list">
+          <li><strong>数据采集</strong>：引擎按执行单元并行调度，覆盖网站爬虫与视频 / 公众号 RPA 任务。</li>
+          <li><strong>数据落库</strong>：统一为标题、描述、来源平台、发布时间、链接等标准字段写入 PostgreSQL。</li>
+          <li><strong>匹配与聚合</strong>：按订阅主题、关键字 / 提示词从库中匹配相关信息并去重聚合。</li>
+          <li><strong>信息回传</strong>：经公司 API 将标准数据表推送给总部风险分析等下游；亦可按规则邮件 / 告警分发。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- 5 数据源分层方案 -->
+  <section>
+    <div class="section-title">
+      <span class="num">5</span>
+      <h2>数据源分层方案：确保信息准确与时效</h2>
+      <span class="line"></span>
+    </div>
+    <div class="biz-highlight two-col">
+      <div class="item">
+        <div class="icon">🏛️</div>
+        <h4>第一层：权威事实层</h4>
+        <div class="role-scope"><span class="role-scope-k">源库 ·</span>官方 / 白名单站点</div>
+        <p>
+          覆盖政府网站、监管通报、行业协会等权威公开渠道，由管理员维护白名单并配置定时采集。
+          该层产出用于确认事件是否属实、补齐发生时间与责任主体，作为风险评估中的「硬事实」依据；可信度最高，优先写入结构化情报，不依赖社媒传闻。
+        </p>
+      </div>
+      <div class="item">
+        <div class="icon">📡</div>
+        <h4>第二层：全网增量发现层</h4>
+        <div class="role-scope"><span class="role-scope-k">源库 ·</span>视频 · 公号 · AI 检索</div>
+        <p>
+          网站通道可按关键字 / 提示词由 AI 联网检索扩源；视频与公众号 / 微博等 RPA 通道以管理员手动指定博主、关键词、账号列表为主（不走 AI 找源与渠道增强）。
+          确认目标后触发 AI 生成 / 验证对应脚本并入库复用；与权威层交叉印证后进入订阅匹配与 API 回传。
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 6 订阅向导与情报预览 -->
+  <section>
+    <div class="section-title">
+      <span class="num">6</span>
+      <h2>订阅向导与情报预览：长什么样、交付什么</h2>
+      <span class="line"></span>
+    </div>
+    <p class="text-muted" style="margin-bottom:12px;">
+      左侧为回传公司 API 的 <b>JSON 契约样例</b>；右侧为按通道汇总的 <b>标准化情报数据表</b>预览，覆盖视频、公众号 / 微博与网站公开信息。
+    </p>
+
+    <div class="knowledge-layout">
+      <!-- Left: JSON -->
+      <div class="ui-side-card">
+        <h4 style="margin-bottom: 12px; font-weight: 800; font-size: 15px; color: var(--primary-800);">🔌 公司 API · JSON 回传</h4>
+        <div class="json-preview-box" style="flex:1; display:flex; flex-direction:column; max-height:none;">
+          <div class="json-head">
+            <span>POST /api/v1/intel/ingest</span>
+            <span class="pill pill-cyan">batchId=20260727-0800</span>
+          </div>
+          <pre style="flex:1; max-height:none;">{
+  <span class="jk">"batchId"</span>: <span class="js">"20260727-0800"</span>,
+  <span class="jk">"sourceSystem"</span>: <span class="js">"info-collect-platform"</span>,
+  <span class="jk">"pushedAt"</span>: <span class="js">"2026-07-27T08:00:00+08:00"</span>,
+  <span class="jk">"total"</span>: <span class="jn">86</span>,
+  <span class="jk">"items"</span>: [
+    {
+      <span class="jk">"title"</span>: <span class="js">"「免征信秒批」导流话术复现"</span>,
+      <span class="jk">"description"</span>: <span class="js">"账号发布低门槛借贷诱导内容，命中黑产关键词组"</span>,
+      <span class="jk">"sourcePlatform"</span>: <span class="js">"抖音"</span>,
+      <span class="jk">"channel"</span>: <span class="js">"VIDEO_RPA"</span>,
+      <span class="jk">"publishTime"</span>: <span class="js">"2026-07-26T21:18:00+08:00"</span>,
+      <span class="jk">"link"</span>: <span class="js">"https://v.douyin.com/example/xxx"</span>,
+      <span class="jk">"keywordHits"</span>: [<span class="js">"融易免征信"</span>, <span class="js">"秒批"</span>]
+    },
+    {
+      <span class="jk">"title"</span>: <span class="js">"消金观察：近期违规导流手法盘点"</span>,
+      <span class="jk">"description"</span>: <span class="js">"固定公众号列表采集；AI 摘要提炼 3 类常见话术"</span>,
+      <span class="jk">"sourcePlatform"</span>: <span class="js">"微信公众号"</span>,
+      <span class="jk">"channel"</span>: <span class="js">"MEDIA_RPA"</span>,
+      <span class="jk">"publishTime"</span>: <span class="js">"2026-07-26T10:20:00+08:00"</span>,
+      <span class="jk">"link"</span>: <span class="js">"https://mp.weixin.qq.com/s/example"</span>,
+      <span class="jk">"keywordHits"</span>: [<span class="js">"导流"</span>]
+    },
+    {
+      <span class="jk">"title"</span>: <span class="js">"应急管理部发布一起较大生产安全事故调查报告"</span>,
+      <span class="jk">"description"</span>: <span class="js">"权威白名单站点 RSS 采集；补齐事发时间与责任主体"</span>,
+      <span class="jk">"sourcePlatform"</span>: <span class="js">"政府网站"</span>,
+      <span class="jk">"channel"</span>: <span class="js">"WEB_CRAWLER"</span>,
+      <span class="jk">"publishTime"</span>: <span class="js">"2026-07-25T17:30:00+08:00"</span>,
+      <span class="jk">"link"</span>: <span class="js">"https://www.mem.gov.cn/example"</span>,
+      <span class="jk">"keywordHits"</span>: []
+    }
+  ]
+}</pre>
+        </div>
+        <p class="text-muted" style="margin-top:10px; font-size:12px;">统一字段：标题 / 描述 / 来源平台 / 发布时间 / 链接 · channel 区分 WEB_CRAWLER / VIDEO_RPA / MEDIA_RPA</p>
+      </div>
+
+      <!-- Right: Data tables -->
+      <div class="ui-preview-panel">
+        <div class="ui-preview-header">
+          <span class="ui-preview-title">📊 情报数据表 · 交付产物预览</span>
+          <span class="pill pill-green">已回传 API</span>
+        </div>
+        <div class="email-preview">
+          <div class="email-envelope">
+            <div class="email-header-bar">
+              <div class="row"><span class="label">回传方</span><span>风险舆情监控平台 → 公司 API</span></div>
+              <div class="row"><span class="label">消费方</span><span>总部风险分析部 · 黑产打击专项 · 机构风控（可选）</span></div>
+              <div class="row"><span class="label">时间</span><span>2026-07-27 08:00:00</span></div>
+              <div class="subject">【情报回传】2026-07-27 · 3 通道 · 累计 86 条标准数据</div>
+            </div>
+            <div class="email-body">
+              <div class="email-greeting">
+                下方为各通道 Top 条目摘要；完整明细以左侧 JSON 契约经公司 API 拉取。
+              </div>
+
+              <div class="email-section-title">一、视频平台线索（抖音 / 视频号 / B站）</div>
+              <table class="email-table">
+                <thead>
+                  <tr><th>序号</th><th>标题</th><th>描述</th><th>来源平台</th><th>发布时间</th><th>链接</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>1</td>
+                    <td><a class="title-link" href="#">「免征信秒批」导流话术复现</a></td>
+                    <td><div class="summary">账号发布低门槛借贷诱导内容，命中黑产关键词组；OCR 提取标题与口播摘要。</div></td>
+                    <td>抖音</td>
+                    <td>2026-07-26<br/>21:18</td>
+                    <td><a class="title-link" href="#">打开</a></td>
+                  </tr>
+                  <tr>
+                    <td>2</td>
+                    <td><a class="title-link" href="#">某博主直播间集中推介「包装过件」</a></td>
+                    <td><div class="summary">监控博主列表命中；截图 + OCR 提取商品卡与口播，关联历史同账号线索。</div></td>
+                    <td>视频号</td>
+                    <td>2026-07-26<br/>19:40</td>
+                    <td><a class="title-link" href="#">打开</a></td>
+                  </tr>
+                  <tr>
+                    <td>3</td>
+                    <td><a class="title-link" href="#">区域暴雷相关二创解说视频</a></td>
+                    <td><div class="summary">按提示词检索命中；标题含地方平台名，舆情热度上升，建议交叉核验官网通报。</div></td>
+                    <td>B站</td>
+                    <td>2026-07-26<br/>16:05</td>
+                    <td><a class="title-link" href="#">打开</a></td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div class="email-section-title">二、公众号 / 微博文字信息</div>
+              <table class="email-table">
+                <thead>
+                  <tr><th>序号</th><th>标题</th><th>描述</th><th>来源平台</th><th>发布时间</th><th>链接</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>1</td>
+                    <td><a class="title-link" href="#">消金观察：近期违规导流手法盘点</a></td>
+                    <td><div class="summary">固定公众号列表采集；AI 摘要提炼 3 类常见话术，可供专项团队对照打击库。</div></td>
+                    <td>微信公众号</td>
+                    <td>2026-07-26<br/>10:20</td>
+                    <td><a class="title-link" href="#">打开</a></td>
+                  </tr>
+                  <tr>
+                    <td>2</td>
+                    <td><a class="title-link" href="#">#区域债务# 话题下客户投诉集中</a></td>
+                    <td><div class="summary">微博话题监控命中；短时转发上升，建议与内部客户集中度名单比对。</div></td>
+                    <td>微博</td>
+                    <td>2026-07-26<br/>08:55</td>
+                    <td><a class="title-link" href="#">打开</a></td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div class="email-section-title">三、网站公开信息（政府 / 行业站点）</div>
+              <table class="email-table">
+                <thead>
+                  <tr><th>序号</th><th>标题</th><th>描述</th><th>来源平台</th><th>发布时间</th><th>链接</th></tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td>1</td>
+                    <td><a class="title-link" href="#">应急管理部发布一起较大生产安全事故调查报告</a></td>
+                    <td><div class="summary">权威白名单站点 RSS 采集；补齐事发时间与责任主体，可作为硬事实入库。</div></td>
+                    <td>政府网站</td>
+                    <td>2026-07-25<br/>17:30</td>
+                    <td><a class="title-link" href="#">打开</a></td>
+                  </tr>
+                  <tr>
+                    <td>2</td>
+                    <td><a class="title-link" href="#">某省市场监管局公布行政处罚决定书（节选）</a></td>
+                    <td><div class="summary">AI 发现候选源经管理员确认后入库；涉及虚假宣传与违规收费，建议关联客户主体。</div></td>
+                    <td>政府网站</td>
+                    <td>2026-07-25<br/>11:00</td>
+                    <td><a class="title-link" href="#">打开</a></td>
+                  </tr>
+                </tbody>
+              </table>
+
+              <div class="email-footer-note">
+                本数据由风险舆情监控平台自动生成并以 JSON 回传公司 API · 匹配规则：订阅主题 + 关键字 / 提示词 · 完整 86 条明细见 API
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 7 谁在用 -->
+  <section>
+    <div class="section-title">
+      <span class="num">7</span>
+      <h2>谁在用：系统角色与使用边界</h2>
+      <span class="line"></span>
+    </div>
+    <div class="biz-highlight three-col">
+      <div class="item">
+        <div class="icon">⚙️</div>
+        <h4>系统管理员</h4>
+        <div class="role-scope"><span class="role-scope-k">范围 ·</span>平台全局运维</div>
+        <p>负责设定订阅主题与多通道采集任务（网站 / 视频 / 公众号），管理执行单元（手机等）与 AI 发现源确认，配置公司 API 回传鉴权，监控脚本 / RPA 健康度与引擎状态。</p>
+      </div>
+      <div class="item">
+        <div class="icon">📊</div>
+        <h4>总部风险分析</h4>
+        <div class="role-scope"><span class="role-scope-k">范围 ·</span>标准化原始数据（优先用户）</div>
+        <p>按关键字 / 提示词自助订阅全网检索结果，直接拉取标准数据表做模型研判与舆情趋势分析，平台侧重「数据源」角色，不强行提供解读结论。</p>
+      </div>
+      <div class="item">
+        <div class="icon">🏢</div>
+        <h4>机构风控 / 专项团队</h4>
+        <div class="role-scope"><span class="role-scope-k">范围 ·</span>本机构 / 专项订阅</div>
+        <p>订阅本机构关注的风险主题或黑产关键词，接收定向回传 / 邮件摘要；可按需叠加告警等增值消费，与总部原始表能力形成分层。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 8 建议演进路径 -->
+  <section>
+    <div class="section-title">
+      <span class="num">8</span>
+      <h2>系统三阶段建议演进路径</h2>
+      <span class="line"></span>
+    </div>
+    <div class="summary-grid" style="grid-template-columns: repeat(3, 1fr); margin-bottom: 0;">
+      <div class="summary-card" style="border-top: 4px solid var(--primary-400);">
+        <small style="color: var(--gray-400); font-weight: 700;">PHASE 1 · MVP 验证期</small>
+        <h3 style="margin-top: 4px;">采集底座与多通道闭环</h3>
+        <ul class="check-list" style="margin-top: 10px; gap: 6px;">
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">打通网站 + 视频 RPA + 公众号 RPA 三类通道的基础配置与执行单元调度。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">跑通「AI 找源 → 脚本 / RPA 生成 → 验证 → 定时复用」全托管模式。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">固化标准字段回传公司 API，优先服务总部风险分析取数。</li>
+        </ul>
+      </div>
+      <div class="summary-card" style="border-top: 4px solid var(--primary-600);">
+        <small style="color: var(--gray-400); font-weight: 700;">PHASE 2 · 深度运营期</small>
+        <h3 style="margin-top: 4px;">源库沉淀与自助订阅</h3>
+        <ul class="check-list" style="margin-top: 10px; gap: 6px;">
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">沉淀权威站点白名单与视频 / 公号监控目标库，支持动态增减与任务下发。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">支持业务方按关键字 / 提示词自助订阅，完善失败自愈与执行单元健康度。</li>
+        </ul>
+      </div>
+      <div class="summary-card" style="border-top: 4px solid var(--primary-800);">
+        <small style="color: var(--gray-400); font-weight: 700;">PHASE 3 · 智能策略联动</small>
+        <h3 style="margin-top: 4px;">从数据流走向风控因子</h3>
+        <ul class="check-list" style="margin-top: 10px; gap: 6px;">
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">将多通道情报沉淀为可量化的风险信号与候选因子，供模型验证。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">与公司内部风控 / 告警体系对接，按消费方分层提供原始表或增值服务。</li>
+          <li style="padding: 6px 6px 6px 20px; font-size: 12px; background: transparent; border: none;">实现「发现线索 → 校验因子 → 调整策略」的最终闭环。</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <footer class="footer">
+    风险舆情监控平台 · 核心开发与设计实现方案书 · 2026.07 · 内部保密技术文档
+  </footer>
+
+</div>
+</body>
+</html>
