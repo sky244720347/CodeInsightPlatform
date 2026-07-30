@@ -2581,7 +2581,8 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     }
                 }
                 try {
-                    long sleepMs = Math.min(500L, Math.max(50L, TimeUnit.NANOSECONDS.toMillis(remainingNs)));
+                    long pollMs = Math.max(1_000L, docBudgetProperties.getAcquirePollIntervalMs());
+                    long sleepMs = Math.min(pollMs, Math.max(50L, TimeUnit.NANOSECONDS.toMillis(remainingNs)));
                     Thread.sleep(sleepMs);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();

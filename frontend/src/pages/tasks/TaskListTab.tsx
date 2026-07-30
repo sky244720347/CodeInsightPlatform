@@ -118,7 +118,7 @@ const GROUP_LABELS: Record<GroupKey, { label: string; hint: string }> = {
  *
  * 简单搜索：按系统筛选
  * 精准搜索：可展开的高级过滤面板（状态/类型/触发源/模型名/创建时间）
- * 状态分组 chips：与搜索条件正交叠加；列表默认按创建时间倒序
+ * 状态分组 chips：与搜索条件正交叠加；列表排序由后端保证：进行中/待复核 > PENDING > 其余，同档按创建时间倒序
  */
 const TaskListTab: React.FC = () => {
   const navigate = useNavigate();

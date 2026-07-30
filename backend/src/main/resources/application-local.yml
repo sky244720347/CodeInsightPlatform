@@ -47,6 +47,7 @@ code-insight:
     doc:
       parallelism: ${AI_DOC_PARALLELISM:4}
       acquire-wait-seconds: ${AI_DOC_ACQUIRE_WAIT_SECONDS:1800}
+      acquire-poll-interval-ms: ${AI_DOC_ACQUIRE_POLL_INTERVAL_MS:5000}
       http-timeout-seconds: ${AI_DOC_HTTP_TIMEOUT_SECONDS:120}
   token:
     limit-enabled: ${TOKEN_LIMIT_ENABLED:true}

@@ -43,4 +43,9 @@ public class AiDocBudgetProperties {
      * 层级超时仅放弃当前入口，阶段继续；文档超时走既有失败/降级路径。</p>
      */
     private int acquireWaitSeconds = 1800;
+
+    /**
+     * 等 AI 并发槽时的轮询间隔（毫秒）。默认 5000；过短只会空转抢锁。
+     */
+    private long acquirePollIntervalMs = 5_000L;
 }

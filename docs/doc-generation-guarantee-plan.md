@@ -68,6 +68,7 @@ collect SourceBundle
 | `http-timeout-seconds` | `120` | 文档 AI HTTP 超时 |
 | `parallelism` | `4` | **本机**文档固定线程池大小；超额功能排队 |
 | `acquire-wait-seconds` | `1800` | 文档与模块层级阻塞等集群 `ai.concurrency` 槽；应 ≫ HTTP 超时 |
+| `acquire-poll-interval-ms` | `5000` | 等槽轮询间隔；过短只会空转抢锁 |
 
 文档 / `MODULE_HIERARCHY`：应用层对 `tryAcquire` 排队等待（不改 `AiConcurrencyService`）。层级等槽超时 → 放弃当前入口、阶段继续；文档超时走失败/降级路径。
 

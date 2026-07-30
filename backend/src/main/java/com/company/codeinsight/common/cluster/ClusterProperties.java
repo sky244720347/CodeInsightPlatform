@@ -8,6 +8,7 @@ import org.springframework.stereotype.Component;
  * 集群调度参数。
  * <p>{@code enabled} <b>不可外部配置</b>，由 {@link ClusterEnvAligner} 按 {@code code-insight.env} 推导：
  * dev=false，非 dev=true。</p>
+ * <p>孤儿接管以租约过期 / 无认领为准；「仅心跳已死」不再单独触发（避免误杀活任务）。</p>
  */
 @Data
 @Component
@@ -59,14 +60,14 @@ public class ClusterProperties {
     /** 任务并发许可续租间隔（秒），应小于 {@link #taskPermitTtlSeconds} */
     private int taskPermitRenewSeconds = 60;
 
-    /** 任务并发许可与 DB 对账间隔（毫秒） */
-    private long taskPermitReconcileIntervalMs = 60_000L;
+    /** 任务并发许可与 DB 对账间隔（毫秒）；同时续写实例心跳 */
+    private long taskPermitReconcileIntervalMs = 30_000L;
 
     /**
      * 实例心跳 TTL（秒）。对账时用其判断 claimed_by / AI holder 所属节点是否仍存活。
-     * 应大于 {@link #taskPermitReconcileIntervalMs} 对应秒数。
+     * 应大于 {@link #taskPermitReconcileIntervalMs} 对应秒数；孤儿接管不再单靠心跳死判定。
      */
-    private int instanceHeartbeatTtlSeconds = 90;
+    private int instanceHeartbeatTtlSeconds = 180;
 
     /** 解析实际 lease 时长（分钟） */
     public int resolveTaskLeaseMinutes() {

@@ -88,6 +88,39 @@ public class TaskQueueClaimService {
     }
 
     /**
+     * 孤儿接管已 CAS 到本节点，但因任务槽不足暂缓时：把认领写回 CAS 前快照，避免变成 NO_CLAIM。
+     * <p>previousClaimedBy 为空时清认领（原本就是无主）。</p>
+     */
+    @Transactional
+    public void restoreClaimAfterDeferredReclaim(Long taskId,
+                                                 String previousClaimedBy,
+                                                 LocalDateTime previousLeaseUntil) {
+        if (taskId == null) {
+            return;
+        }
+        DecompileTask task = taskMapper.selectById(taskId);
+        if (task == null) {
+            return;
+        }
+        String self = instanceId.get();
+        if (task.getClaimedBy() != null && !self.equals(task.getClaimedBy())) {
+            return;
+        }
+        LocalDateTime now = LocalDateTime.now();
+        if (!org.springframework.util.StringUtils.hasText(previousClaimedBy)) {
+            task.setClaimedBy(null);
+            task.setClaimedAt(null);
+            task.setLeaseUntil(null);
+        } else {
+            task.setClaimedBy(previousClaimedBy);
+            task.setLeaseUntil(previousLeaseUntil);
+            // claimed_at 保持原值意义不大；暂不回滚
+        }
+        task.setUpdatedDate(now);
+        taskMapper.updateById(task);
+    }
+
+    /**
      * CAS 接管孤儿任务认领权：仅当 status / claimed_by 与快照一致时成功。
      *
      * @return true 表示本节点已拿到认领

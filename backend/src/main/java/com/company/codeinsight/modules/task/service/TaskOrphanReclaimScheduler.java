@@ -25,8 +25,8 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 孤儿流水线任务自动接管：租约过期 ∨ 认领实例心跳已死 → CAS 抢占 → 从当前阶段重入。
- * <p>判定用「或」而非「且」，避免重启后 lease 未过期却长期无法续跑。</p>
+ * 孤儿流水线任务自动接管：无认领 ∨ 租约过期。
+ * <p>集群下「仅心跳已死但租约仍有效」不抢，避免误杀仍在跑的 worker；真崩溃无法续租，等 lease 过期后再接管。</p>
  * <p>每个节点均可扫描与续跑（有本机槽才真正拉起）；不再依赖 Leader 独占执行。</p>
  */
 @Slf4j
@@ -42,6 +42,14 @@ public class TaskOrphanReclaimScheduler {
             TaskStatus.BASELINE_DOC_INHERIT.name(),
             TaskStatus.GENERATING_DOC.name(),
             TaskStatus.PUSHING.name()
+    );
+
+    /** 这些阶段重入前需要任务并发槽；先占槽再 CAS，避免抢认领后因无槽清成 NO_CLAIM。 */
+    private static final Set<String> NEED_TASK_PERMIT_BEFORE_CAS = Set.of(
+            TaskStatus.AI_ANALYZING.name(),
+            TaskStatus.MODULE_HIERARCHY.name(),
+            TaskStatus.BASELINE_DOC_INHERIT.name(),
+            TaskStatus.GENERATING_DOC.name()
     );
 
     private final DecompileTaskMapper taskMapper;
@@ -132,8 +140,23 @@ public class TaskOrphanReclaimScheduler {
             return false;
         }
         String oldClaimed = fresh.getClaimedBy();
+        LocalDateTime oldLease = fresh.getLeaseUntil();
         String status = fresh.getStatus();
+        Long systemId = fresh.getSystemId();
+
+        boolean permitHeld = false;
+        if (NEED_TASK_PERMIT_BEFORE_CAS.contains(status)) {
+            if (!taskConcurrencyLimiter.tryAcquire(systemId, taskId)) {
+                log.debug("孤儿接管跳过（任务槽不足，不改认领）taskId={} status={}", taskId, status);
+                return false;
+            }
+            permitHeld = true;
+        }
+
         if (!claimService.tryCasTakeover(taskId, status, oldClaimed)) {
+            if (permitHeld) {
+                taskConcurrencyLimiter.release(systemId, taskId);
+            }
             return false;
         }
         String reason = describeOrphanReason(fresh);
@@ -144,13 +167,24 @@ public class TaskOrphanReclaimScheduler {
                 null, true);
         log.warn("孤儿接管 taskId={} status={} reason={} oldClaimedBy={}",
                 taskId, status, reason, oldClaimed);
-        decompileTaskService.reclaimOrphanAndResume(taskId);
-        return true;
+        try {
+            decompileTaskService.reclaimOrphanAndResume(taskId, oldClaimed, oldLease);
+            return true;
+        } catch (RuntimeException e) {
+            if (permitHeld && taskConcurrencyLimiter.isHeldLocally(taskId)) {
+                taskConcurrencyLimiter.release(systemId, taskId);
+            }
+            throw e;
+        }
     }
 
     /**
-     * 孤儿判定（或）：心跳已死 ∨ 租约过期 ∨ 无认领信息。
-     * 本节点正在跑的任务已在上层过滤。
+     * 孤儿判定。
+     * <ul>
+     *   <li>无认领 → 孤儿</li>
+     *   <li>租约过期 → 孤儿（真死节点无法续租）</li>
+     *   <li>集群：仅心跳已死但租约仍有效 → <b>不</b>接管</li>
+     * </ul>
      */
     boolean isOrphan(DecompileTask task) {
         String claimedBy = task.getClaimedBy();
@@ -159,20 +193,20 @@ public class TaskOrphanReclaimScheduler {
         boolean leaseExpired = leaseUntil != null && leaseUntil.isBefore(now);
         boolean noClaimMeta = !StringUtils.hasText(claimedBy) && leaseUntil == null;
 
-        if (!clusterProperties.isEnabled()) {
-            // 单机：认领不是本进程，或无认领，或租约过期
-            if (noClaimMeta || leaseExpired) {
-                return true;
-            }
-            return !clusterInstanceId.get().equals(claimedBy);
+        if (noClaimMeta || leaseExpired) {
+            return true;
         }
 
-        boolean heartbeatDead = StringUtils.hasText(claimedBy)
-                && !instanceHeartbeat.isAlive(claimedBy);
-        return noClaimMeta || heartbeatDead || leaseExpired;
+        if (!clusterProperties.isEnabled()) {
+            // 单机：认领不是本进程（例如热重启后旧 claimed_by）
+            return StringUtils.hasText(claimedBy) && !clusterInstanceId.get().equals(claimedBy);
+        }
+
+        // 集群：心跳死但 lease 仍有效 → 视为可能仍存活（心跳漏续），等租约过期
+        return false;
     }
 
-    private String describeOrphanReason(DecompileTask task) {
+    String describeOrphanReason(DecompileTask task) {
         String claimedBy = task.getClaimedBy();
         LocalDateTime leaseUntil = task.getLeaseUntil();
         boolean leaseExpired = leaseUntil != null && leaseUntil.isBefore(LocalDateTime.now());
@@ -181,7 +215,7 @@ public class TaskOrphanReclaimScheduler {
             return "NO_CLAIM";
         }
         if (!clusterProperties.isEnabled()) {
-            if (!clusterInstanceId.get().equals(claimedBy)) {
+            if (StringUtils.hasText(claimedBy) && !clusterInstanceId.get().equals(claimedBy)) {
                 return "CLAIMED_BY_OTHER_PROCESS";
             }
             if (leaseExpired) {
@@ -189,8 +223,9 @@ public class TaskOrphanReclaimScheduler {
             }
             return "UNKNOWN";
         }
-        if (StringUtils.hasText(claimedBy) && !instanceHeartbeat.isAlive(claimedBy)) {
-            return leaseExpired ? "HEARTBEAT_DEAD+LEASE_EXPIRED" : "HEARTBEAT_DEAD";
+        boolean heartbeatDead = StringUtils.hasText(claimedBy) && !instanceHeartbeat.isAlive(claimedBy);
+        if (leaseExpired && heartbeatDead) {
+            return "HEARTBEAT_DEAD+LEASE_EXPIRED";
         }
         if (leaseExpired) {
             return "LEASE_EXPIRED";

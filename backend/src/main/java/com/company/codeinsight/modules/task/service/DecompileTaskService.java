@@ -108,6 +108,9 @@ public interface DecompileTaskService extends IService<DecompileTask> {
 
     /**
      * 孤儿任务已被 CAS 接管后：按当前 status 从阶段边界重入（或早期阶段 FAILED→PENDING 重排队）。
+     *
+     * @param previousClaimedBy   CAS 前的 claimed_by（许可不足回滚用；可为 null）
+     * @param previousLeaseUntil  CAS 前的 lease_until（可为 null）
      */
-    void reclaimOrphanAndResume(Long taskId);
+    void reclaimOrphanAndResume(Long taskId, String previousClaimedBy, java.time.LocalDateTime previousLeaseUntil);
 }

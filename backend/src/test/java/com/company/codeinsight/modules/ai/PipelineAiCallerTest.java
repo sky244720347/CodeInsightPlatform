@@ -28,6 +28,9 @@ class PipelineAiCallerTest {
     private AiRetryProperties retryProperties;
 
     @Mock
+    private com.company.codeinsight.common.config.AiDocBudgetProperties docBudgetProperties;
+
+    @Mock
     private TaskExecutionLogger execLog;
 
     @InjectMocks
@@ -38,6 +41,10 @@ class PipelineAiCallerTest {
         lenient().when(retryProperties.resolveMaxAttempts(any())).thenReturn(3);
         lenient().when(retryProperties.getBackoffMs()).thenReturn(0L);
         lenient().when(retryProperties.getConcurrencyBackoffMs()).thenReturn(0L);
+        lenient().when(docBudgetProperties.getAcquireWaitSeconds()).thenReturn(1800);
+        lenient().when(docBudgetProperties.getHttpTimeoutSeconds()).thenReturn(120);
+        // 单测不等待
+        lenient().when(docBudgetProperties.getAcquirePollIntervalMs()).thenReturn(0L);
     }
 
     @Test
@@ -90,8 +97,11 @@ class PipelineAiCallerTest {
     }
 
     @Test
-    void retriesOnConcurrencyLimitThenSucceeds() {
+    void concurrencyLimitDoesNotConsumeRetryAttempts() {
         when(aiSummaryService.summarizeWithPrompt(eq(3L), anyString(), anyString(), any()))
+                .thenThrow(new BusinessException("AI 调用并发已达上限，请稍后重试"))
+                .thenThrow(new BusinessException("AI 调用并发已达上限，请稍后重试"))
+                .thenThrow(new BusinessException("AI 调用并发已达上限，请稍后重试"))
                 .thenThrow(new BusinessException("AI 调用并发已达上限，请稍后重试"))
                 .thenReturn("{\"modules\":[]}");
 
@@ -107,9 +117,10 @@ class PipelineAiCallerTest {
         );
 
         assertEquals("{\"modules\":[]}", result);
-        verify(aiSummaryService, times(2)).summarizeWithPrompt(eq(3L), anyString(), anyString(), any());
-        verify(execLog).log(eq(3L), argThat(msg -> msg.contains("[AI-RETRY]") && msg.contains("并发已达上限")));
-        verify(execLog).log(eq(3L), argThat(msg -> msg.contains("[AI-OK]")));
+        // 4 次抢槽失败 + 1 次成功，均不计入 maxAttempts=3
+        verify(aiSummaryService, times(5)).summarizeWithPrompt(eq(3L), anyString(), anyString(), any());
+        verify(execLog).log(eq(3L), argThat(msg -> msg.contains("[AI-WAIT]") && msg.contains("does not consume retry")));
+        verify(execLog, never()).log(eq(3L), argThat(msg -> msg.contains("[AI-RETRY]")));
     }
 
     @Test

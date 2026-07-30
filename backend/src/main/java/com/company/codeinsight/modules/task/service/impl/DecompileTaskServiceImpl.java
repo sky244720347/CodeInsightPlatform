@@ -238,6 +238,28 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     private com.company.codeinsight.modules.knowledge.service.KnowledgePublishFacade knowledgePublishFacade;
 
     /**
+     * 列表展示排序档位（越小越靠前）：
+     * <ol>
+     *   <li>进行中（流水线执行中 / 入口·层级人工断点）与待复核</li>
+     *   <li>排队中（PENDING / RESUME_QUEUED）</li>
+     *   <li>其余终态与草稿</li>
+     * </ol>
+     * 同档再按 {@code created_date} 倒序。避免批量入队后 PENDING 把真正执行中、待人工处理的任务顶出首页。
+     */
+    private static final String LIST_STATUS_SORT_ORDER = """
+            ORDER BY CASE
+              WHEN status IN (
+                'PULLING_CODE','PARSING_CODE','SPLITTING_TASK',
+                'ENTRYPOINT_REVIEW','AI_ANALYZING','MODULE_HIERARCHY','MODULE_HIERARCHY_REVIEW',
+                'BASELINE_DOC_INHERIT','GENERATING_DOC','PUSHING',
+                'PENDING_REVIEW','REVIEWING'
+              ) THEN 0
+              WHEN status IN ('PENDING','RESUME_QUEUED') THEN 1
+              ELSE 2
+            END ASC, created_date DESC
+            """;
+
+    /**
      * 分页获取任务列表
      */
     @Override
@@ -259,7 +281,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 // 精准搜索：创建时间区间（可单边）
                 .ge(StringUtils.hasText(createdDateStart), DecompileTask::getCreatedDate, createdDateStart)
                 .le(StringUtils.hasText(createdDateEnd), DecompileTask::getCreatedDate, createdDateEnd)
-                .orderByDesc(DecompileTask::getCreatedDate);
+                .last(LIST_STATUS_SORT_ORDER);
 
         // 简单搜索 keyword：纯数字按 id 精确匹配，否则按 model_name LIKE '%keyword%'
         if (StringUtils.hasText(keyword)) {
@@ -1616,7 +1638,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
      * </ul>
      */
     @Override
-    public void reclaimOrphanAndResume(Long taskId) {
+    public void reclaimOrphanAndResume(Long taskId, String previousClaimedBy, java.time.LocalDateTime previousLeaseUntil) {
         DecompileTask task = this.getById(taskId);
         if (task == null) {
             throw new BusinessException("任务不存在");
@@ -1632,8 +1654,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
 
         switch (status) {
             case PULLING_CODE, PARSING_CODE -> reclaimEarlyStageToPending(task);
-            case AI_ANALYZING, MODULE_HIERARCHY -> reclaimFromAiAnalyzing(task);
-            case BASELINE_DOC_INHERIT, GENERATING_DOC -> reclaimFromDocStage(task);
+            case AI_ANALYZING, MODULE_HIERARCHY -> reclaimFromAiAnalyzing(task, previousClaimedBy, previousLeaseUntil);
+            case BASELINE_DOC_INHERIT, GENERATING_DOC -> reclaimFromDocStage(task, previousClaimedBy, previousLeaseUntil);
             case PUSHING -> {
                 stateMachineService.transitTo(taskId, TaskStatus.FAILED,
                         "推送过程中节点中断，请在推送页对 DRAFT/FAILED 版本重新入队");
@@ -1666,7 +1688,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         execLog.log(id, "<<< 孤儿接管 — 已重新入队 PENDING，等待调度器拉起");
     }
 
-    private void reclaimFromAiAnalyzing(DecompileTask task) {
+    private void reclaimFromAiAnalyzing(DecompileTask task,
+                                        String previousClaimedBy,
+                                        java.time.LocalDateTime previousLeaseUntil) {
         Long id = task.getId();
         File projectDir = taskWorkspacePaths.taskProjectDir(id);
         if (projectDir == null || !projectDir.isDirectory()) {
@@ -1677,9 +1701,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         }
         Long systemId = task.getSystemId();
         if (!taskConcurrencyLimiter.tryAcquire(systemId, id)) {
-            // 许可暂满：清认领回到可再次扫描，避免永久占着 claimed_by
-            taskQueueClaimService.clearReservation(id);
-            execLog.log(id, "孤儿接管暂缓 — 任务并发许可不足，稍后重试");
+            // 许可暂满：回滚认领，禁止 clearReservation 造成 NO_CLAIM 风暴
+            taskQueueClaimService.restoreClaimAfterDeferredReclaim(id, previousClaimedBy, previousLeaseUntil);
+            execLog.log(id, "孤儿接管暂缓 — 任务并发许可不足，已回滚认领，稍后重试");
             return;
         }
         taskCache.put(id, task);
@@ -1774,7 +1798,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         }
     }
 
-    private void reclaimFromDocStage(DecompileTask task) {
+    private void reclaimFromDocStage(DecompileTask task,
+                                     String previousClaimedBy,
+                                     java.time.LocalDateTime previousLeaseUntil) {
         Long id = task.getId();
         File projectDir = taskWorkspacePaths.taskProjectDir(id);
         if (projectDir == null || !projectDir.isDirectory()) {
@@ -1786,8 +1812,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         }
         Long systemId = task.getSystemId();
         if (!taskConcurrencyLimiter.tryAcquire(systemId, id)) {
-            taskQueueClaimService.clearReservation(id);
-            execLog.log(id, "孤儿接管暂缓 — 任务并发许可不足，稍后重试");
+            taskQueueClaimService.restoreClaimAfterDeferredReclaim(id, previousClaimedBy, previousLeaseUntil);
+            execLog.log(id, "孤儿接管暂缓 — 任务并发许可不足，已回滚认领，稍后重试");
             return;
         }
         taskCache.put(id, task);

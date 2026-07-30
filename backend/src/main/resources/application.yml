@@ -19,8 +19,13 @@ code-insight:
     # 任务并发 Redis 许可：TTL + 续租；崩溃残留靠启动/周期 DB 对账清理
     task-permit-ttl-seconds: 300
     task-permit-renew-seconds: 60
-    task-permit-reconcile-interval-ms: 60000
-    instance-heartbeat-ttl-seconds: 90
+    # 实例心跳 TTL；续租走 task-permit-reconcile，须明显大于续租间隔
+    instance-heartbeat-ttl-seconds: 180
+    task-permit-reconcile-interval-ms: 30000
+    # 任务 DB 租约（分钟）；真崩溃靠租约过期接管（不再单靠心跳死就抢）
+    task-lease-minutes: 10
+    task-lease-renew-interval-ms: 120000
+    orphan-reclaim-interval-ms: 30000
   storage:
     # 非 dev 必填绝对路径；dev 写死 ./storage 并派生 ./storage/workspaces、./storage/releases，忽略下列配置
     runtime-root: ${STORAGE_RUNTIME_ROOT:}
@@ -49,6 +54,8 @@ code-insight:
       parallelism: 4
       # 文档与 MODULE_HIERARCHY 等 AI 全局槽超时（秒），应 ≫ http-timeout；层级超时仅弃当前入口
       acquire-wait-seconds: 1800
+      # 等槽轮询间隔（毫秒）；默认 5s，过短无意义
+      acquire-poll-interval-ms: 5000
   review:
     # true：知识复核允许未逐篇确认时直接「任务整体通过」（未确认草稿一并 CONFIRMED）
     allow-partial-pass: ${REVIEW_ALLOW_PARTIAL_PASS:false}
