@@ -35,5 +35,18 @@ public interface JavaParserService {
     default void evictTaskCaches(Long taskId) {
         // 默认空实现，供测试桩等轻量实现使用
     }
+
+    /**
+     * 清空全部解析侧缓存（实例 parseCache + 静态 SymbolSolver/subtype 索引）。
+     * 运维排障 / 内存告警时使用；会打断进行中解析任务的缓存命中。
+     */
+    default void clearAllCaches() {
+        // 默认空实现
+    }
+
+    /** 解析缓存规模摘要，便于日志与排障。 */
+    default String cacheStatsSummary() {
+        return "n/a";
+    }
 }
 

@@ -56,6 +56,13 @@ public class TaskExecutionLogger {
         }
     }
 
+    /** 任务终态后释放写锁条目，避免 taskLogLocks 无界增长。 */
+    public void releaseLock(Long taskId) {
+        if (taskId != null) {
+            taskLogLocks.remove(taskId);
+        }
+    }
+
     /**
      * 读取 pipeline.log 中<strong>最近一次</strong>流水线运行的内容（按启动标记截取）。
      */

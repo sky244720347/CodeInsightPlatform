@@ -1,8 +1,9 @@
 package com.company.codeinsight.modules.ai.service;
 
-import com.company.codeinsight.common.config.AiDocBudgetProperties;
 import com.company.codeinsight.common.config.AiRetryProperties;
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.common.exception.TaskCancelledException;
+import com.company.codeinsight.modules.task.service.TaskCancellationRegistry;
 import com.company.codeinsight.modules.task.service.TaskExecutionLogger;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -10,12 +11,9 @@ import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Component;
 import org.springframework.util.StringUtils;
 
-import java.time.Duration;
-import java.util.concurrent.TimeUnit;
-
 /**
  * 流水线 AI 调用统一重试器：可配置次数、指数退避，并将重试/失败写入 pipeline.log。
- * <p>AI 并发抢槽轮询不计入 {@code maxAttempts}；仅真实调模型后的失败才消耗重试次数。</p>
+ * <p>AI 等槽仅在 {@link AiSummaryService} 内层实现；本类对并发类异常按普通失败消耗 attempt 重试。</p>
  */
 @Slf4j
 @Component
@@ -29,10 +27,10 @@ public class PipelineAiCaller {
     private AiRetryProperties retryProperties;
 
     @Autowired
-    private AiDocBudgetProperties docBudgetProperties;
+    private TaskExecutionLogger execLog;
 
     @Autowired
-    private TaskExecutionLogger execLog;
+    private TaskCancellationRegistry cancellationRegistry;
 
     /** 校验 AI 原始响应；成功时可返回规范化后的文本（如提取 JSON 后的 payload）。 */
     @FunctionalInterface
@@ -120,13 +118,14 @@ public class PipelineAiCaller {
         String currentPrompt = initialPrompt;
         String lastReason = "unknown";
 
-        int acquireWaitSec = resolveAcquireWaitSeconds();
-        long pollMs = resolveAcquirePollIntervalMs();
-        long concurrencyDeadlineNs = System.nanoTime() + Duration.ofSeconds(acquireWaitSec).toNanos();
-        boolean loggedConcurrencyWait = false;
-
         int attempt = 1;
         while (attempt <= maxAttempts) {
+            if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
+                execLog.log(taskId, String.format(
+                        "[AI-CANCEL] stage=%s target=%s before attempt %d/%d",
+                        stageTag, target, attempt, maxAttempts));
+                throw new TaskCancelledException(taskId);
+            }
             try {
                 String response = aiSummaryService.summarizeWithPrompt(
                         taskId, currentPrompt, modelName, callMeta);
@@ -141,7 +140,17 @@ public class PipelineAiCaller {
                     return CallOutcome.ok(payload);
                 }
                 lastReason = vr.failureReason();
+            } catch (TaskCancelledException e) {
+                execLog.log(taskId, String.format(
+                        "[AI-CANCEL] stage=%s target=%s reason=%s",
+                        stageTag, target, truncateReason(e.getMessage())));
+                throw e;
             } catch (BusinessException e) {
+                if (TaskCancelledException.isCancellation(e)) {
+                    throw e instanceof TaskCancelledException
+                            ? (TaskCancelledException) e
+                            : new TaskCancelledException(taskId);
+                }
                 lastReason = e.getMessage();
                 if (isNonRetryable(lastReason)) {
                     execLog.log(taskId, String.format(
@@ -149,35 +158,24 @@ public class PipelineAiCaller {
                             stageTag, target, truncateReason(lastReason)));
                     return CallOutcome.fail(lastReason);
                 }
-                // 抢槽失败：只轮询等槽，不消耗 attempt
-                if (isConcurrencyLimit(lastReason)) {
-                    long remainingNs = concurrencyDeadlineNs - System.nanoTime();
-                    if (remainingNs <= 0) {
-                        String timeoutMsg = "AI 调用并发等待超时（" + acquireWaitSec + "s），请稍后重试";
-                        execLog.log(taskId, String.format(
-                                "[AI-FAIL] stage=%s target=%s reason=%s (concurrency wait exhausted, attempts unused=%d/%d)",
-                                stageTag, target, truncateReason(timeoutMsg), attempt, maxAttempts));
-                        return CallOutcome.fail(timeoutMsg);
-                    }
-                    if (!loggedConcurrencyWait) {
-                        loggedConcurrencyWait = true;
-                        execLog.log(taskId, String.format(
-                                "[AI-WAIT] stage=%s target=%s ai.concurrency busy; polling every %dms, maxWait=%ds (does not consume retry)",
-                                stageTag, target, pollMs, acquireWaitSec));
-                    }
-                    sleepBackoff(Math.min(pollMs, Math.max(50L, TimeUnit.NANOSECONDS.toMillis(remainingNs))));
-                    continue;
-                }
+                // 并发类（已达上限 / 等待超时 / 被中断）：与其它可恢复失败一样消耗 attempt
             } catch (Exception e) {
+                if (TaskCancelledException.isCancellation(e)) {
+                    throw new TaskCancelledException(taskId);
+                }
                 lastReason = e.getMessage();
                 log.warn("Pipeline AI call exception stage={} target={} attempt={}/{}: {}",
                         stageTag, target, attempt, maxAttempts, lastReason);
             }
 
             if (attempt < maxAttempts) {
+                if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
+                    throw new TaskCancelledException(taskId);
+                }
+                String tag = isConcurrencyFailure(lastReason) ? "[AI-CONCURRENCY]" : "[AI-RETRY]";
                 execLog.log(taskId, String.format(
-                        "[AI-RETRY] stage=%s target=%s attempt=%d/%d reason=%s",
-                        stageTag, target, attempt, maxAttempts, truncateReason(lastReason)));
+                        "%s stage=%s target=%s attempt=%d/%d reason=%s",
+                        tag, stageTag, target, attempt, maxAttempts, truncateReason(lastReason)));
                 sleepBackoff(backoffMs * attempt);
                 if (promptMutator != null) {
                     currentPrompt = promptMutator.mutate(initialPrompt, currentPrompt, attempt, lastReason);
@@ -192,45 +190,25 @@ public class PipelineAiCaller {
         return CallOutcome.fail(lastReason);
     }
 
-    private int resolveAcquireWaitSeconds() {
-        if (docBudgetProperties == null) {
-            return 1800;
-        }
-        return Math.max(docBudgetProperties.getHttpTimeoutSeconds() * 2,
-                Math.max(60, docBudgetProperties.getAcquireWaitSeconds()));
-    }
-
-    private long resolveAcquirePollIntervalMs() {
-        if (docBudgetProperties == null) {
-            return 5_000L;
-        }
-        long configured = docBudgetProperties.getAcquirePollIntervalMs();
-        // ≤0：单测/显式关闭休眠；生产默认 5000，且至少 1s
-        if (configured <= 0L) {
-            return 0L;
-        }
-        return Math.max(1_000L, configured);
-    }
-
     /**
-     * 重试无意义的硬失败。
-     * <p>「并发已达上限」在调用方循环内轮询，不走本方法。
-     * 「并发等待超时」表示等槽预算已耗尽。</p>
+     * 重试无意义的硬失败（仅额度）。并发等待由内层负责，外层按普通重试处理。
      */
     private static boolean isNonRetryable(String reason) {
         if (!StringUtils.hasText(reason)) {
             return false;
         }
         return reason.contains("额度")
-                || reason.contains("Token 消耗额度超限")
-                || reason.contains("并发等待超时")
-                || reason.contains("并发等待被中断");
+                || reason.contains("Token 消耗额度超限");
     }
 
-    private static boolean isConcurrencyLimit(String reason) {
-        return StringUtils.hasText(reason)
-                && reason.contains("并发已达上限")
-                && !reason.contains("并发等待超时");
+    /** 并发槽相关失败：打 [AI-CONCURRENCY] 日志，仍消耗 attempt。 */
+    public static boolean isConcurrencyFailure(String reason) {
+        if (!StringUtils.hasText(reason)) {
+            return false;
+        }
+        return reason.contains("并发已达上限")
+                || reason.contains("并发等待超时")
+                || reason.contains("并发等待被中断");
     }
 
     /**

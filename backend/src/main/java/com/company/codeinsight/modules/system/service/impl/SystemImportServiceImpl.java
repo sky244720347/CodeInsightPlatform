@@ -10,6 +10,7 @@ import com.company.codeinsight.modules.prompt.entity.DecompilePrompt;
 import com.company.codeinsight.modules.prompt.mapper.DecompilePromptMapper;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.service.CodeRepositoryService;
+import com.company.codeinsight.modules.repository.service.TechStackGuard;
 import com.company.codeinsight.modules.system.dto.SystemImportExcelRow;
 import com.company.codeinsight.modules.system.dto.SystemImportItemResult;
 import com.company.codeinsight.modules.system.dto.SystemImportResult;
@@ -17,6 +18,7 @@ import com.company.codeinsight.modules.system.entity.SystemApplication;
 import com.company.codeinsight.modules.system.service.SystemApplicationService;
 import com.company.codeinsight.modules.system.service.SystemImportService;
 import com.company.codeinsight.modules.system.support.SystemExcelParser;
+import com.company.codeinsight.modules.system.support.SystemImportTemplateWriteHandler;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Service;
@@ -47,6 +49,7 @@ public class SystemImportServiceImpl implements SystemImportService {
 
     private final SystemApplicationService systemApplicationService;
     private final CodeRepositoryService codeRepositoryService;
+    private final TechStackGuard techStackGuard;
     private final DecompilePromptMapper decompilePromptMapper;
     private final OperationLogService operationLogService;
 
@@ -116,8 +119,12 @@ public class SystemImportServiceImpl implements SystemImportService {
         example.setDescription("示例：请按实际系统填写；同系统多仓可多行，系统名保持一致");
         example.setOwner("zhangsan");
         example.setGitUrl("https://code.example.com/group/repo-name.git");
+        example.setRepoType("后端");
+        example.setTechStack("Java");
         try (ByteArrayOutputStream out = new ByteArrayOutputStream()) {
             EasyExcel.write(out, SystemImportExcelRow.class)
+                    .inMemory(true)
+                    .registerWriteHandler(new SystemImportTemplateWriteHandler())
                     .sheet("系统导入")
                     .doWrite(List.of(example));
             return out.toByteArray();
@@ -140,12 +147,19 @@ public class SystemImportServiceImpl implements SystemImportService {
                 : systemNameRaw;
         String gitUrl = normalizeGitUrl(data.getGitUrl());
         String owner = trim(data.getOwner());
+        String repoType = trim(data.getRepoType());
+        String techStack = trim(data.getTechStack());
 
         if (!StringUtils.hasText(systemName)) {
             return fail(row, systemName, gitUrl, "系统名称不能为空");
         }
         if (!StringUtils.hasText(gitUrl)) {
             return fail(row, systemName, gitUrl, "git完整地址不能为空");
+        }
+        try {
+            techStackGuard.requireValidCatalogPair(repoType, techStack);
+        } catch (BusinessException e) {
+            return fail(row, systemName, gitUrl, e.getMessage());
         }
 
         try {
@@ -186,7 +200,7 @@ public class SystemImportServiceImpl implements SystemImportService {
                         .build();
             }
 
-            CodeRepository repo = createRepository(systemId, gitUrl, prompts, defaultEntryScanJson);
+            CodeRepository repo = createRepository(systemId, gitUrl, repoType, techStack, prompts, defaultEntryScanJson);
             boolean systemIsNew = cached.createdInBatch();
             return SystemImportItemResult.builder()
                     .row(row)
@@ -221,10 +235,13 @@ public class SystemImportServiceImpl implements SystemImportService {
     }
 
     private CodeRepository createRepository(Long systemId, String gitUrl,
+                                            String repoType, String techStack,
                                             DefaultPrompts prompts, String entryScanJson) {
         CodeRepository repo = new CodeRepository();
         repo.setSystemId(systemId);
         repo.setGitUrl(gitUrl);
+        repo.setRepoType(repoType);
+        repo.setTechStack(techStack);
         repo.setBranch(DEFAULT_BRANCH);
         repo.setScanRoot(DEFAULT_SCAN_ROOT);
         repo.setPushTargetFolder(DEFAULT_PUSH_FOLDER);

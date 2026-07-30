@@ -56,6 +56,17 @@ public class FallbackJavaParserService implements JavaParserService {
     }
 
     @Override
+    public void clearAllCaches() {
+        primary.clearAllCaches();
+        fallback.clearAllCaches();
+    }
+
+    @Override
+    public String cacheStatsSummary() {
+        return "ast{" + primary.cacheStatsSummary() + "} regex{" + fallback.cacheStatsSummary() + "}";
+    }
+
+    @Override
     public List<ParsedClassInfo> parseDirectory(File directory) {
         // 逐文件走本类 parseFile（含 AST→REGEX），避免 AstJavaParserService.parseDirectory
         // 遇单文件 ParseProblemException 中断整目录（入口识别会因此得到空列表）。

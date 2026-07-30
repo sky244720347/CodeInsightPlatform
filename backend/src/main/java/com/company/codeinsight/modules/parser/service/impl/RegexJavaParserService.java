@@ -57,8 +57,23 @@ public class RegexJavaParserService implements JavaParserService {
             }
         }
         if (removed > 0) {
-            log.info("RegexJavaParserService.evictTaskCaches taskId={} parse={}", taskId, removed);
+            log.info("RegexJavaParserService.evictTaskCaches taskId={} parse={} remaining={}",
+                    taskId, removed, parseCache.size());
         }
+    }
+
+    @Override
+    public void clearAllCaches() {
+        int n = parseCache.size();
+        parseCache.clear();
+        if (n > 0) {
+            log.warn("RegexJavaParserService.clearAllCaches cleared parse={}", n);
+        }
+    }
+
+    @Override
+    public String cacheStatsSummary() {
+        return "parse=" + parseCache.size();
     }
 
     // 正则表达式：解析包名定义

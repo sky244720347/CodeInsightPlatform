@@ -24,4 +24,12 @@ public class SystemImportExcelRow {
 
     @ExcelProperty("git完整地址")
     private String gitUrl;
+
+    /** 代码库类型：前端 / 后端 / DB（与展示文案一致） */
+    @ExcelProperty("代码库类型")
+    private String repoType;
+
+    /** 技术栈：如 Java / React（与展示文案一致，须属于所选类型目录） */
+    @ExcelProperty("技术栈")
+    private String techStack;
 }

@@ -27,7 +27,9 @@ import com.company.codeinsight.modules.hierarchy.service.ModuleHierarchyService;
 import com.company.codeinsight.modules.scanner.model.IncrementalContext;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
+import com.company.codeinsight.modules.task.service.TaskCancellationRegistry;
 import com.company.codeinsight.modules.task.service.TaskExecutionLogger;
+import com.company.codeinsight.common.exception.TaskCancelledException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -104,6 +106,9 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
 
     @Autowired
     private TaskExecutionLogger execLog;
+
+    @Autowired
+    private TaskCancellationRegistry cancellationRegistry;
 
     @Autowired
     private com.company.codeinsight.modules.entrypoint.mapper.EntrypointMapper entrypointMapper;
@@ -254,6 +259,12 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
             final File finalProjectDir = projectDir;
             Long baselineTaskIdForDiff = effective.isIncremental() ? effective.getBaselineTaskId() : null;
             for (EntryPoint entry : toProcess) {
+                if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
+                    execLog.log(taskId, String.format(
+                            "  MODULE_HIERARCHY 因用户终止停止 — 已完成 %d / 共 %d",
+                            processedByAi, toProcess.size()));
+                    throw new TaskCancelledException(taskId);
+                }
                 Map<String, String> methodDiffBySig = baselineTaskIdForDiff == null
                         ? java.util.Collections.emptyMap()
                         : buildEntrypointMethodDiffStatus(taskId, baselineTaskIdForDiff, entry.getClassName());
@@ -1182,8 +1193,10 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
 
             if (!outcome.hasPayload()) {
                 String failReason = outcome.lastFailureReason();
-                // 等槽超时：放弃当前入口，阶段继续（保证拿到槽的入口正确执行）
-                if (failReason != null && failReason.contains("并发等待超时")) {
+                // 等槽失败用尽重试：放弃当前入口，阶段继续（保证拿到槽的入口正确执行）
+                if (failReason != null && (failReason.contains("并发等待超时")
+                        || failReason.contains("并发等待被中断")
+                        || failReason.contains("并发已达上限"))) {
                     execLog.log(taskId, String.format(
                             "[AI-SKIP] stage=MODULE_HIERARCHY target=%s reason=%s (entry abandoned, stage continues)",
                             entryLabel, PipelineAiCaller.truncateReason(failReason)));

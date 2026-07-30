@@ -123,6 +123,11 @@ ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS last_published_task_id BIGINT
 ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS last_published_version_id BIGINT;
 ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS published_at TIMESTAMP;
 ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS published_by VARCHAR(100);
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS repo_type VARCHAR(32);
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS tech_stack VARCHAR(64);
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS git_reachable SMALLINT;
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS git_checked_at TIMESTAMP;
+ALTER TABLE ci_repository ADD COLUMN IF NOT EXISTS git_check_msg VARCHAR(255);
 
 CREATE INDEX IF NOT EXISTS idx_repo_system_id ON ci_repository (system_id);
 
@@ -166,6 +171,31 @@ COMMENT ON COLUMN ci_repository.last_published_task_id IS '最近一次成功发
 COMMENT ON COLUMN ci_repository.last_published_version_id IS '当前生效的已发布知识版本 ID（ci_knowledge_version.id）；知识浏览与回滚均以此指针读取 NAS releases';
 COMMENT ON COLUMN ci_repository.published_at IS '最近一次成功发布到仓库的时间';
 COMMENT ON COLUMN ci_repository.published_by IS '最近一次成功发布到仓库的操作人';
+COMMENT ON COLUMN ci_repository.repo_type IS '代码库类型（与展示文案一致）：前端 / 后端 / DB；前后端拆分靠独立仓库 + scan_root';
+COMMENT ON COLUMN ci_repository.tech_stack IS '技术栈（与展示文案一致，如 Java / React）；须属于 repo_type 对应目录；任务下发再校验可执行白名单';
+COMMENT ON COLUMN ci_repository.git_reachable IS 'Git 连通性：NULL=未检测（默认） 1=连通 0=不通；任务下发要求=1；超时不写 0';
+COMMENT ON COLUMN ci_repository.git_checked_at IS '最近一次 Git 连通性检测时间';
+COMMENT ON COLUMN ci_repository.git_check_msg IS '最近一次检测失败摘要（可选）';
+
+-- 历史误判：超时曾落成「不通」的回退为未检测
+UPDATE ci_repository
+SET git_reachable = NULL,
+    git_checked_at = NULL,
+    git_check_msg = NULL,
+    updated_date = CURRENT_TIMESTAMP
+WHERE is_deleted = 0
+  AND git_reachable = 0
+  AND git_check_msg IS NOT NULL
+  AND git_check_msg LIKE '检测超时%';
+
+-- 历史仓库回填：未配置类型/技术栈的视为后端 Java（仅补空，不覆盖已填值）
+UPDATE ci_repository
+SET repo_type = '后端',
+    tech_stack = 'Java',
+    updated_date = CURRENT_TIMESTAMP
+WHERE is_deleted = 0
+  AND (repo_type IS NULL OR btrim(repo_type) = ''
+       OR tech_stack IS NULL OR btrim(tech_stack) = '');
 
 
 -- ============================================================

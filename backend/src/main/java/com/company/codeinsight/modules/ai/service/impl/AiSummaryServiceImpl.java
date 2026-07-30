@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.company.codeinsight.common.config.AiDocBudgetProperties;
 import com.company.codeinsight.common.config.AiRetryProperties;
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.common.exception.TaskCancelledException;
 import com.company.codeinsight.common.util.AiResponseJsonExtractor;
 import com.company.codeinsight.modules.ai.entity.AiCallRecord;
 import com.company.codeinsight.common.storage.EnvStorageResolver;
@@ -38,6 +39,7 @@ import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
 import com.company.codeinsight.modules.scanner.model.ScanScope;
 import com.company.codeinsight.modules.scanner.service.ScanScopeResolver;
+import com.company.codeinsight.modules.task.service.TaskCancellationRegistry;
 import com.company.codeinsight.modules.task.service.TaskExecutionLogger;
 import jakarta.annotation.PostConstruct;
 import jakarta.annotation.PreDestroy;
@@ -60,10 +62,14 @@ import java.nio.file.Paths;
 import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.*;
+import java.util.concurrent.CancellationException;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicInteger;
 
 @Slf4j
@@ -123,6 +129,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
      */
     @Autowired
     private TaskExecutionLogger execLog;
+
+    @Autowired
+    private TaskCancellationRegistry cancellationRegistry;
 
     @Autowired
     private PipelineAiCaller pipelineAiCaller;
@@ -526,34 +535,72 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
         AtomicInteger regenerated = new AtomicInteger();
         AtomicInteger failed = new AtomicInteger();
+        AtomicInteger cancelledSkip = new AtomicInteger();
         List<Future<?>> futures = new ArrayList<>(jobs.size());
         for (FnJob job : jobs) {
-            futures.add(docAiExecutor.submit(() -> {
+            if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
+                cancelledSkip.addAndGet(jobs.size() - futures.size());
+                execLog.log(taskId, "  [DOC-CANCEL] 停止提交后续功能文档任务");
+                break;
+            }
+            Future<?> f = docAiExecutor.submit(() -> {
+                if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
+                    cancelledSkip.incrementAndGet();
+                    return;
+                }
                 execLog.log(taskId, "  [fn " + job.index() + "/" + fnTotal + "] " + job.label());
                 try {
                     generateFunctionDraft(task, ws, job.m(), job.sm(), job.fn(), hierarchy, projectDir);
                     regenerated.incrementAndGet();
+                } catch (TaskCancelledException e) {
+                    cancelledSkip.incrementAndGet();
+                    execLog.log(taskId, "  [DOC-CANCEL] function=" + job.label());
                 } catch (Exception e) {
+                    if (TaskCancelledException.isCancellation(e)) {
+                        cancelledSkip.incrementAndGet();
+                        return;
+                    }
                     failed.incrementAndGet();
                     log.error("generateFunctionDraft failed for function {}: {}", job.label(), e.getMessage(), e);
                     execLog.logException(taskId, "文档生成失败 function=" + job.label(), e);
                 }
-            }));
+            });
+            if (cancellationRegistry != null) {
+                cancellationRegistry.registerWork(taskId, f);
+            }
+            futures.add(f);
         }
         for (Future<?> f : futures) {
             try {
                 f.get();
+            } catch (CancellationException e) {
+                cancelledSkip.incrementAndGet();
             } catch (Exception e) {
-                failed.incrementAndGet();
-                log.error("文档并行任务异常: {}", e.getMessage(), e);
+                if (TaskCancelledException.isCancellation(e)) {
+                    cancelledSkip.incrementAndGet();
+                } else {
+                    failed.incrementAndGet();
+                    log.error("文档并行任务异常: {}", e.getMessage(), e);
+                }
+            } finally {
+                if (cancellationRegistry != null) {
+                    cancellationRegistry.unregisterWork(taskId, f);
+                }
             }
         }
 
+        if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
+            execLog.log(taskId, String.format(
+                    "  文档生成因用户终止停止 = 成功 %d / 取消跳过 %d / 失败 %d / 功能共 %d",
+                    regenerated.get(), cancelledSkip.get(), failed.get(), fnTotal));
+            throw new TaskCancelledException(taskId);
+        }
+
         execLog.log(taskId, String.format(
-                "  文档生成汇总 = 成功 %d / 共 %d（失败 %d，跳过 %d）",
-                regenerated.get(), fnTotal, failed.get(), skipped));
-        log.info("generateDraftDocument done (function). taskId={} total={} regenerated={} skipped={} failed={} parallelism={}",
-                taskId, fnTotal, regenerated.get(), skipped, failed.get(), parallelism);
+                "  文档生成汇总 = 成功 %d / 共 %d（失败 %d，跳过 %d，取消 %d）",
+                regenerated.get(), fnTotal, failed.get(), skipped, cancelledSkip.get()));
+        log.info("generateDraftDocument done (function). taskId={} total={} regenerated={} skipped={} failed={} cancelled={} parallelism={}",
+                taskId, fnTotal, regenerated.get(), skipped, failed.get(), cancelledSkip.get(), parallelism);
     }
 
     /**
@@ -2346,6 +2393,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         if (taskId == null || promptInput == null) {
             return "{}";
         }
+        if (cancellationRegistry != null) {
+            cancellationRegistry.throwIfCancelled(taskId);
+        }
 
         DecompileTask task = decompileTaskMapper.selectById(taskId);
         Long systemId = task != null ? task.getSystemId() : 0L;
@@ -2402,6 +2452,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             aiConcurrencyService.tryAcquire();
         }
         try {
+            if (cancellationRegistry != null) {
+                cancellationRegistry.throwIfCancelled(taskId);
+            }
 
         // Mock 降级
         boolean shouldMock = this.aiMock
@@ -2439,15 +2492,47 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 requestUrl = requestUrl.replaceAll("/+$", "") + "/chat/completions";
             }
 
+            int httpTimeoutSec = Math.max(30, docBudgetProperties.getHttpTimeoutSeconds());
             HttpRequest request = HttpRequest.newBuilder()
                     .uri(URI.create(requestUrl))
                     .header("Authorization", "Bearer " + activeApiKey)
                     .header("Content-Type", "application/json")
                     .POST(HttpRequest.BodyPublishers.ofString(jsonPayload))
-                    .timeout(Duration.ofSeconds(Math.max(30, docBudgetProperties.getHttpTimeoutSeconds())))
+                    .timeout(Duration.ofSeconds(httpTimeoutSec))
                     .build();
 
-            HttpResponse<String> response = httpClient.send(request, HttpResponse.BodyHandlers.ofString());
+            CompletableFuture<HttpResponse<String>> httpFuture =
+                    httpClient.sendAsync(request, HttpResponse.BodyHandlers.ofString());
+            if (cancellationRegistry != null) {
+                cancellationRegistry.registerHttp(taskId, httpFuture);
+            }
+            HttpResponse<String> response;
+            try {
+                response = httpFuture.get(httpTimeoutSec + 5L, TimeUnit.SECONDS);
+            } catch (TimeoutException te) {
+                httpFuture.cancel(true);
+                throw new BusinessException("AI 调用超时");
+            } catch (CancellationException ce) {
+                throw new TaskCancelledException(taskId);
+            } catch (InterruptedException ie) {
+                Thread.currentThread().interrupt();
+                httpFuture.cancel(true);
+                if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
+                    throw new TaskCancelledException(taskId);
+                }
+                throw new BusinessException("AI 调用被中断");
+            } catch (ExecutionException ee) {
+                Throwable cause = ee.getCause() != null ? ee.getCause() : ee;
+                if (TaskCancelledException.isCancellation(cause)) {
+                    throw new TaskCancelledException(taskId);
+                }
+                throw new BusinessException("AI 调用异常: "
+                        + (cause.getMessage() != null ? cause.getMessage() : cause.getClass().getSimpleName()));
+            } finally {
+                if (cancellationRegistry != null) {
+                    cancellationRegistry.unregisterHttp(taskId, httpFuture);
+                }
+            }
             long duration = System.currentTimeMillis() - start;
 
             if (response.statusCode() == 200) {
@@ -2470,9 +2555,14 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                         null, modelToUse, currentEstimate, 0, "{}", false, errMsg, duration, callStage);
                 throw new BusinessException(errMsg);
             }
+        } catch (TaskCancelledException e) {
+            throw e;
         } catch (BusinessException e) {
             throw e;
         } catch (Exception e) {
+            if (TaskCancelledException.isCancellation(e)) {
+                throw new TaskCancelledException(taskId);
+            }
             long duration = System.currentTimeMillis() - start;
             String errMsg = "AI 调用异常: " + (e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName());
             log.error("真实 AI 调用异常 task={} stage={} model={}: {}", taskId, callStage, modelToUse, errMsg);
@@ -2550,15 +2640,21 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
     /**
      * 对现有 {@code tryAcquire()} 做应用层排队等待，不改动 AiConcurrencyService。
-     * <p>超时取 max(httpTimeout×2, acquireWaitSeconds)。层级超时后由 PipelineAiCaller
-     * 标记 non-retryable → 当前入口放弃，阶段继续；文档超时走既有失败/降级路径。</p>
+     * <p>{@code acquire-wait-unlimited=true}：无超时一直等到抢到；
+     * 否则超时取 max(httpTimeout×2, acquireWaitSeconds)。
+     * 中断一律抛出，由 PipelineAiCaller 按普通重试消耗 attempt。</p>
      */
     private void acquireAiPermitWithWait(Long taskId, String callStage) {
+        boolean unlimited = docBudgetProperties.isAcquireWaitUnlimited();
         int waitSec = Math.max(docBudgetProperties.getHttpTimeoutSeconds() * 2,
                 Math.max(60, docBudgetProperties.getAcquireWaitSeconds()));
-        long deadlineNs = System.nanoTime() + Duration.ofSeconds(waitSec).toNanos();
+        long deadlineNs = unlimited ? Long.MAX_VALUE
+                : System.nanoTime() + Duration.ofSeconds(waitSec).toNanos();
         boolean loggedWait = false;
         while (true) {
+            if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
+                throw new TaskCancelledException(taskId);
+            }
             try {
                 aiConcurrencyService.tryAcquire();
                 return;
@@ -2567,25 +2663,45 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                 if (!msg.contains("并发已达上限")) {
                     throw e;
                 }
-                long remainingNs = deadlineNs - System.nanoTime();
-                if (remainingNs <= 0) {
-                    throw new BusinessException("AI 调用并发等待超时（" + waitSec + "s），请稍后重试");
+                if (!unlimited) {
+                    long remainingNs = deadlineNs - System.nanoTime();
+                    if (remainingNs <= 0) {
+                        throw new BusinessException("AI 调用并发等待超时（" + waitSec + "s），请稍后重试");
+                    }
                 }
                 if (!loggedWait) {
                     loggedWait = true;
-                    log.info("AI 并发已满，应用层排队等待 stage={} timeout={}s", callStage, waitSec);
-                    if (taskId != null) {
-                        execLog.log(taskId, String.format(
-                                "[AI-WAIT] stage=%s waiting for ai.concurrency permit timeout=%ds",
-                                callStage, waitSec));
+                    if (unlimited) {
+                        log.info("AI 并发已满，应用层无限等待 stage={} unlimited=true", callStage);
+                        if (taskId != null) {
+                            execLog.log(taskId, String.format(
+                                    "[AI-WAIT] stage=%s waiting for ai.concurrency permit unlimited=true",
+                                    callStage));
+                        }
+                    } else {
+                        log.info("AI 并发已满，应用层排队等待 stage={} timeout={}s", callStage, waitSec);
+                        if (taskId != null) {
+                            execLog.log(taskId, String.format(
+                                    "[AI-WAIT] stage=%s waiting for ai.concurrency permit timeout=%ds",
+                                    callStage, waitSec));
+                        }
                     }
                 }
                 try {
                     long pollMs = Math.max(1_000L, docBudgetProperties.getAcquirePollIntervalMs());
-                    long sleepMs = Math.min(pollMs, Math.max(50L, TimeUnit.NANOSECONDS.toMillis(remainingNs)));
+                    long sleepMs;
+                    if (unlimited) {
+                        sleepMs = pollMs;
+                    } else {
+                        long remainingNs = deadlineNs - System.nanoTime();
+                        sleepMs = Math.min(pollMs, Math.max(50L, TimeUnit.NANOSECONDS.toMillis(remainingNs)));
+                    }
                     Thread.sleep(sleepMs);
                 } catch (InterruptedException ie) {
                     Thread.currentThread().interrupt();
+                    if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
+                        throw new TaskCancelledException(taskId);
+                    }
                     throw new BusinessException("AI 调用并发等待被中断");
                 }
             }

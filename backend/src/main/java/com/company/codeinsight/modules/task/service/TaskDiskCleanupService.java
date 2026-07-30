@@ -29,12 +29,15 @@ public class TaskDiskCleanupService {
     private final EnvStorageResolver storageResolver;
     private final TaskWorkspacePaths taskWorkspacePaths;
     private final TaskParseMemoryService taskParseMemoryService;
+    private final DecompileTaskService decompileTaskService;
 
     /** 知识确认完成后：删 drafts + 工作区源码，保留 docs/code-insight。 */
     public void cleanupAfterKnowledgeConfirmed(Long taskId) {
         if (taskId == null) {
             return;
         }
+        // 确认后兜底清运行态 Map（层级复核成功路径曾漏清 pipeline/impact）
+        decompileTaskService.clearRuntimeCaches(taskId);
         taskParseMemoryService.evict(taskId);
         deleteQuietly("drafts", storageResolver.draftsRoot().resolve("task_" + taskId), taskId);
         stripWorkspaceKeepDocs(taskId);
@@ -47,6 +50,7 @@ public class TaskDiskCleanupService {
         if (taskId == null) {
             return;
         }
+        decompileTaskService.clearRuntimeCaches(taskId);
         taskParseMemoryService.evict(taskId);
         deleteQuietly("workspace", taskWorkspacePaths.taskProjectPath(taskId), taskId);
         deleteQuietly("drafts", storageResolver.draftsRoot().resolve("task_" + taskId), taskId);
@@ -57,6 +61,7 @@ public class TaskDiskCleanupService {
         if (taskId == null) {
             return;
         }
+        decompileTaskService.clearRuntimeCaches(taskId);
         taskParseMemoryService.evict(taskId);
         deleteQuietly("workspace", taskWorkspacePaths.taskProjectPath(taskId), taskId);
         deleteQuietly("taskData", storageResolver.taskDataDir(taskId), taskId);

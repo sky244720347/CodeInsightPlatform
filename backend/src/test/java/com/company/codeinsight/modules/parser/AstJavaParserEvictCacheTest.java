@@ -65,4 +65,35 @@ public class AstJavaParserEvictCacheTest {
         // cleanup static pollution for other tests
         svc.evictTaskCaches(8L);
     }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void clearAllCaches_emptiesParseAndStaticMaps() throws Exception {
+        AstJavaParserService svc = new AstJavaParserService();
+        Field parseField = AstJavaParserService.class.getDeclaredField("parseCache");
+        parseField.setAccessible(true);
+        ConcurrentHashMap<String, Object> parseCache =
+                (ConcurrentHashMap<String, Object>) parseField.get(svc);
+        parseCache.put("task_9/a/B.java", new Object());
+
+        Field solverField = AstJavaParserService.class.getDeclaredField("SYMBOL_SOLVER_CACHE");
+        solverField.setAccessible(true);
+        ConcurrentHashMap<String, Object> solverCache =
+                (ConcurrentHashMap<String, Object>) solverField.get(null);
+        String root = new File("workspaces/task_9").getAbsolutePath();
+        solverCache.put(root, new Object());
+
+        Field subtypeField = AstJavaParserService.class.getDeclaredField("SUBTYPE_INDEX_CACHE");
+        subtypeField.setAccessible(true);
+        ConcurrentHashMap<String, Map<String, Object>> subtypeCache =
+                (ConcurrentHashMap<String, Map<String, Object>>) subtypeField.get(null);
+        subtypeCache.put(root, Map.of());
+
+        Assertions.assertTrue(svc.cacheStatsSummary().contains("parse=1"));
+        svc.clearAllCaches();
+        Assertions.assertTrue(parseCache.isEmpty());
+        Assertions.assertTrue(solverCache.isEmpty());
+        Assertions.assertTrue(subtypeCache.isEmpty());
+        Assertions.assertEquals("parse=0 symbolSolver=0 subtypeIndex=0", svc.cacheStatsSummary());
+    }
 }

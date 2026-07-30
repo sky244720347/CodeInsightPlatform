@@ -4,22 +4,20 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.modules.repository.dto.GitConnectivityResult;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
 import com.company.codeinsight.modules.repository.service.CodeRepositoryService;
+import com.company.codeinsight.modules.repository.service.RepoGitConnectivityService;
+import com.company.codeinsight.modules.repository.service.TechStackGuard;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import lombok.extern.slf4j.Slf4j;
-import org.eclipse.jgit.api.Git;
-import org.eclipse.jgit.api.LsRemoteCommand;
-import org.eclipse.jgit.lib.Ref;
-import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
-import java.util.Collection;
 import java.util.Set;
 
 /**
@@ -39,6 +37,12 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
     @Autowired
     private DecompileTaskMapper decompileTaskMapper;
 
+    @Autowired
+    private TechStackGuard techStackGuard;
+
+    @Autowired
+    private RepoGitConnectivityService repoGitConnectivityService;
+
     @Override
     public Page<CodeRepository> listRepositoriesPage(int current, int size, Long systemId, String gitUrl, Boolean hasPublished) {
         Page<CodeRepository> page = new Page<>(current, size);
@@ -52,29 +56,42 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
 
     @Override
     public boolean testConnection(Long id) {
-        CodeRepository repo = this.getById(id);
-        if (repo == null) {
-            throw new BusinessException("代码库配置不存在");
-        }
-        return testConnection(repo.getGitUrl(), repo.getBranch(), repo.getUsername(), repo.getPassword());
+        return repoGitConnectivityService.checkAndPersist(id).isReachable();
     }
 
     @Override
     public boolean testConnection(String gitUrl, String branch, String username, String password) {
-        if (!StringUtils.hasText(gitUrl)) {
-            return false;
+        return repoGitConnectivityService.probeOnly(gitUrl, username, password).isReachable();
+    }
+
+    /**
+     * 带落库的连通性检测（已保存仓库）；未保存仅探测。
+     */
+    @Override
+    public GitConnectivityResult testConnectionDetailed(CodeRepository repository) {
+        if (repository == null) {
+            throw new BusinessException("仓库参数不能为空");
         }
-        try {
-            LsRemoteCommand lsRemote = Git.lsRemoteRepository().setRemote(gitUrl);
-            if (StringUtils.hasText(username)) {
-                lsRemote.setCredentialsProvider(new UsernamePasswordCredentialsProvider(username, password != null ? password : ""));
+        String password = repository.getPassword();
+        if ("******".equals(password) && repository.getId() != null) {
+            CodeRepository existing = this.getById(repository.getId());
+            if (existing == null) {
+                throw new BusinessException("代码库配置不存在");
             }
-            Collection<Ref> refs = lsRemote.call();
-            return refs != null && !refs.isEmpty();
-        } catch (Exception e) {
-            log.error("JGit test connection failed for remote: " + gitUrl, e);
-            return false;
+            password = existing.getPassword();
         }
+        if (repository.getId() != null) {
+            CodeRepository existing = this.getById(repository.getId());
+            if (existing == null) {
+                throw new BusinessException("代码库配置不存在");
+            }
+            // 允许用表单里未保存的 url/凭证试通并落库到该 id
+            existing.setGitUrl(StringUtils.hasText(repository.getGitUrl()) ? repository.getGitUrl() : existing.getGitUrl());
+            existing.setUsername(repository.getUsername() != null ? repository.getUsername() : existing.getUsername());
+            existing.setPassword(password);
+            return repoGitConnectivityService.checkAndPersist(existing);
+        }
+        return repoGitConnectivityService.probeOnly(repository.getGitUrl(), repository.getUsername(), password);
     }
 
     @Override
@@ -83,6 +100,7 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
         if (repository == null || repository.getSystemId() == null) {
             throw new BusinessException("仓库数据/systemId 必填");
         }
+        techStackGuard.normalizeAndValidate(repository);
         repository.setId(null);
         this.save(repository);
         return repository;
@@ -106,6 +124,17 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
         }
         if (repository.getDocumentPromptId() == null) {
             repository.setDocumentPromptId(existing.getDocumentPromptId());
+        }
+        // 局部更新（入口扫描 / 提示词绑定）可能不带类型与技术栈：复用旧值
+        if (!StringUtils.hasText(repository.getRepoType())) {
+            repository.setRepoType(existing.getRepoType());
+        }
+        if (!StringUtils.hasText(repository.getTechStack())) {
+            repository.setTechStack(existing.getTechStack());
+        }
+        // 历史仓库补全 / 编辑时仍须合法；若两端仍为空则暂不强制（下发任务时再门禁）
+        if (StringUtils.hasText(repository.getRepoType()) || StringUtils.hasText(repository.getTechStack())) {
+            techStackGuard.normalizeAndValidate(repository);
         }
         repository.setId(id);
         this.updateById(repository);

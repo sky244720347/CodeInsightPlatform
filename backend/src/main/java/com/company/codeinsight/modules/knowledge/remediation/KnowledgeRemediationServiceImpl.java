@@ -14,6 +14,7 @@ import com.company.codeinsight.modules.prompt.service.DecompilePromptService;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
 import com.company.codeinsight.modules.repository.publish.service.RepositoryPublishedHierarchyLoader;
+import com.company.codeinsight.modules.repository.service.RepoGitConnectivityService;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.enums.TaskStatus;
 import com.company.codeinsight.modules.task.service.DecompileTaskService;
@@ -40,6 +41,7 @@ public class KnowledgeRemediationServiceImpl implements KnowledgeRemediationServ
     private final ModuleHierarchyService moduleHierarchyService;
     private final RepositoryPublishedHierarchyLoader hierarchyLoader;
     private final DecompilePromptService decompilePromptService;
+    private final RepoGitConnectivityService repoGitConnectivityService;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -131,6 +133,7 @@ public class KnowledgeRemediationServiceImpl implements KnowledgeRemediationServ
         if (repo == null) {
             throw new BusinessException("仓库不存在");
         }
+        repoGitConnectivityService.assertReachableForTask(repo);
         DecompileTask baseTask = decompileTaskService.getById(baseTaskId);
 
         DecompileTask task = new DecompileTask();

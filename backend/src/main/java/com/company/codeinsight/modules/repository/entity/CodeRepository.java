@@ -36,6 +36,16 @@ public class CodeRepository extends BaseEntity {
     private String gitUrl;
 
     /**
+     * 代码库类型（与展示文案一致）：前端 / 后端 / DB
+     */
+    private String repoType;
+
+    /**
+     * 技术栈（与展示文案一致，如 Java / React）；须属于 {@code repoType} 对应目录
+     */
+    private String techStack;
+
+    /**
      * 目标拉取的分支名（如 main, master）
      */
     private String branch;
@@ -126,4 +136,15 @@ public class CodeRepository extends BaseEntity {
 
     /** 最近一次成功发布到仓库的操作人 */
     private String publishedBy;
+
+    /**
+     * Git 连通性：null=未检测，1=连通，0=不通。任务下发要求为 1。
+     */
+    private Integer gitReachable;
+
+    /** 最近一次 Git 连通性检测时间 */
+    private LocalDateTime gitCheckedAt;
+
+    /** 最近一次检测失败摘要（可选） */
+    private String gitCheckMsg;
 }

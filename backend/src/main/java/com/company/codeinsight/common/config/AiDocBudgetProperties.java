@@ -40,7 +40,8 @@ public class AiDocBudgetProperties {
     /**
      * 文档与模块层级等待集群/本机 AI 并发槽的最长时间（秒）。
      * <p>应明显大于 {@link #httpTimeoutSeconds}；默认 1800（30 分钟）。
-     * 层级超时仅放弃当前入口，阶段继续；文档超时走既有失败/降级路径。</p>
+     * {@link #acquireWaitUnlimited}=true 时忽略本字段。
+     * 层级超时后由 PipelineAiCaller 按普通重试消耗 attempt；用尽后放弃当前入口。</p>
      */
     private int acquireWaitSeconds = 1800;
 
@@ -48,4 +49,10 @@ public class AiDocBudgetProperties {
      * 等 AI 并发槽时的轮询间隔（毫秒）。默认 5000；过短只会空转抢锁。
      */
     private long acquirePollIntervalMs = 5_000L;
+
+    /**
+     * 为 true 时文档/模块层级等 AI 槽无超时，一直轮询直到抢到；
+     * 仍响应 {@link InterruptedException}（抛出后由 PipelineAiCaller 进入下一 attempt）。
+     */
+    private boolean acquireWaitUnlimited = false;
 }

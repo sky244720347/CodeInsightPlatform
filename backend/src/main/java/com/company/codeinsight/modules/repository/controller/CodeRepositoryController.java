@@ -4,8 +4,13 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.company.codeinsight.common.response.ApiResponse;
 import com.company.codeinsight.common.response.PageResult;
 import com.company.codeinsight.modules.log.service.OperationLogService;
+import com.company.codeinsight.modules.repository.dto.GitBatchCheckAccepted;
+import com.company.codeinsight.modules.repository.dto.GitConnectivityResult;
+import com.company.codeinsight.modules.repository.dto.GitConnectivitySummary;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
+import com.company.codeinsight.modules.repository.model.TechStackCatalog;
 import com.company.codeinsight.modules.repository.service.CodeRepositoryService;
+import com.company.codeinsight.modules.repository.service.RepoGitConnectivityService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -13,6 +18,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.util.StringUtils;
 import org.springframework.validation.annotation.Validated;
 import org.springframework.web.bind.annotation.*;
+
+import java.util.List;
+import java.util.Map;
 
 /**
  * 代码仓库管理控制器
@@ -28,7 +36,25 @@ public class CodeRepositoryController {
     private CodeRepositoryService codeRepositoryService;
 
     @Autowired
+    private RepoGitConnectivityService repoGitConnectivityService;
+
+    @Autowired
     private OperationLogService operationLogService;
+
+    /**
+     * 代码库类型 → 技术栈级联目录（code 与 label 一致）。
+     */
+    @Operation(summary = "技术栈级联目录")
+    @GetMapping("/tech-stack-catalog")
+    public ApiResponse<Map<String, List<String>>> techStackCatalog() {
+        return ApiResponse.success(TechStackCatalog.all());
+    }
+
+    @Operation(summary = "Git 连通性汇总（监控预留）")
+    @GetMapping("/git-connectivity-summary")
+    public ApiResponse<GitConnectivitySummary> gitConnectivitySummary() {
+        return ApiResponse.success(repoGitConnectivityService.summarize());
+    }
 
     /**
      * 新增代码库配置：自动推进系统状态至 REPO_CONFIGURED / SCAN_CONFIGURED
@@ -39,6 +65,12 @@ public class CodeRepositoryController {
         CodeRepository created = codeRepositoryService.createRepository(repository);
         operationLogService.logOperation(created.getSystemId(), null, "CREATE_REPO", "创建代码库: " + created.getGitUrl(), null, true);
         maskPassword(created);
+        // 新建后异步探测连通性
+        try {
+            repoGitConnectivityService.submitBatchForSystem(created.getSystemId());
+        } catch (Exception ignored) {
+            // 不影响创建主流程
+        }
         return ApiResponse.success(created);
     }
 
@@ -84,29 +116,29 @@ public class CodeRepositoryController {
     }
 
     /**
-     * 临时测试 Git 仓库网络连通性与认证凭证有效性（未保存配置前测试）
+     * 测试 Git 连接。带 id 时测完落库；无 id 仅探测。
+     * <p>返回结构化结果；前端亦可读 {@code reachable} 当 boolean 使用。</p>
      */
-    @Operation(summary = "测试 Git 连接 (未保存)")
+    @Operation(summary = "测试 Git 连接")
     @PostMapping("/test-connection")
-    public ApiResponse<Boolean> testConnectionBeforeSave(@RequestBody CodeRepository repository) {
-        boolean connected = codeRepositoryService.testConnection(
-                repository.getGitUrl(),
-                repository.getBranch(),
-                repository.getUsername(),
-                "******".equals(repository.getPassword()) && repository.getId() != null ?
-                        codeRepositoryService.getById(repository.getId()).getPassword() : repository.getPassword()
-        );
-        return ApiResponse.success(connected);
+    public ApiResponse<GitConnectivityResult> testConnectionBeforeSave(@RequestBody CodeRepository repository) {
+        GitConnectivityResult result = codeRepositoryService.testConnectionDetailed(repository);
+        return ApiResponse.success(result);
     }
 
     /**
-     * 对已经持久化保存的代码仓库进行连通性连接测试
+     * 对已经持久化保存的代码仓库进行连通性连接测试并落库
      */
     @Operation(summary = "测试 Git 连接 (已保存)")
     @PostMapping("/{id}/test-connection")
-    public ApiResponse<Boolean> testConnectionSaved(@PathVariable Long id) {
-        boolean connected = codeRepositoryService.testConnection(id);
-        return ApiResponse.success(connected);
+    public ApiResponse<GitConnectivityResult> testConnectionSaved(@PathVariable Long id) {
+        return ApiResponse.success(repoGitConnectivityService.checkAndPersist(id));
+    }
+
+    @Operation(summary = "按系统异步批量检测 Git 连通性")
+    @PostMapping("/batch-test-connection")
+    public ApiResponse<GitBatchCheckAccepted> batchTestConnection(@RequestParam Long systemId) {
+        return ApiResponse.success(repoGitConnectivityService.submitBatchForSystem(systemId));
     }
 
     /**
@@ -129,4 +161,3 @@ public class CodeRepositoryController {
         }
     }
 }
-

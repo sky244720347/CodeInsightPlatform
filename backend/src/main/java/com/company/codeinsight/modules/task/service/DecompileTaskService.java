@@ -107,6 +107,12 @@ public interface DecompileTaskService extends IService<DecompileTask> {
     boolean isPipelineThreadActive(Long taskId);
 
     /**
+     * 清除任务运行态内存缓存（taskCache / pipelineContextCache / impactCache），幂等。
+     * <p>入口/层级复核断点暂停期间勿调用；终态与磁盘回收路径应调用。</p>
+     */
+    void clearRuntimeCaches(Long taskId);
+
+    /**
      * 孤儿任务已被 CAS 接管后：按当前 status 从阶段边界重入（或早期阶段 FAILED→PENDING 重排队）。
      *
      * @param previousClaimedBy   CAS 前的 claimed_by（许可不足回滚用；可为 null）

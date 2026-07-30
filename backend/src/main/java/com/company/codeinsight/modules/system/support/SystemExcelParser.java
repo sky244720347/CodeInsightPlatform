@@ -70,7 +70,9 @@ public final class SystemExcelParser {
                 && !StringUtils.hasText(data.getGitUrl())
                 && !StringUtils.hasText(data.getOwner())
                 && !StringUtils.hasText(data.getNameCn())
-                && !StringUtils.hasText(data.getDescription());
+                && !StringUtils.hasText(data.getDescription())
+                && !StringUtils.hasText(data.getRepoType())
+                && !StringUtils.hasText(data.getTechStack());
     }
 
     public record ParsedRow(int excelRow, SystemImportExcelRow data) {

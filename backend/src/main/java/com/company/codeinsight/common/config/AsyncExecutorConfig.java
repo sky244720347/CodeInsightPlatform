@@ -14,6 +14,7 @@ public class AsyncExecutorConfig {
 
     public static final String KNOWLEDGE_PUBLISH_EXECUTOR = "knowledgePublishExecutor";
     public static final String BATCH_INITIAL_EXECUTOR = "batchInitialExecutor";
+    public static final String REPO_GIT_CHECK_EXECUTOR = "repoGitCheckExecutor";
 
     @Bean(name = KNOWLEDGE_PUBLISH_EXECUTOR)
     public Executor knowledgePublishExecutor() {
@@ -36,6 +37,20 @@ public class AsyncExecutorConfig {
         executor.setMaxPoolSize(1);
         executor.setQueueCapacity(8);
         executor.setThreadNamePrefix("batch-initial-");
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(120);
+        executor.initialize();
+        return executor;
+    }
+
+    /** 仓库 Git 连通性探测（全库轮询 / 按系统批量） */
+    @Bean(name = REPO_GIT_CHECK_EXECUTOR)
+    public Executor repoGitCheckExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(3);
+        executor.setMaxPoolSize(6);
+        executor.setQueueCapacity(500);
+        executor.setThreadNamePrefix("repo-git-check-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(120);
         executor.initialize();

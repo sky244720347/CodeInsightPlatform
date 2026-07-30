@@ -7,6 +7,7 @@ import com.company.codeinsight.common.cluster.ClusterInstanceId;
 import com.company.codeinsight.common.cluster.ClusterProperties;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.exception.ErrorCode;
+import com.company.codeinsight.common.exception.TaskCancelledException;
 import com.company.codeinsight.common.storage.EnvStorageResolver;
 import com.company.codeinsight.common.storage.TaskWorkspacePaths;
 import com.company.codeinsight.common.util.DirectoryCleanupUtil;
@@ -35,6 +36,8 @@ import com.company.codeinsight.modules.token.mapper.TokenUsageAuditMapper;
 import com.company.codeinsight.modules.draft.enums.DraftStatus;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.service.CodeRepositoryService;
+import com.company.codeinsight.modules.repository.service.RepoGitConnectivityService;
+import com.company.codeinsight.modules.repository.service.TechStackGuard;
 import com.company.codeinsight.modules.system.entity.SystemApplication;
 import com.company.codeinsight.modules.system.service.SystemApplicationService;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
@@ -142,6 +145,12 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     private CodeRepositoryService codeRepositoryService;
 
     @Autowired
+    private TechStackGuard techStackGuard;
+
+    @Autowired
+    private RepoGitConnectivityService repoGitConnectivityService;
+
+    @Autowired
     private com.company.codeinsight.modules.callchain.service.MethodCallService methodCallService;
 
     @Autowired
@@ -152,6 +161,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
 
     @Autowired
     private com.company.codeinsight.modules.task.service.TaskConcurrencyLimiter taskConcurrencyLimiter;
+
+    @Autowired
+    private com.company.codeinsight.modules.task.service.TaskCancellationRegistry cancellationRegistry;
 
     @Autowired
     private com.company.codeinsight.modules.task.service.ParseConcurrencyLimiter parseConcurrencyLimiter;
@@ -616,6 +628,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         if (!Objects.equals(repository.getSystemId(), systemId)) {
             throw new BusinessException("所选代码库不属于当前系统");
         }
+        techStackGuard.assertExecutableForTask(repository);
+        repoGitConnectivityService.assertReachableForTask(repository);
     }
 
     /**
@@ -765,6 +779,52 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         }
     }
 
+    /**
+     * 清除任务运行态三份内存 Map（幂等）。
+     * <p>入口/层级复核断点暂停期间勿调用——断点恢复依赖 {@link #pipelineContextCache}/{@link #impactCache}。
+     * 任务终态（PENDING_REVIEW / FAILED / CANCELLED / 删除 / 确认后磁盘回收）必须调用。</p>
+     */
+    @Override
+    public void clearRuntimeCaches(Long taskId) {
+        if (taskId == null) {
+            return;
+        }
+        taskCache.remove(taskId);
+        pipelineContextCache.remove(taskId);
+        impactCache.remove(taskId);
+    }
+
+    /** 终态释放：三份运行态 Map + 解析许可/缓存。 */
+    private void releaseTerminalRuntimeMemory(Long taskId) {
+        clearRuntimeCaches(taskId);
+        execLog.releaseLock(taskId);
+        releaseParsePermitAndEvict(taskId);
+    }
+
+    /**
+     * 流水线异常处理：用户终止保持 CANCELLED，禁止改写为 FAILED。
+     */
+    private void failUnlessCancelled(Long taskId, Exception e) {
+        if (TaskCancelledException.isCancellation(e)
+                || (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId))) {
+            execLog.log(taskId, "流水线因用户终止停止"
+                    + (e != null && e.getMessage() != null ? ": " + e.getMessage() : ""));
+            return;
+        }
+        try {
+            stateMachineService.transitTo(taskId, TaskStatus.FAILED,
+                    e != null ? e.getMessage() : "unknown");
+        } catch (Exception ex) {
+            log.error("Failed to transit failed status", ex);
+        }
+    }
+
+    private void assertNotCancelled(Long taskId) {
+        if (cancellationRegistry != null) {
+            cancellationRegistry.throwIfCancelled(taskId);
+        }
+    }
+
     /** 确保持有解析许可（resume 路径可能尚未 acquire）。 */
     private void ensureParsePermit(Long taskId) throws InterruptedException {
         if (!parseConcurrencyLimiter.isHeld(taskId)) {
@@ -782,8 +842,17 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         if (task == null) {
             throw new BusinessException("任务不存在");
         }
+        Long systemId = task.getSystemId();
         stateMachineService.transitTo(task, TaskStatus.CANCELLED, "用户终止了任务");
-        releaseParsePermitAndEvict(id);
+        if (cancellationRegistry != null) {
+            cancellationRegistry.requestCancel(id);
+        }
+        // 立刻放槽 / 清认领，不等流水线 finally
+        if (systemId != null) {
+            taskConcurrencyLimiter.release(systemId, id);
+        }
+        taskQueueClaimService.clearReservation(id);
+        releaseTerminalRuntimeMemory(id);
         cleanupTaskWorkspace(id);
     }
 
@@ -834,9 +903,12 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         // 2) 副产物清理：覆盖所有 ci_* 表 + 磁盘 workspace + pipeline.log + 草稿子表
         purgeTaskArtifacts(id);
 
-        // 3) 内存上下文清理
-        pipelineContextCache.remove(id);
-        impactCache.remove(id);
+        // 3) 内存上下文清理（含 taskCache / pipeline / impact + 解析缓存）
+        if (cancellationRegistry != null) {
+            cancellationRegistry.clear(id);
+        }
+        clearRuntimeCaches(id);
+        execLog.releaseLock(id);
         releaseParsePermitAndEvict(id);
 
         // 4) 重新入队
@@ -925,14 +997,10 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             } catch (Exception e) {
                 log.error("Resume after hierarchy review failed for task " + id, e);
                 execLog.logException(id, "模块层级复核后续跑异常", e);
-                try {
-                    stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
-                } catch (Exception ex) {
-                    log.error("Failed to transit failed status", ex);
-                }
+                failUnlessCancelled(id, e);
             } finally {
-                taskCache.remove(id);
-                releaseParsePermitAndEvict(id);
+                // 层级复核后续跑结束后不再需要断点上下文（成功→PENDING_REVIEW / 失败→FAILED）
+                releaseTerminalRuntimeMemory(id);
                 if (systemId != null) {
                     taskConcurrencyLimiter.release(systemId, id);
                 }
@@ -1006,13 +1074,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             } catch (Exception e) {
                 log.error("Retry baseline inherit failed for task " + id, e);
                 execLog.logException(id, "重新继承基线文档异常", e);
-                try {
-                    stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
-                } catch (Exception ex) {
-                    log.error("Failed to transit failed status", ex);
-                }
+                failUnlessCancelled(id, e);
             } finally {
-                taskCache.remove(id);
+                releaseTerminalRuntimeMemory(id);
             }
         });
     }
@@ -1039,6 +1103,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         taskCache.put(task.getId(), task);
         CompletableFuture.runAsync(() -> {
             boolean parseHeld = false;
+            boolean failed = false;
             try {
                 execLog.log(id, ">>> MODULE_HIERARCHY — 重新提炼模块层级");
                 acquireParsePermit(id);
@@ -1053,15 +1118,13 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 execLog.log(id, "<<< 模块层级重新提炼完成");
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
+                failed = true;
                 execLog.logException(id, "等待解析许可被中断", ie);
             } catch (Exception e) {
+                failed = true;
                 log.error("Rebuild module hierarchy failed for task {}", id, e);
                 execLog.logException(id, "重新提炼模块层级异常", e);
-                try {
-                    stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
-                } catch (Exception ex) {
-                    log.error("Failed to transit failed status", ex);
-                }
+                failUnlessCancelled(id, e);
             } finally {
                 if (parseHeld) {
                     releaseParsePermitAndEvict(id);
@@ -1069,6 +1132,12 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                     taskParseMemoryService.evict(id);
                 }
                 taskCache.remove(id);
+                // 失败离开复核断点时清掉断点上下文；成功仍停在 MODULE_HIERARCHY_REVIEW，保留供后续 resume
+                if (failed) {
+                    pipelineContextCache.remove(id);
+                    impactCache.remove(id);
+                    execLog.releaseLock(id);
+                }
             }
         });
     }
@@ -1169,18 +1238,15 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             } catch (Exception e) {
                 log.error("Resume after entrypoint review failed for task " + id, e);
                 execLog.logException(id, "知识入口复核后续跑异常", e);
-                try {
-                    stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
-                } catch (Exception ex) {
-                    log.error("Failed to transit failed status", ex);
-                }
+                failUnlessCancelled(id, e);
             } finally {
-                taskCache.remove(id);
                 if (!pausedForHierarchy) {
-                    pipelineContextCache.remove(id);
-                    impactCache.remove(id);
+                    // 未再停在层级复核：成功到 PENDING_REVIEW 或失败，均可清断点上下文
+                    releaseTerminalRuntimeMemory(id);
+                } else {
+                    taskCache.remove(id);
+                    releaseParsePermitAndEvict(id);
                 }
-                releaseParsePermitAndEvict(id);
                 if (systemId != null) {
                     taskConcurrencyLimiter.release(systemId, id);
                 }
@@ -1250,10 +1316,10 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         }
         String err = (reason == null || reason.isBlank()) ? "用户在知识入口复核驳回" : reason;
         stateMachineService.transitTo(task, TaskStatus.CANCELLED, err);
-        pipelineContextCache.remove(id);
-        impactCache.remove(id);
-        releaseParsePermitAndEvict(id);
-        taskCache.remove(id);
+        if (cancellationRegistry != null) {
+            cancellationRegistry.requestCancel(id);
+        }
+        releaseTerminalRuntimeMemory(id);
     }
 
     /**
@@ -1384,6 +1450,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                                                PipelineContext pctx) {
         boolean parseHeld = false;
         try {
+            assertNotCancelled(taskId);
             ensureParsePermit(taskId);
             parseHeld = true;
 
@@ -1580,16 +1647,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 }
             } catch (Exception e) {
                 execLog.logException(taskId, "纠错流水线异常", e);
-                try {
-                    stateMachineService.transitTo(taskId, TaskStatus.FAILED, e.getMessage());
-                } catch (Exception ex) {
-                    log.error("Failed to transit failed status", ex);
-                }
+                failUnlessCancelled(taskId, e);
             } finally {
-                taskCache.remove(taskId);
-                pipelineContextCache.remove(taskId);
-        impactCache.remove(taskId);
-                releaseParsePermitAndEvict(taskId);
+                releaseTerminalRuntimeMemory(taskId);
                 if (systemId != null) {
                     taskConcurrencyLimiter.release(systemId, taskId);
                 }
@@ -1625,7 +1685,13 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
      */
     @Override
     public boolean isPipelineThreadActive(Long taskId) {
-        return taskId != null && taskCache.containsKey(taskId);
+        if (taskId == null) {
+            return false;
+        }
+        if (taskCache.containsKey(taskId)) {
+            return true;
+        }
+        return cancellationRegistry != null && cancellationRegistry.hasActiveWork(taskId);
     }
 
     /**
@@ -1680,10 +1746,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         fresh.setProgress(0);
         this.updateById(fresh);
         purgeTaskArtifacts(id);
-        pipelineContextCache.remove(id);
-        impactCache.remove(id);
-        taskCache.remove(id);
-        releaseParsePermitAndEvict(id);
+        releaseTerminalRuntimeMemory(id);
         stateMachineService.transitTo(fresh, TaskStatus.PENDING, null);
         execLog.log(id, "<<< 孤儿接管 — 已重新入队 PENDING，等待调度器拉起");
     }
@@ -1709,6 +1772,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         taskCache.put(id, task);
         taskQueueClaimService.renewLease(id);
         CompletableFuture.runAsync(() -> {
+            boolean pausedForHierarchy = false;
             try {
                 PipelineContext pctx = pipelineContextCache.get(id);
                 if (pctx == null) {
@@ -1735,29 +1799,28 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                     // 解决：FAILED 再不行… 用强制 update 状态？不优雅。
                     // 更好：MODULE_HIERARCHY 卡住时从 MODULE_HIERARCHY 重跑 buildAndPersist，再进后续。
                     if (TaskStatus.MODULE_HIERARCHY.name().equals(latest.getStatus())) {
-                        reclaimModuleHierarchyOnly(id, latest, pctx);
+                        pausedForHierarchy = reclaimModuleHierarchyOnly(id, latest, pctx);
                         return;
                     }
                 }
-                continueAfterEntrypointReview(id, latest, pctx.projectDir(), pctx.ctx(), pctx);
+                pausedForHierarchy = continueAfterEntrypointReview(id, latest, pctx.projectDir(), pctx.ctx(), pctx);
             } catch (Exception e) {
                 execLog.logException(id, "孤儿接管(AI阶段)异常", e);
-                try {
-                    stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
-                } catch (Exception ex) {
-                    log.error("孤儿接管失败状态流转异常", ex);
-                }
+                failUnlessCancelled(id, e);
             } finally {
-                taskCache.remove(id);
-                pipelineContextCache.remove(id);
-                impactCache.remove(id);
-                releaseParsePermitAndEvict(id);
+                if (!pausedForHierarchy) {
+                    releaseTerminalRuntimeMemory(id);
+                } else {
+                    taskCache.remove(id);
+                    releaseParsePermitAndEvict(id);
+                }
                 taskConcurrencyLimiter.release(systemId, id);
             }
         });
     }
 
-    private void reclaimModuleHierarchyOnly(Long id, DecompileTask task, PipelineContext pctx) {
+    /** @return true 若停在 MODULE_HIERARCHY_REVIEW（断点上下文需保留） */
+    private boolean reclaimModuleHierarchyOnly(Long id, DecompileTask task, PipelineContext pctx) {
         boolean parseHeld = false;
         try {
             acquireParsePermit(id);
@@ -1784,10 +1847,11 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                             pctx.ctx(), impact);
                     finishAfterDocGenerated(id);
                 }
-            } else {
-                stateMachineService.transitTo(id, TaskStatus.MODULE_HIERARCHY_REVIEW, null);
-                execLog.log(id, "<<< 暂停 — 等待人工复核模块层级");
+                return false;
             }
+            stateMachineService.transitTo(id, TaskStatus.MODULE_HIERARCHY_REVIEW, null);
+            execLog.log(id, "<<< 暂停 — 等待人工复核模块层级");
+            return true;
         } catch (InterruptedException ie) {
             Thread.currentThread().interrupt();
             throw new BusinessException("等待解析许可被中断");
@@ -1860,16 +1924,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 }
             } catch (Exception e) {
                 execLog.logException(id, "孤儿接管(文档阶段)异常", e);
-                try {
-                    stateMachineService.transitTo(id, TaskStatus.FAILED, e.getMessage());
-                } catch (Exception ex) {
-                    log.error("孤儿接管失败状态流转异常", ex);
-                }
+                failUnlessCancelled(id, e);
             } finally {
-                taskCache.remove(id);
-                pipelineContextCache.remove(id);
-                impactCache.remove(id);
-                releaseParsePermitAndEvict(id);
+                releaseTerminalRuntimeMemory(id);
                 taskConcurrencyLimiter.release(systemId, id);
             }
         });
@@ -1887,7 +1944,10 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         } catch (Exception e) {
             log.warn("runPipeline 初始续租失败 taskId={}: {}", taskId, e.getMessage());
         }
-        CompletableFuture.runAsync(() -> {
+        if (cancellationRegistry != null) {
+            cancellationRegistry.clear(taskId);
+        }
+        java.util.concurrent.CompletableFuture<Void> pipelineFuture = CompletableFuture.runAsync(() -> {
             long t0 = System.currentTimeMillis();
             boolean pausedForEntrypointReview = false;
             boolean pausedForHierarchyReview = false;
@@ -1904,6 +1964,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 execLog.truncate(taskId);
         incrementalImpactPersistence.delete(taskId);
                 execLog.log(taskId, "══════ 流水线启动 taskId=" + taskId + " ══════");
+                assertNotCancelled(taskId);
 
                 // 1. PULLING_CODE
                 stateMachineService.transitTo(taskId, TaskStatus.PULLING_CODE, null);
@@ -1925,6 +1986,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                         codeScannerService.pullAndScan(taskId, task.getRepositoryId(), task.getType());
                 File projectDir = scanResult.getProjectDir();
                 com.company.codeinsight.modules.scanner.model.IncrementalContext incrementalCtx = scanResult.getIncrementalContext();
+                assertNotCancelled(taskId);
 
                 // v1: 用仓库最近 PUSHED 任务的 ID 作为 baselineTaskId，注入到 IncrementalContext
                 //    （仅 INCREMENTAL 任务有意义；INITIAL 任务该字段为 null，走全量路径）
@@ -1989,6 +2051,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 int callCount = methodCallService.persistAstForTask(taskId, projectDir, incrementalCtx);
                 execLog.log(taskId, "  方法调用链数   = " + callCount);
                 execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
+                assertNotCancelled(taskId);
 
                 // 3. ENTRYPOINT_DISCOVERY — 入口识别 + 落表（无论是否启用断点都先落表，保证 AI 阶段数据一致）
                 execLog.log(taskId, ">>> ENTRYPOINT_DISCOVERY — 知识入口识别与落表");
@@ -2028,28 +2091,29 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 execLog.logException(taskId, "等待解析许可被中断", ie);
-                try {
-                    stateMachineService.transitTo(taskId, TaskStatus.FAILED, "等待解析许可被中断");
-                } catch (Exception ex) {
-                    log.error("Failed to transit failed status", ex);
+                if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
+                    failUnlessCancelled(taskId, new TaskCancelledException(taskId));
+                } else {
+                    failUnlessCancelled(taskId, new BusinessException("等待解析许可被中断"));
                 }
             } catch (Exception e) {
                 execLog.logException(taskId, "流水线异常", e);
-                try {
-                    stateMachineService.transitTo(taskId, TaskStatus.FAILED, e.getMessage());
-                } catch (Exception ex) {
-                    log.error("Failed to transit failed status", ex);
-                }
+                failUnlessCancelled(taskId, e);
             } finally {
+                if (cancellationRegistry != null) {
+                    cancellationRegistry.unregisterPipeline(taskId);
+                }
                 if (parseHeld) {
                     releaseParsePermitAndEvict(taskId);
                 } else {
                     taskParseMemoryService.evict(taskId);
                 }
-                taskCache.remove(taskId);
                 if (!pausedForEntrypointReview && !pausedForHierarchyReview) {
-                    pipelineContextCache.remove(taskId);
-                    impactCache.remove(taskId);
+                    clearRuntimeCaches(taskId);
+                    execLog.releaseLock(taskId);
+                } else {
+                    // 断点暂停：保留 pipelineContext / impact，仅摘掉运行快照
+                    taskCache.remove(taskId);
                 }
                 // 释放任务并发许可（TaskQueueDispatcher / startTask 获取的全局 + 系统 Semaphore）
                 if (systemId != null) {
@@ -2057,6 +2121,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 }
             }
         });
+        if (cancellationRegistry != null) {
+            cancellationRegistry.registerPipeline(taskId, pipelineFuture);
+        }
     }
 
     // ========== 队列管控方法 ==========
@@ -2070,6 +2137,10 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             throw new BusinessException("仅 PENDING / RESUME_QUEUED 状态可取消（in-flight 请用终止）");
         }
         stateMachineService.transitTo(task, TaskStatus.CANCELLED, "用户在队列中取消");
+        if (cancellationRegistry != null) {
+            cancellationRegistry.requestCancel(id);
+        }
+        taskQueueClaimService.clearReservation(id);
         cleanupTaskWorkspace(id);
     }
 
@@ -2158,10 +2229,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         assertDeletableArtifacts(id, task);
         purgeTaskArtifacts(id);
         this.removeById(id);
-        taskCache.remove(id);
-        pipelineContextCache.remove(id);
-        impactCache.remove(id);
-        releaseParsePermitAndEvict(id);
+        releaseTerminalRuntimeMemory(id);
         log.info("deleteTask: removed taskId={} status={}", id, task.getStatus());
     }
 

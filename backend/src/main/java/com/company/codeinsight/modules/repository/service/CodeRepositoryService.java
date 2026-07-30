@@ -2,6 +2,7 @@ package com.company.codeinsight.modules.repository.service;
 
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.IService;
+import com.company.codeinsight.modules.repository.dto.GitConnectivityResult;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 
 /**
@@ -25,6 +26,11 @@ public interface CodeRepositoryService extends IService<CodeRepository> {
      * 针对新输入的仓库参数进行实时连接有效性测试
      */
     boolean testConnection(String gitUrl, String branch, String username, String password);
+
+    /**
+     * 连通性检测（结构化结果）。带 id 时测完落库；密码为 ****** 时复用库中凭证。
+     */
+    GitConnectivityResult testConnectionDetailed(CodeRepository repository);
 
     /**
      * 新建仓库：保存后自动推进系统状态

@@ -4,7 +4,7 @@ import lombok.Getter;
 
 /**
  * 统一业务错误码常量。
- * <p>门禁类错误码区间 2000-2099（增量任务域）。前端可按 code 区分错误种类。</p>
+ * <p>门禁类错误码：增量任务域 2000-2099；技术栈/Git 连通门禁 2100-2199。前端可按 code 区分错误种类。</p>
  */
 @Getter
 public enum ErrorCode {
@@ -30,7 +30,27 @@ public enum ErrorCode {
      * 运行期不降级为全量，直接抛错让任务 FAIL。
      */
     INCREMENTAL_DIFF_FAILED(2003,
-            "增量基线 commit 不可解析（force-push / rebase 或本地仓库被覆盖），请手动核查 ci_operation_log 后再决定重试方式。");
+            "增量基线 commit 不可解析（force-push / rebase 或本地仓库被覆盖），请手动核查 ci_operation_log 后再决定重试方式。"),
+
+    // === 技术栈门禁（2100-2199）===
+
+    /**
+     * 仓库技术栈不在 code-insight.task.supported-tech-stacks 白名单内。
+     */
+    TECH_STACK_UNSUPPORTED(2101,
+            "技术栈不在可执行配置中，暂不支持生成知识"),
+
+    /**
+     * 仓库尚未配置 tech_stack，无法创建知识生成任务。
+     */
+    TECH_STACK_NOT_CONFIGURED(2102,
+            "仓库未配置技术栈，请先完善代码库配置后再下发任务"),
+
+    /**
+     * 仓库 Git 未连通或尚未检测成功，禁止下发知识生成任务。
+     */
+    GIT_UNREACHABLE(2103,
+            "Git 仓库连通失败，暂不可下发任务；请检查地址与凭证后重试检测");
 
     private final int code;
     private final String defaultMessage;

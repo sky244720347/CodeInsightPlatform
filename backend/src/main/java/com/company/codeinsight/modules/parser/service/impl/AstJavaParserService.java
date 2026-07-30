@@ -634,9 +634,34 @@ public class AstJavaParserService implements JavaParserService {
         int solverRemoved = evictPathKeyedCache(SYMBOL_SOLVER_CACHE, taskId);
         int subtypeRemoved = evictPathKeyedCache(SUBTYPE_INDEX_CACHE, taskId);
         if (parseRemoved > 0 || solverRemoved > 0 || subtypeRemoved > 0) {
-            log.info("evictTaskCaches taskId={} parse={} symbolSolver={} subtypeIndex={}",
-                    taskId, parseRemoved, solverRemoved, subtypeRemoved);
+            log.info("evictTaskCaches taskId={} parse={} symbolSolver={} subtypeIndex={} | remaining {}",
+                    taskId, parseRemoved, solverRemoved, subtypeRemoved, cacheStatsSummary());
         }
+    }
+
+    @Override
+    public void clearAllCaches() {
+        int parse = parseCache.size();
+        int solver = SYMBOL_SOLVER_CACHE.size();
+        int subtype = SUBTYPE_INDEX_CACHE.size();
+        parseCache.clear();
+        SYMBOL_SOLVER_CACHE.clear();
+        SUBTYPE_INDEX_CACHE.clear();
+        log.warn("AstJavaParserService.clearAllCaches cleared parse={} symbolSolver={} subtypeIndex={}",
+                parse, solver, subtype);
+    }
+
+    @Override
+    public String cacheStatsSummary() {
+        return "parse=" + parseCache.size()
+                + " symbolSolver=" + SYMBOL_SOLVER_CACHE.size()
+                + " subtypeIndex=" + SUBTYPE_INDEX_CACHE.size();
+    }
+
+    /** 静态全局缓存规模（跨实例共享）。 */
+    public static String globalCacheStatsSummary() {
+        return "symbolSolver=" + SYMBOL_SOLVER_CACHE.size()
+                + " subtypeIndex=" + SUBTYPE_INDEX_CACHE.size();
     }
 
     private static <V> int evictPathKeyedCache(ConcurrentHashMap<String, V> cache, Long taskId) {
@@ -954,6 +979,11 @@ public class AstJavaParserService implements JavaParserService {
             JavaSymbolSolver ss = SYMBOL_SOLVER_CACHE.get(k);
             return buildSubtypeIndex(root, ss);
         });
+        int solverSize = SYMBOL_SOLVER_CACHE.size();
+        int subtypeSize = SUBTYPE_INDEX_CACHE.size();
+        if (solverSize >= 8 || subtypeSize >= 8) {
+            log.warn("AstJavaParser static caches growing: {}", globalCacheStatsSummary());
+        }
         return new ProjectContext(root, symbolSolver, subtypeIndex);
     }
 
