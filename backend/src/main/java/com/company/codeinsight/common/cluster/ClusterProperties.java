@@ -8,7 +8,9 @@ import org.springframework.stereotype.Component;
  * 集群调度参数。
  * <p>{@code enabled} <b>不可外部配置</b>，由 {@link ClusterEnvAligner} 按 {@code code-insight.env} 推导：
  * dev=false，非 dev=true。</p>
- * <p>孤儿接管以租约过期 / 无认领为准；「仅心跳已死」不再单独触发（避免误杀活任务）。</p>
+ * <p>孤儿接管：无认领，或「租约过宽限 ∧ 认领方心跳已死」。
+ * 禁止仅租约刚过期就抢；「仅心跳已死但租约仍有效」也不抢。</p>
+ * <p>详见 docs/orphan-reclaim-lease-heartbeat-design.md。</p>
  */
 @Data
 @Component
@@ -24,17 +26,23 @@ public class ClusterProperties {
     private int leaderLockTtlSeconds = 15;
 
     /**
-     * 任务认领 lease 时长（分钟）。流水线运行中按 {@link #taskLeaseRenewIntervalSeconds} 续租。
-     * <p>重启后靠「心跳已死 ∨ 租约过期」判定孤儿；过长会导致崩溃后迟迟不能接管。
+     * 任务认领 lease 时长（分钟）。流水线运行中按续租间隔延长。
+     * <p>需明显大于续租间隔，以覆盖续租失败重试窗口。
      * 旧字段 {@link #taskLeaseHours} 仅作兼容，优先用本字段。</p>
      */
-    private int taskLeaseMinutes = 10;
+    private int taskLeaseMinutes = 30;
 
     /**
      * @deprecated 改用 {@link #taskLeaseMinutes}；若 {@code taskLeaseMinutes}≤0 时回退为 hours×60。
      */
     @Deprecated
     private int taskLeaseHours = 2;
+
+    /**
+     * 租约过期后的宽限（分钟）。{@code now > lease_until + grace} 才进入「租约失效可抢」窗口，
+     * 再与心跳已死组合判定，避免刚过期立刻误抢。
+     */
+    private int taskLeaseGraceMinutes = 10;
 
     /** 流水线运行中续租间隔（秒），应明显小于 {@link #taskLeaseMinutes} */
     private int taskLeaseRenewIntervalSeconds = 120;
@@ -75,5 +83,10 @@ public class ClusterProperties {
             return taskLeaseMinutes;
         }
         return Math.max(1, taskLeaseHours * 60);
+    }
+
+    /** 租约过期宽限（分钟），至少为 0 */
+    public int resolveTaskLeaseGraceMinutes() {
+        return Math.max(0, taskLeaseGraceMinutes);
     }
 }

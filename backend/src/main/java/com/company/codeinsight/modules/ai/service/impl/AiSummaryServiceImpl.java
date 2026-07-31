@@ -2587,11 +2587,16 @@ public class AiSummaryServiceImpl implements AiSummaryService {
     /**
      * 从 task 中按 callStage 解析当前使用的 promptId
      * MODULE_HIERARCHY → modularizePromptId
-     * MODULE_DOC → documentPromptId
+     * MODULE_DOC / FUNCTION_DOC → documentPromptId
      */
     private Long resolvePromptId(DecompileTask task, String callStage) {
         if (task == null || callStage == null) return null;
-        if ("MODULE_DOC".equals(callStage)) return task.getDocumentPromptId();
+        if ("MODULE_DOC".equals(callStage) || "FUNCTION_DOC".equals(callStage)) {
+            return task.getDocumentPromptId();
+        }
+        if ("MODULE_HIERARCHY".equals(callStage)) {
+            return task.getModularizePromptId();
+        }
         return task.getModularizePromptId();
     }
 

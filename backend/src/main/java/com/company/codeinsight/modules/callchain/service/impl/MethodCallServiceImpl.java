@@ -1,8 +1,10 @@
 package com.company.codeinsight.modules.callchain.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.modules.callchain.entity.MethodCall;
 import com.company.codeinsight.modules.callchain.mapper.MethodCallMapper;
+import com.company.codeinsight.modules.callchain.model.MethodCallEdgeLite;
 import com.company.codeinsight.modules.callchain.service.MethodCallService;
 import com.company.codeinsight.modules.parser.model.ParsedClassInfo;
 import com.company.codeinsight.modules.parser.service.JavaParserService;
@@ -15,7 +17,6 @@ import org.apache.ibatis.session.SqlSession;
 import org.apache.ibatis.session.SqlSessionFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
 import org.springframework.util.StringUtils;
 
 import java.io.File;
@@ -25,11 +26,14 @@ import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Set;
+import java.util.function.Consumer;
 
 /**
  * 方法调用链路服务实现类
  * 递归遍历项目目录，复用 JavaParserService.parseFile 收集 methodCalls，按批次写入 ci_method_call 表。
  * 单文件解析异常不中断整批；任务重试时通过 deleteByTaskId + 批量 insert 保证幂等。
+ * <p>
+ * 不包长事务：软删为短 SQL；batch 独立提交。增量基线继承由流水线负责，本类不再 inherit。
  */
 @Slf4j
 @Service
@@ -37,6 +41,9 @@ public class MethodCallServiceImpl implements MethodCallService {
 
     /** 单次批量入库的缓冲区大小 */
     private static final int BATCH_SIZE = 500;
+
+    /** 入口识别轻量边分页大小 */
+    private static final int EDGE_LITE_PAGE_SIZE = 5000;
 
     /** 调用表达式最大长度（防止超长表达式撑爆 VARCHAR(1000)） */
     private static final int MAX_EXPR_LEN = 1000;
@@ -56,19 +63,14 @@ public class MethodCallServiceImpl implements MethodCallService {
     private JavaParserService javaParserService;
 
     @Autowired
-    private com.company.codeinsight.modules.scanner.service.BaselineInheritanceService baselineInheritanceService;
-
-    @Autowired
     private ScanScopeResolver scanScopeResolver;
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public int persistAstForTask(Long taskId, File projectDir) {
         return persistAstForTask(taskId, projectDir, IncrementalContext.fullScan());
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public int persistAstForTask(Long taskId, File projectDir, IncrementalContext ctx) {
         if (taskId == null || projectDir == null || !projectDir.exists() || !projectDir.isDirectory()) {
             log.warn("persistAstForTask skipped: taskId={}, projectDir={}", taskId, projectDir);
@@ -78,22 +80,12 @@ public class MethodCallServiceImpl implements MethodCallService {
         ScanScope scope = scanScopeResolver.resolveBestEffort(taskId, projectDir);
 
         if (!effective.isIncremental()) {
-            // 全量：保持原行为，幂等清理 + 走扫描根子树
+            // 全量：幂等软删 + 走扫描根子树（无外层长事务）
             deleteByTaskId(taskId);
             return walkAndPersist(projectDir, scope.getEffectiveRoot(), taskId, null, scope);
         }
 
-        // v1 增量：基线 + 增量叠加
-        // 1) 从基线任务继承未变更文件的调用链（仅当 baselineTaskId 非空时执行）
-        if (effective.getBaselineTaskId() != null) {
-            // 排除路径 = 变更 + 删除
-            java.util.Set<String> excluded = new java.util.HashSet<>(effective.getChangedPaths().size() + effective.getDeletedPaths().size());
-            excluded.addAll(effective.getChangedPaths());
-            excluded.addAll(effective.getDeletedPaths());
-            baselineInheritanceService.inheritMethodCalls(taskId, effective.getBaselineTaskId(), excluded);
-        }
-
-        // 2) 已删除文件：从本任务 ci_method_call 删旧行
+        // 增量：基线边已由 pipeline inherit；此处只覆盖变更 / 删除路径
         if (!effective.getDeletedPaths().isEmpty()) {
             methodCallMapper.delete(
                     new LambdaQueryWrapper<MethodCall>()
@@ -101,7 +93,6 @@ public class MethodCallServiceImpl implements MethodCallService {
                             .in(MethodCall::getFilePath, effective.getDeletedPaths())
             );
         }
-        // 3) 本次重写文件：先删后插（基线继承的同 file_path 数据在删阶段一并清理）
         if (!effective.getChangedPaths().isEmpty()) {
             methodCallMapper.delete(
                     new LambdaQueryWrapper<MethodCall>()
@@ -109,7 +100,6 @@ public class MethodCallServiceImpl implements MethodCallService {
                             .in(MethodCall::getFilePath, effective.getChangedPaths())
             );
         }
-        // 4) 只对变更文件重新解析；空集合 = 没有文件需要重写
         int inserted = walkAndPersist(projectDir, scope.getEffectiveRoot(), taskId, effective.getChangedPaths(), scope);
         log.info("AST incremental call-chain persistence done. taskId={}, ctx={}, callsInserted={}",
                 taskId, effective, inserted);
@@ -141,6 +131,26 @@ public class MethodCallServiceImpl implements MethodCallService {
                         .eq(MethodCall::getTaskId, taskId)
                         .orderByAsc(MethodCall::getId)
         );
+    }
+
+    @Override
+    public void forEachEdgeLite(Long taskId, Consumer<List<MethodCallEdgeLite>> consumer) {
+        if (taskId == null || consumer == null) {
+            return;
+        }
+        long afterId = 0L;
+        while (true) {
+            List<MethodCallEdgeLite> page = methodCallMapper.selectEdgeLitePage(taskId, afterId, EDGE_LITE_PAGE_SIZE);
+            if (page == null || page.isEmpty()) {
+                return;
+            }
+            consumer.accept(page);
+            Long lastId = page.get(page.size() - 1).getId();
+            if (lastId == null || page.size() < EDGE_LITE_PAGE_SIZE) {
+                return;
+            }
+            afterId = lastId;
+        }
     }
 
     @Override
@@ -246,9 +256,13 @@ public class MethodCallServiceImpl implements MethodCallService {
 
     /**
      * 把缓冲区里的全部记录批量插入 ci_method_call 表（JDBC batch 模式），然后清空缓冲区。
+     * 失败抛 {@link BusinessException}，由流水线将任务标为 FAILED，禁止静默丢边。
      */
     private void insertBatch(List<MethodCall> buffer) {
-        if (buffer.isEmpty()) return;
+        if (buffer.isEmpty()) {
+            return;
+        }
+        int size = buffer.size();
         try {
             try (SqlSession sqlSession = sqlSessionFactory.openSession(ExecutorType.BATCH)) {
                 MethodCallMapper mapper = sqlSession.getMapper(MethodCallMapper.class);
@@ -258,8 +272,11 @@ public class MethodCallServiceImpl implements MethodCallService {
                 sqlSession.flushStatements();
                 sqlSession.commit();
             }
+        } catch (BusinessException e) {
+            throw e;
         } catch (Exception e) {
-            log.error("批量写入方法调用链失败，丢失 {} 条记录", buffer.size(), e);
+            log.error("批量写入方法调用链失败，count={}", size, e);
+            throw new BusinessException("批量写入方法调用链失败: " + e.getMessage());
         } finally {
             buffer.clear();
         }

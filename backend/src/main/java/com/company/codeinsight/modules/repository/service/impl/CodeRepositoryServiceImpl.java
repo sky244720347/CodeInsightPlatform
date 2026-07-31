@@ -30,8 +30,9 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
 
     /** 处于活跃态的任务集合，这些状态下不允许删除关联仓库 */
     private static final Set<String> ACTIVE_TASK_STATUSES = Set.of(
-            "PENDING", "PULLING_CODE", "PARSING_CODE", "SPLITTING_TASK",
-            "AI_ANALYZING", "GENERATING_DOC", "REVIEWING", "PUSHING"
+            "PENDING", "RESUME_QUEUED", "PULL_QUEUED", "PULLING_CODE", "PARSE_QUEUED", "PARSING_CODE",
+            "SPLITTING_TASK", "ENTRYPOINT_REVIEW", "AI_ANALYZING", "MODULE_HIERARCHY",
+            "MODULE_HIERARCHY_REVIEW", "BASELINE_DOC_INHERIT", "GENERATING_DOC", "REVIEWING", "PUSHING"
     );
 
     @Autowired

@@ -38,13 +38,13 @@ public interface EntrypointReviewService {
      * <p>语义：
      * <ul>
      *   <li>INITIAL 任务（ctx == null 或 ctx.isIncremental() == false）：走原全量识别路径（delete-then-insert）</li>
-     *   <li>INCREMENTAL 任务（ctx.isIncremental() == true 且 ctx.getBaselineTaskId() 非空）：
+     *   <li>INCREMENTAL 任务（ctx.isIncremental() == true）：
      *     <ol>
-     *       <li>从基线任务继承未变更文件的入口（excludePaths = changed ∪ deleted）</li>
+     *       <li>基线入口继承由流水线 {@code DecompileTaskServiceImpl} 在 PARSING 前统一完成（本方法不再 inherit）</li>
      *       <li>删除本任务 ci_entrypoint 中 deleted 对应的行</li>
      *       <li>删除本任务 ci_entrypoint 中 changed 对应的行（基线继承的同 file_path 数据一并清理）</li>
      *       <li>仅对 changedPaths 内的 .java 文件做入口识别（{@link EntryPointDiscoveryService#discoverEntriesInFiles}）</li>
-     *       <li>insert 识别结果（baseline_task_id = NULL 标记本次新增）</li>
+     *       <li>insert 识别结果（baseline_task_id 按基线是否已有该类标记变更/新增）</li>
      *     </ol>
      *   </li>
      * </ul>

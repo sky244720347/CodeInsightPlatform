@@ -7,6 +7,7 @@ import com.company.codeinsight.modules.quotacontrol.entity.SystemConfig;
 import com.company.codeinsight.modules.quotacontrol.service.AiConcurrencyService;
 import com.company.codeinsight.modules.quotacontrol.service.SystemConfigService;
 import com.company.codeinsight.modules.task.service.ParseConcurrencyLimiter;
+import com.company.codeinsight.modules.task.service.PullConcurrencyLimiter;
 import com.company.codeinsight.modules.task.service.TaskConcurrencyLimiter;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -31,6 +32,9 @@ public class SystemConfigController {
 
     @Autowired
     private ParseConcurrencyLimiter parseConcurrencyLimiter;
+
+    @Autowired
+    private PullConcurrencyLimiter pullConcurrencyLimiter;
 
     @Operation(summary = "列出所有配置")
     @GetMapping
@@ -70,6 +74,12 @@ public class SystemConfigController {
         if ("parse.concurrency".equals(key)) {
             try {
                 parseConcurrencyLimiter.rebuild(Integer.parseInt(body.getValue()));
+            } catch (NumberFormatException ignored) {
+            }
+        }
+        if ("pull.concurrency".equals(key)) {
+            try {
+                pullConcurrencyLimiter.rebuild(Integer.parseInt(body.getValue()));
             } catch (NumberFormatException ignored) {
             }
         }

@@ -64,9 +64,6 @@ public class EntrypointReviewServiceImpl implements EntrypointReviewService {
     private DecompileTaskMapper taskMapper;
 
     @Autowired
-    private com.company.codeinsight.modules.scanner.service.BaselineInheritanceService baselineInheritanceService;
-
-    @Autowired
     private CodeRepositoryService codeRepositoryService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -99,15 +96,9 @@ public class EntrypointReviewServiceImpl implements EntrypointReviewService {
         }
 
         // === v1 INCREMENTAL：基线 + 增量 ===
-        // 1) 从基线任务继承未变更文件的入口
-        if (effective.getBaselineTaskId() != null) {
-            java.util.Set<String> excluded = new java.util.HashSet<>(
-                    effective.getChangedPaths().size() + effective.getDeletedPaths().size());
-            excluded.addAll(effective.getChangedPaths());
-            excluded.addAll(effective.getDeletedPaths());
-            baselineInheritanceService.inheritEntrypoints(taskId, effective.getBaselineTaskId(), excluded);
-        }
-        // 2) deleted 文件的入口从本任务删除
+        // 基线入口继承只在流水线 DecompileTaskServiceImpl 做一次（与 method_calls 同理），
+        // 此处禁止再 inherit，否则会撞 uk_entrypoint_task_class_active。
+        // 1) deleted 文件的入口从本任务删除（清理误继承 / 路径归一化漏网）
         if (!effective.getDeletedPaths().isEmpty()) {
             entrypointMapper.delete(
                     new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<EntrypointEntity>()
@@ -115,7 +106,7 @@ public class EntrypointReviewServiceImpl implements EntrypointReviewService {
                             .in(EntrypointEntity::getFilePath, effective.getDeletedPaths())
             );
         }
-        // 3) changed 文件的入口从本任务删除（基线继承的同 file_path 数据一并清理）
+        // 2) changed 文件的入口从本任务删除（基线继承的同 file_path 数据一并清理，再重识别）
         if (!effective.getChangedPaths().isEmpty()) {
             entrypointMapper.delete(
                     new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<EntrypointEntity>()
@@ -123,7 +114,7 @@ public class EntrypointReviewServiceImpl implements EntrypointReviewService {
                             .in(EntrypointEntity::getFilePath, effective.getChangedPaths())
             );
         }
-        // 4) 仅对 changedPaths 内的 .java 文件做入口识别
+        // 3) 仅对 changedPaths 内的 .java 文件做入口识别
         List<DiscoveredEntrypoint> discovered;
         try {
             discovered = entryPointDiscoveryService.discoverEntriesInFiles(
@@ -138,7 +129,7 @@ public class EntrypointReviewServiceImpl implements EntrypointReviewService {
             return Collections.emptyList();
         }
 
-        // 5) 批量落表
+        // 4) 批量落表
         //    baseline_task_id：
         //      - 如果该类在基线中已存在 → 设为 baselineTaskId（方法 diff 时能正确识别"变更"）
         //      - 如果该类是真正新增的 → 设为 NULL（前端显示"本次新增"）
@@ -179,7 +170,7 @@ public class EntrypointReviewServiceImpl implements EntrypointReviewService {
                 entrypointMapper.insert(row);
             }
         }
-        log.info("discoverAndPersist (INCREMENTAL) done. taskId={} baselineTaskId={} inheritedChanged={} deleted={} newPersisted={}",
+        log.info("discoverAndPersist (INCREMENTAL) done. taskId={} baselineTaskId={} changed={} deleted={} newPersisted={}",
                 taskId, effective.getBaselineTaskId(),
                 effective.getChangedPaths().size(), effective.getDeletedPaths().size(), rows.size());
         return discovered;

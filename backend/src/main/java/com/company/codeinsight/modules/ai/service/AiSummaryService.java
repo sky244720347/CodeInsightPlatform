@@ -59,7 +59,7 @@ public interface AiSummaryService {
      */
     @Data
     class AiCallMeta {
-        /** 调用阶段标签，如 "MODULE_HIERARCHY" / "MODULE_DOC" */
+        /** 调用阶段标签，如 "MODULE_HIERARCHY" / "FUNCTION_DOC" / "MODULE_DOC" */
         private String callStage;
         /** 当前分析对象标识（如入口类全限定名） */
         private String classPath;

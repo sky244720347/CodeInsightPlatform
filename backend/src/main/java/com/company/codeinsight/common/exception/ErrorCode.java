@@ -50,7 +50,14 @@ public enum ErrorCode {
      * 仓库 Git 未连通或尚未检测成功，禁止下发知识生成任务。
      */
     GIT_UNREACHABLE(2103,
-            "Git 仓库连通失败，暂不可下发任务；请检查地址与凭证后重试检测");
+            "Git 仓库连通失败，暂不可下发任务；请检查地址与凭证后重试检测"),
+
+    /**
+     * 运行期 JGit clone 失败（含 NAS 瞬时 IO 重试耗尽后仍失败）。
+     * 与 {@link #GIT_UNREACHABLE}（创建/下发前 ls-remote 门禁）区分。
+     */
+    GIT_CLONE_FAILED(2104,
+            "Git 仓库克隆失败，请检查网络/NAS/凭证后重试");
 
     private final int code;
     private final String defaultMessage;

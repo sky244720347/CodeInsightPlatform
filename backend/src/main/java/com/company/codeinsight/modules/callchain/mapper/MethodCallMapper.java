@@ -2,6 +2,7 @@ package com.company.codeinsight.modules.callchain.mapper;
 
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.company.codeinsight.modules.callchain.entity.MethodCall;
+import com.company.codeinsight.modules.callchain.model.MethodCallEdgeLite;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
@@ -64,4 +65,20 @@ public interface MethodCallMapper extends BaseMapper<MethodCall> {
     int inheritFromBaseline(@Param("currentTaskId") Long currentTaskId,
                             @Param("baselineTaskId") Long baselineTaskId,
                             @Param("excludedPaths") List<String> excludedPaths);
+
+    /**
+     * 入口识别用轻量边：按 id 游标分页，避免一次加载完整 {@link MethodCall} 行。
+     */
+    @Select("""
+            SELECT id, class_name AS className, dependency_name AS dependencyName, file_path AS filePath
+            FROM ci_method_call
+            WHERE task_id = #{taskId}
+              AND is_deleted = 0
+              AND id > #{afterId}
+            ORDER BY id ASC
+            LIMIT #{limit}
+            """)
+    List<MethodCallEdgeLite> selectEdgeLitePage(@Param("taskId") Long taskId,
+                                                @Param("afterId") long afterId,
+                                                @Param("limit") int limit);
 }

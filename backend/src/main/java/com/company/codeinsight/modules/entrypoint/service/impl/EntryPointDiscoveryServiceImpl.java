@@ -1,6 +1,6 @@
 package com.company.codeinsight.modules.entrypoint.service.impl;
 
-import com.company.codeinsight.modules.callchain.entity.MethodCall;
+import com.company.codeinsight.modules.callchain.model.MethodCallEdgeLite;
 import com.company.codeinsight.modules.callchain.service.MethodCallService;
 import com.company.codeinsight.modules.entrypoint.model.DiscoveredEntrypoint;
 import com.company.codeinsight.modules.entrypoint.model.DiscoveredMethod;
@@ -253,18 +253,25 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
             return Collections.emptyList();
         }
 
-        // 2. 加载调用链，构建 className -> file_path 索引（支持多模块路径）
-        List<MethodCall> calls = methodCallService.listByTaskId(taskId);
-        Map<String, String> depNameToFilePath = new HashMap<>();
+        // 2. 路径索引：优先用已解析结果，再分页扫轻量调用边补洞（避免 listByTaskId 全表进堆）
         Map<String, String> shortNameToFilePath = new HashMap<>();
-        for (MethodCall mc : calls) {
-            if (StringUtils.hasText(mc.getDependencyName()) && StringUtils.hasText(mc.getFilePath())) {
-                depNameToFilePath.putIfAbsent(mc.getDependencyName(), mc.getFilePath());
+        for (ParsedClassInfo info : parsed) {
+            if (info == null || !StringUtils.hasText(info.getClassName())
+                    || !StringUtils.hasText(info.getSourceRelativePath())) {
+                continue;
             }
-            if (StringUtils.hasText(mc.getClassName()) && StringUtils.hasText(mc.getFilePath())) {
-                shortNameToFilePath.putIfAbsent(mc.getClassName(), mc.getFilePath());
-            }
+            shortNameToFilePath.putIfAbsent(info.getClassName(), info.getSourceRelativePath());
         }
+        methodCallService.forEachEdgeLite(taskId, page -> {
+            for (MethodCallEdgeLite edge : page) {
+                if (edge == null) {
+                    continue;
+                }
+                if (StringUtils.hasText(edge.getClassName()) && StringUtils.hasText(edge.getFilePath())) {
+                    shortNameToFilePath.putIfAbsent(edge.getClassName(), edge.getFilePath());
+                }
+            }
+        });
 
         // 3. 按四类 include 规则 + 优先级识别
         Map<String, EntryPoint> entries = new LinkedHashMap<>();
@@ -394,28 +401,38 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
             return "";
         }
 
-        List<MethodCall> calls = methodCallService.listByTaskId(taskId);
-        if (calls == null || calls.isEmpty()) {
-            return readSourceFile(projectDir, lookupFilePathByClass(calls, entryClassName), entryClassName, scope);
-        }
-
-        // BFS：从入口类出发，遍历 dependencyName 找到可达类集合
+        // BFS 邻接：分页扫轻量边，避免 listByTaskId 全表进堆
         Map<String, Set<String>> classToDeps = new HashMap<>();
         Map<String, String> classToFilePath = new HashMap<>();
-        for (MethodCall mc : calls) {
-            if (!StringUtils.hasText(mc.getClassName())) {
-                continue;
-            }
-            String depType = stripVariableFromDependencyName(mc.getDependencyName());
-            if (StringUtils.hasText(depType)) {
-                classToDeps.computeIfAbsent(mc.getClassName(), k -> new LinkedHashSet<>()).add(depType);
-            }
-            if (StringUtils.hasText(mc.getFilePath())) {
-                classToFilePath.putIfAbsent(mc.getClassName(), mc.getFilePath());
+        for (ParsedClassInfo p : allScoped) {
+            if (p != null && StringUtils.hasText(p.getClassName())
+                    && StringUtils.hasText(p.getSourceRelativePath())) {
+                classToFilePath.putIfAbsent(p.getClassName(), p.getSourceRelativePath());
             }
         }
-        String entryShortName = entryClassName.contains(".") ? entryClassName.substring(entryClassName.lastIndexOf('.') + 1) : entryClassName;
-        classToFilePath.putIfAbsent(entryShortName, lookupFilePathByClass(calls, entryClassName));
+        final boolean[] anyEdge = {false};
+        methodCallService.forEachEdgeLite(taskId, page -> {
+            for (MethodCallEdgeLite edge : page) {
+                if (edge == null || !StringUtils.hasText(edge.getClassName())) {
+                    continue;
+                }
+                anyEdge[0] = true;
+                String depType = stripVariableFromDependencyName(edge.getDependencyName());
+                if (StringUtils.hasText(depType)) {
+                    classToDeps.computeIfAbsent(edge.getClassName(), k -> new LinkedHashSet<>()).add(depType);
+                }
+                if (StringUtils.hasText(edge.getFilePath())) {
+                    classToFilePath.putIfAbsent(edge.getClassName(), edge.getFilePath());
+                }
+            }
+        });
+
+        String entryShortName = entryClassName.contains(".")
+                ? entryClassName.substring(entryClassName.lastIndexOf('.') + 1) : entryClassName;
+        if (!anyEdge[0]) {
+            return readSourceFile(projectDir, lookupFilePathByClass(classToFilePath, entryClassName), entryClassName, scope);
+        }
+        classToFilePath.putIfAbsent(entryShortName, lookupFilePathByClass(classToFilePath, entryClassName));
 
         Map<String, ParsedClassInfo> byShortName = new HashMap<>();
         for (ParsedClassInfo p : allScoped) {
@@ -451,7 +468,7 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
         for (String className : reachable) {
             String relPath = classToFilePath.get(className);
             if (relPath == null) {
-                relPath = lookupFilePathByClass(calls, className);
+                relPath = lookupFilePathByClass(classToFilePath, className);
             }
             String content = readSourceFile(projectDir, relPath, className, scope);
             if (!StringUtils.hasText(content) || content.startsWith("// (source out of scan scope")) {
@@ -750,17 +767,16 @@ public class EntryPointDiscoveryServiceImpl implements EntryPointDiscoveryServic
         return null;
     }
 
-    private String lookupFilePathByClass(List<MethodCall> calls, String className) {
-        if (calls == null || !StringUtils.hasText(className)) {
+    private String lookupFilePathByClass(Map<String, String> classToFilePath, String className) {
+        if (classToFilePath == null || !StringUtils.hasText(className)) {
             return null;
         }
         String shortName = className.contains(".") ? className.substring(className.lastIndexOf('.') + 1) : className;
-        for (MethodCall mc : calls) {
-            if (shortName.equals(mc.getClassName()) && StringUtils.hasText(mc.getFilePath())) {
-                return mc.getFilePath();
-            }
+        String hit = classToFilePath.get(shortName);
+        if (StringUtils.hasText(hit)) {
+            return hit;
         }
-        return null;
+        return classToFilePath.get(className);
     }
 
     private String stripVariableFromDependencyName(String dependencyName) {

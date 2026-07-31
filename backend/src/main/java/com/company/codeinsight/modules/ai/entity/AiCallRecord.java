@@ -82,6 +82,6 @@ public class AiCallRecord extends BaseEntity {
      */
     private Long durationMs;
 
-    /** 调用阶段标识：MODULE_HIERARCHY / GENERATING_DOC 等 */
+    /** 调用阶段标识：MODULE_HIERARCHY / FUNCTION_DOC / MODULE_DOC 等 */
     private String callStage;
 }

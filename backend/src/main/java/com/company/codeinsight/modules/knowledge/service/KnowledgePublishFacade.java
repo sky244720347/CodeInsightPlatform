@@ -70,6 +70,8 @@ public class KnowledgePublishFacade {
 
     /**
      * 跳过知识复核：草稿自动 CONFIRMED，任务 GENERATING_DOC → CONFIRMED，再异步发布。
+     * <p>幂等：已 {@code PUSHING}/{@code PUSHED} 直接成功返回（防文档阶段误重跑后重复确认把终态打成失败）。
+     * 已 {@code CONFIRMED} 则只补调度发布。{@code PUSHING} 真挂机由孤儿接管路径处理，不走本方法。</p>
      */
     @Transactional(rollbackFor = Exception.class)
     public void autoConfirmAndPublish(Long taskId) {
@@ -77,11 +79,16 @@ public class KnowledgePublishFacade {
         if (task == null) {
             throw new BusinessException("任务不存在");
         }
+        String status = task.getStatus();
+        if (TaskStatus.PUSHING.name().equals(status) || TaskStatus.PUSHED.name().equals(status)) {
+            log.info("autoConfirmAndPublish skip: taskId={} already {}", taskId, status);
+            return;
+        }
         markDraftsConfirmed(taskId);
-        if (TaskStatus.GENERATING_DOC.name().equals(task.getStatus())) {
+        if (TaskStatus.GENERATING_DOC.name().equals(status)) {
             stateMachineService.transitTo(task, TaskStatus.CONFIRMED, "跳过知识复核，自动确认");
-        } else if (!TaskStatus.CONFIRMED.name().equals(task.getStatus())) {
-            throw new BusinessException("任务状态不允许自动确认发布: " + task.getStatus());
+        } else if (!TaskStatus.CONFIRMED.name().equals(status)) {
+            throw new BusinessException("任务状态不允许自动确认发布: " + status);
         }
         schedulePublishAfterConfirmed(taskId, resolveOperator());
     }

@@ -13,6 +13,7 @@ import com.company.codeinsight.modules.scanner.model.IncrementalContext;
 import com.company.codeinsight.modules.scanner.model.ScanResult;
 import com.company.codeinsight.modules.scanner.model.ScanScope;
 import com.company.codeinsight.modules.scanner.service.CodeScannerService;
+import com.company.codeinsight.modules.scanner.support.GitCloneRetrySupport;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import lombok.extern.slf4j.Slf4j;
@@ -29,13 +30,11 @@ import org.eclipse.jgit.treewalk.CanonicalTreeParser;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.eclipse.jgit.util.io.NullOutputStream;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Value;
 import org.springframework.stereotype.Service;
 import org.springframework.util.DigestUtils;
 import org.springframework.util.StringUtils;
 
 import java.io.File;
-import java.io.FileWriter;
 import java.io.IOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -48,6 +47,7 @@ import java.util.Set;
 /**
  * 代码拉取与扫描服务实现类
  * 负责解析仓库配置，通过本地直接复制或者 JGit 克隆获取项目源码，递归扫描文件生成物理快照与数据库快照索引记录。
+ * <p>远程 clone 失败硬失败（{@link ErrorCode#GIT_CLONE_FAILED}），对 NAS 瞬时 IO 定向重试；禁止 Mock 降级。</p>
  */
 @Slf4j
 @Service
@@ -77,8 +77,7 @@ public class CodeScannerServiceImpl implements CodeScannerService {
     /**
      * 拉取代码库代码并进行结构扫描
      * 1. 优先校验本地文件路径是否存在（如本地文件夹直接扫描）
-     * 2. 否则通过 JGit 克隆远程代码库
-     * 3. 极端的离线网络情况下，自动生成一套演示用的 Mock 仓库文件以跑通业务流
+     * 2. 否则通过 JGit 克隆远程代码库（失败硬失败；NAS 瞬时 IO 定向重试）
      *
      * @param taskId       当前分析任务 ID
      * @param repositoryId 关联的代码库配置 ID
@@ -97,9 +96,9 @@ public class CodeScannerServiceImpl implements CodeScannerService {
         // 清理上一次运行残留；必须删净，否则 JGit 报 destination already exists
         prepareEmptyCloneDirectory(taskId, targetDir);
 
-        String commitId = "MOCK_COMMIT_" + System.currentTimeMillis();
+        String commitId = null;
         boolean gitPullSuccess = false;
-        // 仅在走远程 Git 成功克隆分支里持有句柄，本地目录与 Mock 降级分支保持为 null
+        // 仅在走远程 Git 成功克隆分支里持有句柄，本地目录分支保持为 null
         Git gitHandle = null;
         // 增量/全量决策的输出：声明在 if 外以便在末尾组装 IncrementalContext 时引用
         boolean performFullScan = true;
@@ -122,42 +121,16 @@ public class CodeScannerServiceImpl implements CodeScannerService {
                 throw new BusinessException("扫描代码失败: 无法复制本地目录 " + repo.getGitUrl());
             }
         } else {
-            // 否则，作为 Git 协议 URL 进行克隆
+            // 远程 Git：定向重试后仍失败则硬失败（禁止 Mock）
+            gitHandle = cloneRemoteWithRetry(taskId, repo, targetDir);
             try {
-                log.info("开始克隆 Git 仓库: {} 分支: {}", repo.getGitUrl(), repo.getBranch());
-                CloneCommand cloneCommand = Git.cloneRepository()
-                        .setURI(repo.getGitUrl())
-                        .setBranch(repo.getBranch())
-                        .setDirectory(targetDir);
-
-                // 注入 HTTP Basic 认证凭证配置
-                if (StringUtils.hasText(repo.getUsername()) && StringUtils.hasText(repo.getPassword())) {
-                    cloneCommand.setCredentialsProvider(new UsernamePasswordCredentialsProvider(repo.getUsername(), repo.getPassword()));
-                }
-
-                // 不再使用 try-with-resources：增量分支需要在同一句柄上执行 git diff，
-                // 算完 DiffEntry 后再统一关闭
-                gitHandle = cloneCommand.call();
                 commitId = gitHandle.getRepository().resolve("HEAD").getName();
-                gitPullSuccess = true;
-                log.info("Git 克隆成功, Commit ID: {}", commitId);
             } catch (Exception e) {
-                // 目标目录未清空时绝不能降级 Mock，否则会「跑错仓库」却看似成功
-                if (isDestinationAlreadyExistsError(e)) {
-                    log.error("JGit 克隆失败：目标目录未清空 taskId={} path={}", taskId, targetDir.getAbsolutePath());
-                    throw new BusinessException("扫描代码失败: 工作区目录未清空，无法 clone（"
-                            + targetDir.getAbsolutePath() + "）。请重试或检查 NAS 文件锁。原因: " + e.getMessage());
-                }
-                log.warn("JGit 克隆仓库失败 ({}), 启动本地 Mock 代码生成以便离线跑通闭环", e.getMessage());
-                try {
-                    // 容错降级：在没有外网或 Git 服务器不可达时，在目标目录自动拼装一套标准的 Controller/Service/Mapper 模拟文件
-                    generateMockRepositoryFiles(targetDir);
-                    gitPullSuccess = true;
-                } catch (IOException ioException) {
-                    log.error("生成 Mock 仓库文件失败", ioException);
-                    throw new BusinessException("扫描代码失败: 无法克隆且生成模拟文件失败");
-                }
+                closeQuietly(gitHandle);
+                throw failClone(repo, taskId, e, "克隆成功但无法解析 HEAD");
             }
+            gitPullSuccess = true;
+            log.info("Git 克隆成功 taskId={} Commit ID: {}", taskId, commitId);
         }
 
         if (gitPullSuccess) {
@@ -567,132 +540,84 @@ public class CodeScannerServiceImpl implements CodeScannerService {
     }
 
     /**
-     * 离线降级辅助生成器：在无外网/克隆失败时自动创建测试项目，保证流程完整性。
-     * 创建一个包含 UserController, UserService, UserMapper, User 实体类在内的典型 Spring Boot 后端分层架构示例。
+     * 远程 Git clone：对 NAS 瞬时 IO 定向重试，耗尽或不可重试错误则硬失败（禁止 Mock）。
      */
-    private void generateMockRepositoryFiles(File targetDir) throws IOException {
-        Files.createDirectories(targetDir.toPath());
-
-        // 1. Controller 控制器模拟文件
-        File userController = new File(targetDir, "src/main/java/com/demo/controller/UserController.java");
-        userController.getParentFile().mkdirs();
-        try (FileWriter writer = new FileWriter(userController)) {
-            writer.write("""
-package com.demo.controller;
-
-import org.springframework.web.bind.annotation.*;
-import com.demo.service.UserService;
-import com.demo.entity.User;
-import java.util.List;
-
-@RestController
-@RequestMapping("/api/users")
-public class UserController {
-
-    private final UserService userService;
-
-    public UserController(UserService userService) {
-        this.userService = userService;
-    }
-
-    @GetMapping
-    public List<User> listUsers() {
-        return userService.listUsers();
-    }
-
-    @GetMapping("/{id}")
-    public User getUserById(@PathVariable Long id) {
-        return userService.getUserById(id);
-    }
-
-    @PostMapping
-    public void createUser(@RequestBody User user) {
-        userService.createUser(user);
-    }
-}
-""");
+    private Git cloneRemoteWithRetry(Long taskId, CodeRepository repo, File targetDir) {
+        Exception last = null;
+        for (int attempt = 1; attempt <= GitCloneRetrySupport.MAX_ATTEMPTS; attempt++) {
+            if (attempt > 1) {
+                prepareEmptyCloneDirectory(taskId, targetDir);
+            }
+            try {
+                log.info("开始克隆 Git 仓库: taskId={} url={} branch={} attempt={}/{}",
+                        taskId, repo.getGitUrl(), repo.getBranch(),
+                        attempt, GitCloneRetrySupport.MAX_ATTEMPTS);
+                CloneCommand cloneCommand = Git.cloneRepository()
+                        .setURI(repo.getGitUrl())
+                        .setBranch(repo.getBranch())
+                        .setDirectory(targetDir);
+                if (StringUtils.hasText(repo.getUsername()) && StringUtils.hasText(repo.getPassword())) {
+                    cloneCommand.setCredentialsProvider(
+                            new UsernamePasswordCredentialsProvider(repo.getUsername(), repo.getPassword()));
+                }
+                // 不在此处 try-with-resources：增量分支需要同一句柄做 git diff
+                return cloneCommand.call();
+            } catch (Exception e) {
+                last = e;
+                if (isDestinationAlreadyExistsError(e)) {
+                    log.error("JGit 克隆失败：目标目录未清空 taskId={} path={}", taskId, targetDir.getAbsolutePath());
+                    throw new BusinessException("扫描代码失败: 工作区目录未清空，无法 clone（"
+                            + targetDir.getAbsolutePath() + "）。请重试或检查 NAS 文件锁。原因: " + e.getMessage());
+                }
+                boolean retryable = GitCloneRetrySupport.isRetryable(e)
+                        && attempt < GitCloneRetrySupport.MAX_ATTEMPTS;
+                log.warn("JGit 克隆仓库失败 taskId={} attempt={}/{} retryable={} msg={}",
+                        taskId, attempt, GitCloneRetrySupport.MAX_ATTEMPTS, retryable, e.getMessage());
+                if (!retryable) {
+                    break;
+                }
+                long sleepMs = GitCloneRetrySupport.backoffMillisAfterAttempt(attempt);
+                try {
+                    Thread.sleep(sleepMs);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    throw failClone(repo, taskId, e, "克隆重试等待被中断");
+                }
+            }
         }
-
-        // 2. Service 业务层模拟文件
-        File userService = new File(targetDir, "src/main/java/com/demo/service/UserService.java");
-        userService.getParentFile().mkdirs();
-        try (FileWriter writer = new FileWriter(userService)) {
-            writer.write("""
-package com.demo.service;
-
-import org.springframework.stereotype.Service;
-import com.demo.mapper.UserMapper;
-import com.demo.entity.User;
-import java.util.List;
-
-@Service
-public class UserService {
-
-    private final UserMapper userMapper;
-
-    public UserService(UserMapper userMapper) {
-        this.userMapper = userMapper;
+        throw failClone(repo, taskId, last, null);
     }
 
-    public List<User> listUsers() {
-        return userMapper.selectAllUsers();
-    }
-
-    public User getUserById(Long id) {
-        return userMapper.selectUserById(id);
-    }
-
-    public void createUser(User user) {
-        userMapper.insertUser(user);
-    }
-}
-""");
+    private BusinessException failClone(CodeRepository repo, Long taskId, Throwable cause, String prefix) {
+        String causeMsg = cause == null || cause.getMessage() == null
+                ? (cause == null ? "unknown" : cause.getClass().getSimpleName())
+                : cause.getMessage();
+        String detail = (prefix == null ? "Git clone failed" : prefix)
+                + ": url=" + repo.getGitUrl()
+                + ", branch=" + repo.getBranch();
+        try {
+            operationLogService.logOperation(
+                    repo.getSystemId(),
+                    taskId,
+                    "GIT_CLONE_FAILED",
+                    detail,
+                    causeMsg,
+                    false);
+        } catch (Exception logEx) {
+            log.warn("写入 GIT_CLONE_FAILED 操作日志失败 taskId={}: {}", taskId, logEx.getMessage());
         }
+        String message = ErrorCode.GIT_CLONE_FAILED.getDefaultMessage() + ": " + causeMsg;
+        return new BusinessException(ErrorCode.GIT_CLONE_FAILED, message);
+    }
 
-        // 3. Mapper 数据持久层接口及硬编码 SQL 注解文件
-        File userMapper = new File(targetDir, "src/main/java/com/demo/mapper/UserMapper.java");
-        userMapper.getParentFile().mkdirs();
-        try (FileWriter writer = new FileWriter(userMapper)) {
-            writer.write("""
-package com.demo.mapper;
-
-import org.apache.ibatis.annotations.Mapper;
-import org.apache.ibatis.annotations.Select;
-import org.apache.ibatis.annotations.Insert;
-import com.demo.entity.User;
-import java.util.List;
-
-@Mapper
-public interface UserMapper {
-
-    @Select("SELECT * FROM ci_user")
-    List<User> selectAllUsers();
-
-    @Select("SELECT * FROM ci_user WHERE id = #{id}")
-    User selectUserById(Long id);
-
-    @Insert("INSERT INTO ci_user(username, password) VALUES(#{username}, #{password})")
-    void insertUser(User user);
-}
-""");
+    private static void closeQuietly(Git git) {
+        if (git == null) {
+            return;
         }
-
-        // 4. Entity 数据实体层模拟文件
-        File userEntity = new File(targetDir, "src/main/java/com/demo/entity/User.java");
-        userEntity.getParentFile().mkdirs();
-        try (FileWriter writer = new FileWriter(userEntity)) {
-            writer.write("""
-package com.demo.entity;
-
-import lombok.Data;
-
-@Data
-public class User {
-    private Long id;
-    private String username;
-    private String password;
-}
-""");
+        try {
+            git.close();
+        } catch (Exception e) {
+            // ignore
         }
     }
 
