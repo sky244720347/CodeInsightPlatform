@@ -2,8 +2,10 @@ package com.company.codeinsight.modules.ai;
 
 import com.company.codeinsight.common.config.AiRetryProperties;
 import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.common.exception.TaskCancelledException;
 import com.company.codeinsight.modules.ai.service.AiSummaryService;
 import com.company.codeinsight.modules.ai.service.PipelineAiCaller;
+import com.company.codeinsight.modules.task.service.TaskCancellationRegistry;
 import com.company.codeinsight.modules.task.service.TaskExecutionLogger;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -14,6 +16,7 @@ import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.util.StringUtils;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.*;
 import static org.mockito.Mockito.*;
 import static org.mockito.Mockito.lenient;
@@ -28,10 +31,10 @@ class PipelineAiCallerTest {
     private AiRetryProperties retryProperties;
 
     @Mock
-    private com.company.codeinsight.common.config.AiDocBudgetProperties docBudgetProperties;
+    private TaskExecutionLogger execLog;
 
     @Mock
-    private TaskExecutionLogger execLog;
+    private TaskCancellationRegistry cancellationRegistry;
 
     @InjectMocks
     private PipelineAiCaller pipelineAiCaller;
@@ -41,10 +44,7 @@ class PipelineAiCallerTest {
         lenient().when(retryProperties.resolveMaxAttempts(any())).thenReturn(3);
         lenient().when(retryProperties.getBackoffMs()).thenReturn(0L);
         lenient().when(retryProperties.getConcurrencyBackoffMs()).thenReturn(0L);
-        lenient().when(docBudgetProperties.getAcquireWaitSeconds()).thenReturn(1800);
-        lenient().when(docBudgetProperties.getHttpTimeoutSeconds()).thenReturn(120);
-        // 单测不等待
-        lenient().when(docBudgetProperties.getAcquirePollIntervalMs()).thenReturn(0L);
+        lenient().when(cancellationRegistry.isCancelled(any())).thenReturn(false);
     }
 
     @Test
@@ -97,10 +97,8 @@ class PipelineAiCallerTest {
     }
 
     @Test
-    void concurrencyLimitDoesNotConsumeRetryAttempts() {
+    void concurrencyLimitConsumesRetryAttempts() {
         when(aiSummaryService.summarizeWithPrompt(eq(3L), anyString(), anyString(), any()))
-                .thenThrow(new BusinessException("AI 调用并发已达上限，请稍后重试"))
-                .thenThrow(new BusinessException("AI 调用并发已达上限，请稍后重试"))
                 .thenThrow(new BusinessException("AI 调用并发已达上限，请稍后重试"))
                 .thenThrow(new BusinessException("AI 调用并发已达上限，请稍后重试"))
                 .thenReturn("{\"modules\":[]}");
@@ -117,10 +115,10 @@ class PipelineAiCallerTest {
         );
 
         assertEquals("{\"modules\":[]}", result);
-        // 4 次抢槽失败 + 1 次成功，均不计入 maxAttempts=3
-        verify(aiSummaryService, times(5)).summarizeWithPrompt(eq(3L), anyString(), anyString(), any());
-        verify(execLog).log(eq(3L), argThat(msg -> msg.contains("[AI-WAIT]") && msg.contains("does not consume retry")));
-        verify(execLog, never()).log(eq(3L), argThat(msg -> msg.contains("[AI-RETRY]")));
+        // 方案 B：2 次并发失败消耗 attempt，第 3 次成功
+        verify(aiSummaryService, times(3)).summarizeWithPrompt(eq(3L), anyString(), anyString(), any());
+        verify(execLog, times(2)).log(eq(3L), argThat(msg -> msg.contains("[AI-CONCURRENCY]")));
+        verify(execLog).log(eq(3L), argThat(msg -> msg.contains("[AI-OK]")));
     }
 
     @Test
@@ -156,6 +154,10 @@ class PipelineAiCallerTest {
                 PipelineAiCaller.shouldShrinkOnFailure("empty response", 80_000, 50_000));
         org.junit.jupiter.api.Assertions.assertTrue(
                 PipelineAiCaller.shouldShrinkOnFailure("HTTP 400: context_length_exceeded", 80_000, 50_000));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                PipelineAiCaller.isConcurrencyFailure("AI 调用并发等待被中断"));
+        org.junit.jupiter.api.Assertions.assertTrue(
+                PipelineAiCaller.isConcurrencyFailure("AI 调用并发等待超时（1800s），请稍后重试"));
     }
 
     @Test
@@ -187,7 +189,7 @@ class PipelineAiCallerTest {
     }
 
     @Test
-    void doesNotRetryOnConcurrencyWaitTimeout() {
+    void retriesOnConcurrencyWaitTimeoutConsumingAttempts() {
         when(aiSummaryService.summarizeWithPrompt(eq(7L), anyString(), anyString(), any()))
                 .thenThrow(new BusinessException("AI 调用并发等待超时（1800s），请稍后重试"));
 
@@ -204,8 +206,34 @@ class PipelineAiCallerTest {
 
         org.junit.jupiter.api.Assertions.assertFalse(outcome.hasPayload());
         org.junit.jupiter.api.Assertions.assertTrue(outcome.lastFailureReason().contains("并发等待超时"));
-        verify(aiSummaryService, times(1)).summarizeWithPrompt(eq(7L), anyString(), anyString(), any());
-        verify(execLog).log(eq(7L), argThat(msg -> msg.contains("non-retryable") && msg.contains("并发等待超时")));
+        verify(aiSummaryService, times(3)).summarizeWithPrompt(eq(7L), anyString(), anyString(), any());
+        verify(execLog, times(2)).log(eq(7L), argThat(msg -> msg.contains("[AI-CONCURRENCY]")));
+        verify(execLog).log(eq(7L), argThat(msg -> msg.contains("[AI-FAIL]") && msg.contains("after 3 attempts")));
+        verify(execLog, never()).log(eq(7L), argThat(msg -> msg.contains("non-retryable")));
+    }
+
+    @Test
+    void retriesOnConcurrencyWaitInterrupted() {
+        when(aiSummaryService.summarizeWithPrompt(eq(8L), anyString(), anyString(), any()))
+                .thenThrow(new BusinessException("AI 调用并发等待被中断"))
+                .thenReturn("{\"modules\":[]}");
+
+        PipelineAiCaller.CallOutcome outcome = pipelineAiCaller.callWithRetryOutcome(
+                8L,
+                "MODULE_HIERARCHY",
+                "com.example.Interrupted",
+                "prompt",
+                "test-model",
+                new AiSummaryService.AiCallMeta(),
+                response -> PipelineAiCaller.ValidationResult.ok(response),
+                null
+        );
+
+        org.junit.jupiter.api.Assertions.assertTrue(outcome.hasPayload());
+        verify(aiSummaryService, times(2)).summarizeWithPrompt(eq(8L), anyString(), anyString(), any());
+        verify(execLog).log(eq(8L), argThat(msg ->
+                msg.contains("[AI-CONCURRENCY]") && msg.contains("并发等待被中断")));
+        verify(execLog).log(eq(8L), argThat(msg -> msg.contains("[AI-OK]")));
     }
 
     @Test
@@ -228,5 +256,43 @@ class PipelineAiCallerTest {
         org.junit.jupiter.api.Assertions.assertFalse(outcome.hasPayload());
         org.junit.jupiter.api.Assertions.assertTrue(
                 outcome.lastFailureReason().contains("context_length_exceeded"));
+    }
+
+    @Test
+    void cancelledBeforeAttempt_doesNotRetry() {
+        when(cancellationRegistry.isCancelled(eq(77L))).thenReturn(true);
+
+        assertThrows(TaskCancelledException.class, () -> pipelineAiCaller.callWithRetry(
+                77L,
+                "MODULE_HIERARCHY",
+                "com.example.Foo",
+                "prompt",
+                "test-model",
+                new AiSummaryService.AiCallMeta(),
+                response -> PipelineAiCaller.ValidationResult.ok(response),
+                null
+        ));
+
+        verify(aiSummaryService, never()).summarizeWithPrompt(any(), any(), any(), any());
+        verify(execLog).log(eq(77L), argThat(msg -> msg.contains("[AI-CANCEL]")));
+    }
+
+    @Test
+    void cancelledDuringCall_doesNotRetry() {
+        when(aiSummaryService.summarizeWithPrompt(eq(78L), anyString(), anyString(), any()))
+                .thenThrow(new TaskCancelledException(78L));
+
+        assertThrows(TaskCancelledException.class, () -> pipelineAiCaller.callWithRetry(
+                78L,
+                "FUNCTION_DOC",
+                "登录",
+                "prompt",
+                "test-model",
+                new AiSummaryService.AiCallMeta(),
+                response -> PipelineAiCaller.ValidationResult.ok(response),
+                null
+        ));
+
+        verify(aiSummaryService, times(1)).summarizeWithPrompt(eq(78L), anyString(), anyString(), any());
     }
 }

@@ -6,6 +6,8 @@ import com.company.codeinsight.common.util.DirectoryCleanupUtil;
 import com.company.codeinsight.modules.parser.service.TaskParseMemoryService;
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 
 import java.io.IOException;
@@ -29,7 +31,11 @@ public class TaskDiskCleanupService {
     private final EnvStorageResolver storageResolver;
     private final TaskWorkspacePaths taskWorkspacePaths;
     private final TaskParseMemoryService taskParseMemoryService;
-    private final DecompileTaskService decompileTaskService;
+
+    /** @Lazy：与 {@link DecompileTaskServiceImpl} 互相依赖，打破启动环 */
+    @Autowired
+    @Lazy
+    private DecompileTaskService decompileTaskService;
 
     /** 知识确认完成后：删 drafts + 工作区源码，保留 docs/code-insight。 */
     public void cleanupAfterKnowledgeConfirmed(Long taskId) {

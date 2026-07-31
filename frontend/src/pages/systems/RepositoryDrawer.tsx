@@ -25,6 +25,7 @@ interface Props {
   onScanConfig?: (repo: Repository) => void;
   onBindPrompts?: (repo: Repository) => void;
   onScanWindow?: (repo: Repository) => void;
+  onAfterGitTest?: () => void;
 }
 
 /**
@@ -47,6 +48,7 @@ const RepositoryDrawer: React.FC<Props> = ({
   onScanConfig,
   onBindPrompts,
   onScanWindow,
+  onAfterGitTest,
 }) => {
   const columns = useRepositoryColumns({
     onEdit: onEditRepo,
@@ -55,6 +57,7 @@ const RepositoryDrawer: React.FC<Props> = ({
     onScanConfig,
     onBindPrompts,
     onScanWindow,
+    onAfterGitTest,
   });
 
   return (
@@ -108,7 +111,7 @@ const RepositoryDrawer: React.FC<Props> = ({
               loading={loading}
               size="small"
               pagination={false}
-              scroll={{ x: 880 }}
+              scroll={{ x: 1100 }}
               columns={columns}
             />
           </Card>

@@ -83,8 +83,8 @@ const SystemImportModal: React.FC<Props> = ({ open, onClose, onCompleted }) => {
         description={
           <Space direction="vertical" size={8} style={{ width: '100%' }}>
             <span>
-              必填列：系统、系统中文名、系统描述、负责人、git完整地址。系统已存在则复用；同系统下仓库
-              URL 已存在则跳过。仓库配置与新建向导默认一致（含默认提示词）。
+              必填列：系统、系统中文名、系统描述、负责人、git完整地址、代码库类型、技术栈。系统已存在则复用；同系统下仓库
+              URL 已存在则跳过。「代码库类型 / 技术栈」请用模板下拉选择（技术栈随类型联动）。仓库其它配置与新建向导默认一致（含默认提示词）。
             </span>
             <Button
               type="link"

@@ -43,7 +43,8 @@ code-insight:
       hierarchy-max-attempts: 3
       doc-max-attempts: 5
       backoff-ms: 1000           # 重试退避基数（毫秒），实际等待 = backoff-ms × attempt
-      concurrency-backoff-ms: 2000  # 并发槽位不足时退避基数（毫秒），实际等待 = concurrency-backoff-ms × attempt
+      # 已废弃：等槽仅在 AiSummaryServiceImpl.acquireAiPermitWithWait；保留字段兼容旧配置
+      concurrency-backoff-ms: 2000
     doc:
       # 方案 A：超限后再裁；真分片见 docs/doc-generation-guarantee-plan.md §4
       max-prompt-chars: 100000
@@ -52,10 +53,12 @@ code-insight:
       shrink-factor: 0.5
       # 本机文档并行工人数（固定池；超额功能排队，不新开线程）
       parallelism: 4
-      # 文档与 MODULE_HIERARCHY 等 AI 全局槽超时（秒），应 ≫ http-timeout；层级超时仅弃当前入口
+      # 文档与 MODULE_HIERARCHY 等 AI 全局槽超时（秒），应 ≫ http-timeout；层级用尽重试后弃当前入口
       acquire-wait-seconds: 1800
       # 等槽轮询间隔（毫秒）；默认 5s，过短无意义
       acquire-poll-interval-ms: 5000
+      # true：等槽无超时（一直等到抢到）；中断仍抛出并由 PipelineAiCaller 进入下一 attempt
+      acquire-wait-unlimited: false
   review:
     # true：知识复核允许未逐篇确认时直接「任务整体通过」（未确认草稿一并 CONFIRMED）
     allow-partial-pass: ${REVIEW_ALLOW_PARTIAL_PASS:false}
@@ -66,3 +69,14 @@ code-insight:
     lock-ttl-seconds: 30       # Redis 分布式锁 TTL
   task:
     queue-dispatch-interval-ms: 5000   # 任务队列调度器轮询间隔（毫秒），TaskQueueDispatcher 周期
+    # 可执行知识生成的技术栈白名单（逗号分隔，精确匹配目录 label，如 Java 或 Java,Python）；后续可接阿波罗同名配置
+    supported-tech-stacks: ${TASK_SUPPORTED_TECH_STACKS:Java}
+  repo:
+    # Git 连通性后台轮询间隔（毫秒）；Leader 节点执行
+    git-check-interval-ms: ${REPO_GIT_CHECK_INTERVAL_MS:180000}
+    # 启动后首次轮询延迟（默认与 interval 相同，避免刚启动就全库探测超时误标不通）
+    git-check-initial-delay-ms: ${REPO_GIT_CHECK_INITIAL_DELAY_MS:180000}
+    # 单次 ls-remote 超时（秒）
+    git-check-timeout-seconds: ${REPO_GIT_CHECK_TIMEOUT_SECONDS:15}
+    # 全库/批量检测本机并发
+    git-check-concurrency: ${REPO_GIT_CHECK_CONCURRENCY:3}

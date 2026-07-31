@@ -241,6 +241,8 @@ const Systems: React.FC = () => {
       setEditingRepo(repo);
       repoForm.setFieldsValue({
         gitUrl: repo.gitUrl,
+        repoType: repo.repoType ?? undefined,
+        techStack: repo.techStack ?? undefined,
         branch: repo.branch,
         scanRoot: repo.scanRoot,
         username: repo.username,
@@ -288,13 +290,16 @@ const Systems: React.FC = () => {
       const ok = await testRepositoryConnection(payload);
       if (ok) message.success('Git 连接测试成功');
       else message.error('Git 连接测试失败');
+      if (editingRepo && selectedSystem?.id) {
+        repoHook.refresh(selectedSystem.id);
+      }
     } catch (err) {
       if (err && typeof err === 'object' && 'errorFields' in err) return;
       console.error(err);
     } finally {
       setRepoTesting(false);
     }
-  }, [editingRepo, repoForm]);
+  }, [editingRepo, repoForm, repoHook, selectedSystem]);
 
   // ===== 代码库入口扫描规则 =====
   const [scanWindowOpen, setScanWindowOpen] = useState(false);
@@ -417,6 +422,9 @@ const Systems: React.FC = () => {
         onScan={handleScan}
         onScanConfig={openScanConfig}
         onScanWindow={(repo) => { setScanWindowRepo(repo); setScanWindowOpen(true); }}
+        onAfterGitTest={() => {
+          if (selectedSystem?.id) repoHook.refresh(selectedSystem.id);
+        }}
       />
 
       <SystemPromptBindModal

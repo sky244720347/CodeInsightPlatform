@@ -22,6 +22,16 @@ export interface Repository {
   id: number;
   systemId: number;
   gitUrl: string;
+  /** 代码库类型：前端 / 后端 / DB（与展示文案一致） */
+  repoType?: string | null;
+  /** 技术栈：如 Java / React（与展示文案一致） */
+  techStack?: string | null;
+  /**
+   * Git 连通性：null=未检测，1=连通，0=不通
+   */
+  gitReachable?: number | null;
+  gitCheckedAt?: string | null;
+  gitCheckMsg?: string | null;
   branch: string;
   username?: string;
   password?: string;
@@ -39,6 +49,9 @@ export interface Repository {
   createdDate: string;
   updatedDate: string;
 }
+
+/** 代码库类型 → 技术栈级联目录（key/value 均为展示文案） */
+export type TechStackCatalog = Record<string, string[]>;
 
 export interface Prompt {
   id: number;

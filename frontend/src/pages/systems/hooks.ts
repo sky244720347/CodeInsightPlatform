@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { listSystems } from '../../api/system';
-import { listRepositories } from '../../api/repository';
+import { batchTestRepositoryConnection, listRepositories } from '../../api/repository';
 import type { Repository, System } from '../../types';
 
 /**
@@ -86,7 +86,8 @@ export function useSystemsList() {
 /**
  * 代码库列表数据 hook（按系统 ID 加载）
  *
- * 通过传 null / number 切换：传 null 时清空列表
+ * 通过传 null / number 切换：传 null 时清空列表。
+ * 打开时触发按系统异步 Git 检测，并每 30s 刷新落库状态。
  */
 export function useRepositories(systemId: number | null) {
   const [repositories, setRepositories] = useState<Repository[]>([]);
@@ -108,6 +109,18 @@ export function useRepositories(systemId: number | null) {
       return;
     }
     fetch(systemId);
+    // 打开抽屉：触发该系统仓库异步批量检测（不阻塞列表首屏）
+    batchTestRepositoryConnection(systemId).catch(() => {
+      // 忽略；定时轮询与后台调度仍会更新
+    });
+    const timer = window.setInterval(() => {
+      listRepositories({ current: 1, size: 50, systemId }).then((data) => {
+        setRepositories(data.records);
+      }).catch(() => {
+        // ignore
+      });
+    }, 30_000);
+    return () => window.clearInterval(timer);
   }, [systemId, fetch]);
 
   return { repositories, loading, refresh: fetch, setRepositories };

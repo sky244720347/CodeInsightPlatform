@@ -24,12 +24,13 @@ import {
 import { createSystem, updateSystem } from '../../api/system';
 import {
   createRepository,
+  getTechStackCatalog,
   listRepositories,
   updateRepository,
   testRepositoryConnection,
 } from '../../api/repository';
 import { listPrompts, testRunPrompt } from '../../api/prompt';
-import type { Repository, System, EntryScanConfig, Prompt } from '../../types';
+import type { Repository, System, EntryScanConfig, Prompt, TechStackCatalog } from '../../types';
 import EntryScanConfigEditor from '../../components/EntryScanConfigEditor';
 import EntryScanTrialDrawer, {
   type EntryScanTrialDrawerRef,
@@ -72,6 +73,8 @@ interface SystemFormValues {
 
 interface RepositoryFormValues {
   gitUrl: string;
+  repoType: string;
+  techStack: string;
   branch: string;
   scanRoot: string;
   username?: string;
@@ -113,6 +116,8 @@ const SystemWizardModal: React.FC<Props> = ({
 
   const [prompts, setPrompts] = useState<Prompt[]>([]);
   const [promptsLoading, setPromptsLoading] = useState(false);
+  const [techCatalog, setTechCatalog] = useState<TechStackCatalog>({});
+  const repoTypeWatch = Form.useWatch('repoType', repoForm);
 
   /** Step 4:提示词编辑器弹窗状态(自定义/复制默认) */
   const [editorState, setEditorState] = useState<{
@@ -143,6 +148,30 @@ const SystemWizardModal: React.FC<Props> = ({
     scanForm.resetFields();
     promptForm.resetFields();
   }, [open, initialSystemId, systemForm, repoForm, scanForm, promptForm]);
+
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    getTechStackCatalog()
+      .then((data) => {
+        if (!cancelled) setTechCatalog(data || {});
+      })
+      .catch(() => {
+        if (!cancelled) setTechCatalog({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
+
+  const repoTypeOptions = useMemo(
+    () => Object.keys(techCatalog).map((code) => ({ value: code, label: code })),
+    [techCatalog],
+  );
+  const techStackOptions = useMemo(() => {
+    const stacks = repoTypeWatch ? techCatalog[repoTypeWatch] || [] : [];
+    return stacks.map((code) => ({ value: code, label: code }));
+  }, [techCatalog, repoTypeWatch]);
 
   // Step 4：拉取可用提示词（DEFAULT 全局默认 + 系统下所有仓库的 USER 自定义）
   // 提示词 scope_id = repository.id,下拉框需要看到系统下所有仓库的 USER 提示词（共享）
@@ -504,7 +533,7 @@ const SystemWizardModal: React.FC<Props> = ({
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
-            message="添加第一个 Git 仓库。提交后系统状态将进入「已配仓库 (REPO_CONFIGURED)」。"
+            message="添加第一个 Git 仓库。请选择代码库类型与技术栈；前后端请拆成独立仓库或用扫描根目录区分。"
           />
           <Form<RepositoryFormValues>
             form={repoForm}
@@ -513,6 +542,24 @@ const SystemWizardModal: React.FC<Props> = ({
           >
             <Form.Item name="gitUrl" label="Git 地址" rules={[{ required: true, message: '请输入 Git 地址' }]}>
               <Input placeholder="https://github.com/xxx/yyy.git" />
+            </Form.Item>
+            <Form.Item
+              name="repoType"
+              label="代码库类型"
+              rules={[{ required: true, message: '请选择代码库类型' }]}
+            >
+              <Select
+                placeholder="前端 / 后端 / DB"
+                options={repoTypeOptions}
+                onChange={() => repoForm.setFieldsValue({ techStack: undefined })}
+              />
+            </Form.Item>
+            <Form.Item name="techStack" label="技术栈" rules={[{ required: true, message: '请选择技术栈' }]}>
+              <Select
+                placeholder={repoTypeWatch ? '请选择技术栈' : '请先选择代码库类型'}
+                options={techStackOptions}
+                disabled={!repoTypeWatch}
+              />
             </Form.Item>
             <Form.Item name="branch" label="分支" rules={[{ required: true, message: '请输入分支' }]}>
               <Input placeholder="master" />
