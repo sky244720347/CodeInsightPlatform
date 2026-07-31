@@ -169,6 +169,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     private com.company.codeinsight.modules.task.service.ParseConcurrencyLimiter parseConcurrencyLimiter;
 
     @Autowired
+    private com.company.codeinsight.modules.task.service.PullConcurrencyLimiter pullConcurrencyLimiter;
+
+    @Autowired
     private com.company.codeinsight.modules.parser.service.TaskParseMemoryService taskParseMemoryService;
 
     @Autowired
@@ -261,7 +264,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     private static final String LIST_STATUS_SORT_ORDER = """
             ORDER BY CASE
               WHEN status IN (
-                'PULLING_CODE','PARSING_CODE','SPLITTING_TASK',
+                'PULL_QUEUED','PULLING_CODE','PARSE_QUEUED','PARSING_CODE','SPLITTING_TASK',
                 'ENTRYPOINT_REVIEW','AI_ANALYZING','MODULE_HIERARCHY','MODULE_HIERARCHY_REVIEW',
                 'BASELINE_DOC_INHERIT','GENERATING_DOC','PUSHING',
                 'PENDING_REVIEW','REVIEWING'
@@ -327,7 +330,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
      * key 是分组标识（API 返回给前端），value 是该分组下包含的所有状态枚举名。
      */
     private static final Map<String, List<String>> TASK_STATUS_GROUPS = Map.of(
-            "RUNNING",         List.of("PENDING", "RESUME_QUEUED", "PULLING_CODE", "PARSING_CODE", "SPLITTING_TASK",
+            "RUNNING",         List.of("PENDING", "RESUME_QUEUED", "PULL_QUEUED", "PULLING_CODE",
+                    "PARSE_QUEUED", "PARSING_CODE", "SPLITTING_TASK",
                     "ENTRYPOINT_REVIEW", "AI_ANALYZING", "MODULE_HIERARCHY", "MODULE_HIERARCHY_REVIEW",
                     "BASELINE_DOC_INHERIT", "GENERATING_DOC", "PUSHING"),
             "PENDING_REVIEW",  List.of("PENDING_REVIEW", "REVIEWING"),
@@ -765,6 +769,15 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         return "SCHEDULED".equalsIgnoreCase(triggerSource) ? 60 : 50;
     }
 
+    private void acquirePullPermit(Long taskId) throws InterruptedException {
+        pullConcurrencyLimiter.acquireBlocking(taskId);
+        execLog.log(taskId, "  pull.permit     = acquired (pull.concurrency)");
+    }
+
+    private void releasePullPermit(Long taskId) {
+        pullConcurrencyLimiter.release(taskId);
+    }
+
     private void acquireParsePermit(Long taskId) throws InterruptedException {
         parseConcurrencyLimiter.acquireBlocking(taskId);
         execLog.log(taskId, "  parse.permit    = acquired (parse.concurrency)");
@@ -794,10 +807,11 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         impactCache.remove(taskId);
     }
 
-    /** 终态释放：三份运行态 Map + 解析许可/缓存。 */
+    /** 终态释放：三份运行态 Map + 拉/析许可与解析缓存。 */
     private void releaseTerminalRuntimeMemory(Long taskId) {
         clearRuntimeCaches(taskId);
         execLog.releaseLock(taskId);
+        releasePullPermit(taskId);
         releaseParsePermitAndEvict(taskId);
     }
 
@@ -822,13 +836,6 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     private void assertNotCancelled(Long taskId) {
         if (cancellationRegistry != null) {
             cancellationRegistry.throwIfCancelled(taskId);
-        }
-    }
-
-    /** 确保持有解析许可（resume 路径可能尚未 acquire）。 */
-    private void ensureParsePermit(Long taskId) throws InterruptedException {
-        if (!parseConcurrencyLimiter.isHeld(taskId)) {
-            acquireParsePermit(taskId);
         }
     }
 
@@ -909,6 +916,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         }
         clearRuntimeCaches(id);
         execLog.releaseLock(id);
+        releasePullPermit(id);
         releaseParsePermitAndEvict(id);
 
         // 4) 重新入队
@@ -1102,12 +1110,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         }
         taskCache.put(task.getId(), task);
         CompletableFuture.runAsync(() -> {
-            boolean parseHeld = false;
             boolean failed = false;
             try {
                 execLog.log(id, ">>> MODULE_HIERARCHY — 重新提炼模块层级");
-                acquireParsePermit(id);
-                parseHeld = true;
                 com.company.codeinsight.modules.scanner.model.IncrementalContext rebuildCtx =
                         resolveContextForHierarchyRebuild(task);
                 execLog.log(id, "  rebuildCtx     = " + rebuildCtx);
@@ -1116,21 +1121,12 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 int modCount = hierarchy.getModules() != null ? hierarchy.getModules().size() : 0;
                 execLog.log(id, "  模块数         = " + modCount);
                 execLog.log(id, "<<< 模块层级重新提炼完成");
-            } catch (InterruptedException ie) {
-                Thread.currentThread().interrupt();
-                failed = true;
-                execLog.logException(id, "等待解析许可被中断", ie);
             } catch (Exception e) {
                 failed = true;
                 log.error("Rebuild module hierarchy failed for task {}", id, e);
                 execLog.logException(id, "重新提炼模块层级异常", e);
                 failUnlessCancelled(id, e);
             } finally {
-                if (parseHeld) {
-                    releaseParsePermitAndEvict(id);
-                } else {
-                    taskParseMemoryService.evict(id);
-                }
                 taskCache.remove(id);
                 // 失败离开复核断点时清掉断点上下文；成功仍停在 MODULE_HIERARCHY_REVIEW，保留供后续 resume
                 if (failed) {
@@ -1245,7 +1241,6 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                     releaseTerminalRuntimeMemory(id);
                 } else {
                     taskCache.remove(id);
-                    releaseParsePermitAndEvict(id);
                 }
                 if (systemId != null) {
                     taskConcurrencyLimiter.release(systemId, id);
@@ -1448,84 +1443,68 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                                                File projectDir,
                                                com.company.codeinsight.modules.scanner.model.IncrementalContext incrementalCtx,
                                                PipelineContext pctx) {
-        boolean parseHeld = false;
-        try {
-            assertNotCancelled(taskId);
-            ensureParsePermit(taskId);
-            parseHeld = true;
+        assertNotCancelled(taskId);
 
-            // 4. AI_ANALYZING → MODULE_HIERARCHY
-            if (!TaskStatus.AI_ANALYZING.name().equals(task.getStatus())) {
-                stateMachineService.transitTo(taskId, TaskStatus.AI_ANALYZING, null);
-            }
-            execLog.log(taskId, ">>> AI_ANALYZING — AI 归纳");
-            execLog.log(taskId, "  aiMock=" + aiSummaryService.isAiMock() + " | model="
-                    + (task.getModelName() != null ? task.getModelName() : "(default)"));
-            execLog.log(taskId, "  aiRetry       = hierarchyMaxAttempts=" + aiRetryProperties.getHierarchyMaxAttempts()
-                    + " docMaxAttempts=" + aiRetryProperties.getDocMaxAttempts()
-                    + " backoffMs=" + aiRetryProperties.getBackoffMs());
-            long aiT0 = System.currentTimeMillis();
-            com.company.codeinsight.modules.callchain.model.IncrementalImpact impact = analyzeIncrementalImpact(
-                    taskId, projectDir, incrementalCtx, pctx);
-            // 缓存 impact 供 resumeAfterHierarchyReview 恢复 GENERATING_DOC 时使用
-            if (impact != null) {
-                impactCache.put(taskId, impact);
-            }
-            stateMachineService.transitTo(taskId, TaskStatus.MODULE_HIERARCHY, null);
-            execLog.log(taskId, ">>> MODULE_HIERARCHY — AI 提炼模块层级");
-            long t1 = System.currentTimeMillis();
-            com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy hierarchy =
-                    moduleHierarchyService.buildAndPersist(taskId, projectDir, incrementalCtx, impact);
-            int modCount = hierarchy.getModules() != null ? hierarchy.getModules().size() : 0;
-            execLog.log(taskId, "  模块数         = " + modCount);
-            execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
-
-            // 重解析段结束：释放许可 + 清缓存，再进入文档生成 / 人工层级复核
-            releaseParsePermitAndEvict(taskId);
-            parseHeld = false;
-
-            // 5. 调试断点 / BASELINE_DOC_INHERIT / GENERATING_DOC
-            if (!Boolean.TRUE.equals(task.getRequireHierarchyReview())) {
-                // 跳过层级复核：INCREMENTAL 先走基线文档继承，再生成文档
-                if ("INCREMENTAL".equals(task.getType())) {
-                    runBaselineDocInheritAndGenerateDoc(taskId, task, incrementalCtx, impact);
-                } else {
-                    execLog.log(taskId, ">>> GENERATING_DOC — 生成文档");
-                    t1 = System.currentTimeMillis();
-                    stateMachineService.transitTo(taskId, TaskStatus.GENERATING_DOC, null);
-                    aiSummaryService.generateDraftDocument(taskId,
-                            decompilePromptService.requireTaskPromptContent(task,
-                                    com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
-                            incrementalCtx, impact);
-                    finishAfterDocGenerated(taskId);
-                    execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
-                }
-                // AI 阶段终态汇总：从 ci_ai_call_record 统计本次任务的成功/失败次数
-                long aiOk = aiCallRecordMapper.selectCount(
-                        new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.company.codeinsight.modules.ai.entity.AiCallRecord>()
-                                .eq(com.company.codeinsight.modules.ai.entity.AiCallRecord::getTaskId, taskId)
-                                .eq(com.company.codeinsight.modules.ai.entity.AiCallRecord::getIsSuccess, 1));
-                long aiFail = aiCallRecordMapper.selectCount(
-                        new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.company.codeinsight.modules.ai.entity.AiCallRecord>()
-                                .eq(com.company.codeinsight.modules.ai.entity.AiCallRecord::getTaskId, taskId)
-                                .eq(com.company.codeinsight.modules.ai.entity.AiCallRecord::getIsSuccess, 0));
-                execLog.log(taskId, "<<< AI_ANALYZING 完成 (成功 " + aiOk + " 失败 " + aiFail + ", 耗时 " + (System.currentTimeMillis() - aiT0) + "ms)");
-                execLog.log(taskId, "<<< 流水线文档阶段完成");
-            } else {
-                stateMachineService.transitTo(taskId, TaskStatus.MODULE_HIERARCHY_REVIEW, null);
-                taskQueueClaimService.clearReservation(taskId);
-                execLog.log(taskId, "<<< 暂停 — 等待人工复核模块层级");
-                return true;
-            }
-            return false;
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            throw new BusinessException("等待解析许可被中断: " + ie.getMessage());
-        } finally {
-            if (parseHeld) {
-                releaseParsePermitAndEvict(taskId);
-            }
+        // 4. AI_ANALYZING → MODULE_HIERARCHY（不占 parse.concurrency；AI 走 ai.concurrency）
+        if (!TaskStatus.AI_ANALYZING.name().equals(task.getStatus())) {
+            stateMachineService.transitTo(taskId, TaskStatus.AI_ANALYZING, null);
         }
+        execLog.log(taskId, ">>> AI_ANALYZING — AI 归纳");
+        execLog.log(taskId, "  aiMock=" + aiSummaryService.isAiMock() + " | model="
+                + (task.getModelName() != null ? task.getModelName() : "(default)"));
+        execLog.log(taskId, "  aiRetry       = hierarchyMaxAttempts=" + aiRetryProperties.getHierarchyMaxAttempts()
+                + " docMaxAttempts=" + aiRetryProperties.getDocMaxAttempts()
+                + " backoffMs=" + aiRetryProperties.getBackoffMs());
+        long aiT0 = System.currentTimeMillis();
+        com.company.codeinsight.modules.callchain.model.IncrementalImpact impact = analyzeIncrementalImpact(
+                taskId, projectDir, incrementalCtx, pctx);
+        // 缓存 impact 供 resumeAfterHierarchyReview 恢复 GENERATING_DOC 时使用
+        if (impact != null) {
+            impactCache.put(taskId, impact);
+        }
+        stateMachineService.transitTo(taskId, TaskStatus.MODULE_HIERARCHY, null);
+        execLog.log(taskId, ">>> MODULE_HIERARCHY — AI 提炼模块层级");
+        long t1 = System.currentTimeMillis();
+        com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy hierarchy =
+                moduleHierarchyService.buildAndPersist(taskId, projectDir, incrementalCtx, impact);
+        int modCount = hierarchy.getModules() != null ? hierarchy.getModules().size() : 0;
+        execLog.log(taskId, "  模块数         = " + modCount);
+        execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
+
+        // 5. 调试断点 / BASELINE_DOC_INHERIT / GENERATING_DOC
+        if (!Boolean.TRUE.equals(task.getRequireHierarchyReview())) {
+            // 跳过层级复核：INCREMENTAL 先走基线文档继承，再生成文档
+            if ("INCREMENTAL".equals(task.getType())) {
+                runBaselineDocInheritAndGenerateDoc(taskId, task, incrementalCtx, impact);
+            } else {
+                execLog.log(taskId, ">>> GENERATING_DOC — 生成文档");
+                t1 = System.currentTimeMillis();
+                stateMachineService.transitTo(taskId, TaskStatus.GENERATING_DOC, null);
+                aiSummaryService.generateDraftDocument(taskId,
+                        decompilePromptService.requireTaskPromptContent(task,
+                                com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
+                        incrementalCtx, impact);
+                finishAfterDocGenerated(taskId);
+                execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
+            }
+            // AI 阶段终态汇总：从 ci_ai_call_record 统计本次任务的成功/失败次数
+            long aiOk = aiCallRecordMapper.selectCount(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.company.codeinsight.modules.ai.entity.AiCallRecord>()
+                            .eq(com.company.codeinsight.modules.ai.entity.AiCallRecord::getTaskId, taskId)
+                            .eq(com.company.codeinsight.modules.ai.entity.AiCallRecord::getIsSuccess, 1));
+            long aiFail = aiCallRecordMapper.selectCount(
+                    new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<com.company.codeinsight.modules.ai.entity.AiCallRecord>()
+                            .eq(com.company.codeinsight.modules.ai.entity.AiCallRecord::getTaskId, taskId)
+                            .eq(com.company.codeinsight.modules.ai.entity.AiCallRecord::getIsSuccess, 0));
+            execLog.log(taskId, "<<< AI_ANALYZING 完成 (成功 " + aiOk + " 失败 " + aiFail + ", 耗时 " + (System.currentTimeMillis() - aiT0) + "ms)");
+            execLog.log(taskId, "<<< 流水线文档阶段完成");
+        } else {
+            stateMachineService.transitTo(taskId, TaskStatus.MODULE_HIERARCHY_REVIEW, null);
+            taskQueueClaimService.clearReservation(taskId);
+            execLog.log(taskId, "<<< 暂停 — 等待人工复核模块层级");
+            return true;
+        }
+        return false;
     }
 
     /**
@@ -1697,7 +1676,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     /**
      * 孤儿任务阶段重入。调用前须已 CAS 接管 claimed_by。
      * <ul>
-     *   <li>PULLING_CODE / PARSING_CODE → FAILED（清产物）→ PENDING，由调度器重跑整条流水线</li>
+     *   <li>PULL_QUEUED / PULLING_CODE / PARSE_QUEUED / PARSING_CODE → FAILED（清产物）→ PENDING，由调度器重跑整条流水线</li>
      *   <li>AI_ANALYZING / MODULE_HIERARCHY → 重建上下文后 continueAfterEntrypointReview</li>
      *   <li>BASELINE_DOC_INHERIT / GENERATING_DOC → 重建上下文后走继承+生成或仅生成</li>
      *   <li>PUSHING → FAILED，提示手工重推</li>
@@ -1719,7 +1698,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 + " claimedBy=" + task.getClaimedBy());
 
         switch (status) {
-            case PULLING_CODE, PARSING_CODE -> reclaimEarlyStageToPending(task);
+            case PULL_QUEUED, PULLING_CODE, PARSE_QUEUED, PARSING_CODE -> reclaimEarlyStageToPending(task);
             case AI_ANALYZING, MODULE_HIERARCHY -> reclaimFromAiAnalyzing(task, previousClaimedBy, previousLeaseUntil);
             case BASELINE_DOC_INHERIT, GENERATING_DOC -> reclaimFromDocStage(task, previousClaimedBy, previousLeaseUntil);
             case PUSHING -> {
@@ -1812,7 +1791,6 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                     releaseTerminalRuntimeMemory(id);
                 } else {
                     taskCache.remove(id);
-                    releaseParsePermitAndEvict(id);
                 }
                 taskConcurrencyLimiter.release(systemId, id);
             }
@@ -1821,45 +1799,31 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
 
     /** @return true 若停在 MODULE_HIERARCHY_REVIEW（断点上下文需保留） */
     private boolean reclaimModuleHierarchyOnly(Long id, DecompileTask task, PipelineContext pctx) {
-        boolean parseHeld = false;
-        try {
-            acquireParsePermit(id);
-            parseHeld = true;
-            execLog.log(id, ">>> 孤儿接管 — 从 MODULE_HIERARCHY 重入");
-            com.company.codeinsight.modules.callchain.model.IncrementalImpact impact = impactCache.get(id);
-            if (impact == null) {
-                impact = analyzeIncrementalImpact(id, pctx.projectDir(), pctx.ctx(), pctx);
-                if (impact != null) {
-                    impactCache.put(id, impact);
-                }
-            }
-            moduleHierarchyService.buildAndPersist(id, pctx.projectDir(), pctx.ctx(), impact);
-            releaseParsePermitAndEvict(id);
-            parseHeld = false;
-            if (!Boolean.TRUE.equals(task.getRequireHierarchyReview())) {
-                if ("INCREMENTAL".equals(task.getType())) {
-                    runBaselineDocInheritAndGenerateDoc(id, task, pctx.ctx(), impact);
-                } else {
-                    stateMachineService.transitTo(id, TaskStatus.GENERATING_DOC, null);
-                    aiSummaryService.generateDraftDocument(id,
-                            decompilePromptService.requireTaskPromptContent(task,
-                                    com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
-                            pctx.ctx(), impact);
-                    finishAfterDocGenerated(id);
-                }
-                return false;
-            }
-            stateMachineService.transitTo(id, TaskStatus.MODULE_HIERARCHY_REVIEW, null);
-            execLog.log(id, "<<< 暂停 — 等待人工复核模块层级");
-            return true;
-        } catch (InterruptedException ie) {
-            Thread.currentThread().interrupt();
-            throw new BusinessException("等待解析许可被中断");
-        } finally {
-            if (parseHeld) {
-                releaseParsePermitAndEvict(id);
+        execLog.log(id, ">>> 孤儿接管 — 从 MODULE_HIERARCHY 重入");
+        com.company.codeinsight.modules.callchain.model.IncrementalImpact impact = impactCache.get(id);
+        if (impact == null) {
+            impact = analyzeIncrementalImpact(id, pctx.projectDir(), pctx.ctx(), pctx);
+            if (impact != null) {
+                impactCache.put(id, impact);
             }
         }
+        moduleHierarchyService.buildAndPersist(id, pctx.projectDir(), pctx.ctx(), impact);
+        if (!Boolean.TRUE.equals(task.getRequireHierarchyReview())) {
+            if ("INCREMENTAL".equals(task.getType())) {
+                runBaselineDocInheritAndGenerateDoc(id, task, pctx.ctx(), impact);
+            } else {
+                stateMachineService.transitTo(id, TaskStatus.GENERATING_DOC, null);
+                aiSummaryService.generateDraftDocument(id,
+                        decompilePromptService.requireTaskPromptContent(task,
+                                com.company.codeinsight.modules.prompt.entity.DecompilePrompt.TYPE_DOCUMENT_GENERATION),
+                        pctx.ctx(), impact);
+                finishAfterDocGenerated(id);
+            }
+            return false;
+        }
+        stateMachineService.transitTo(id, TaskStatus.MODULE_HIERARCHY_REVIEW, null);
+        execLog.log(id, "<<< 暂停 — 等待人工复核模块层级");
+        return true;
     }
 
     private void reclaimFromDocStage(DecompileTask task,
@@ -1951,6 +1915,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             long t0 = System.currentTimeMillis();
             boolean pausedForEntrypointReview = false;
             boolean pausedForHierarchyReview = false;
+            boolean pullHeld = false;
             boolean parseHeld = false;
             try {
                 DecompileTask taskEarly = this.getById(taskId);
@@ -1966,8 +1931,6 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 execLog.log(taskId, "══════ 流水线启动 taskId=" + taskId + " ══════");
                 assertNotCancelled(taskId);
 
-                // 1. PULLING_CODE
-                stateMachineService.transitTo(taskId, TaskStatus.PULLING_CODE, null);
                 DecompileTask task = this.getById(taskId);
                 if (task == null) task = taskCache.get(taskId);
                 if (task == null) throw new BusinessException("任务不存在, ID: " + taskId);
@@ -1975,6 +1938,14 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 decompilePromptService.validateTaskPromptBinding(
                         task.getModularizePromptId(), task.getDocumentPromptId());
 
+                // 1. PULL_QUEUED → 占 pull → PULLING_CODE
+                if (!TaskStatus.PULL_QUEUED.name().equals(task.getStatus())) {
+                    stateMachineService.transitTo(taskId, TaskStatus.PULL_QUEUED, null);
+                }
+                execLog.log(taskId, ">>> PULL_QUEUED — 等待拉代码槽");
+                acquirePullPermit(taskId);
+                pullHeld = true;
+                stateMachineService.transitTo(taskId, TaskStatus.PULLING_CODE, null);
                 execLog.log(taskId, ">>> PULLING_CODE — 拉取代码");
                 execLog.log(taskId, "  model          = " + (task.getModelName() != null ? task.getModelName() : "(default)"));
                 execLog.log(taskId, "  hierarchyReview= " + task.getRequireHierarchyReview());
@@ -1986,6 +1957,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                         codeScannerService.pullAndScan(taskId, task.getRepositoryId(), task.getType());
                 File projectDir = scanResult.getProjectDir();
                 com.company.codeinsight.modules.scanner.model.IncrementalContext incrementalCtx = scanResult.getIncrementalContext();
+                releasePullPermit(taskId);
+                pullHeld = false;
                 assertNotCancelled(taskId);
 
                 // v1: 用仓库最近 PUSHED 任务的 ID 作为 baselineTaskId，注入到 IncrementalContext
@@ -2038,7 +2011,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 }
                 execLog.log(taskId, "  耗时 " + (System.currentTimeMillis() - t1) + "ms");
 
-                // 2. PARSING_CODE（重解析段：持有 parse.concurrency 许可）
+                // 2. PARSE_QUEUED → 占 parse → PARSING_CODE（仅 AST + 入口发现；不含 AI 层级）
+                stateMachineService.transitTo(taskId, TaskStatus.PARSE_QUEUED, null);
+                execLog.log(taskId, ">>> PARSE_QUEUED — 等待解析槽");
                 acquireParsePermit(taskId);
                 parseHeld = true;
                 stateMachineService.transitTo(taskId, TaskStatus.PARSING_CODE, null);
@@ -2072,9 +2047,11 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                 // （scanner 产出的 IncrementalContext 不带 baselineTaskId）。
                 pipelineContextCache.put(taskId, PipelineContext.fromScan(projectDir, scanResult, incrementalCtx));
 
+                // 本地重解析段结束：释放 parse，AI/层级不再占用 parse.concurrency
+                releaseParsePermitAndEvict(taskId);
+                parseHeld = false;
+
                 if (Boolean.TRUE.equals(task.getRequireEntrypointReview())) {
-                    releaseParsePermitAndEvict(taskId);
-                    parseHeld = false;
                     execLog.log(taskId, ">>> ENTRYPOINT_REVIEW — 入口复核");
                     stateMachineService.transitTo(taskId, TaskStatus.ENTRYPOINT_REVIEW, null);
                     taskQueueClaimService.clearReservation(taskId);
@@ -2082,19 +2059,17 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
                     pausedForEntrypointReview = true;
                     return;
                 }
-                // 许可所有权交给 continueAfterEntrypointReview（其内部结束时释放 parse）
-                parseHeld = false;
                 PipelineContext runCtx = pipelineContextCache.get(taskId);
                 pausedForHierarchyReview = continueAfterEntrypointReview(
                         taskId, task, projectDir, incrementalCtx, runCtx);
                 return;
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
-                execLog.logException(taskId, "等待解析许可被中断", ie);
+                execLog.logException(taskId, "等待拉代码/解析许可被中断", ie);
                 if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
                     failUnlessCancelled(taskId, new TaskCancelledException(taskId));
                 } else {
-                    failUnlessCancelled(taskId, new BusinessException("等待解析许可被中断"));
+                    failUnlessCancelled(taskId, new BusinessException("等待拉代码/解析许可被中断"));
                 }
             } catch (Exception e) {
                 execLog.logException(taskId, "流水线异常", e);
@@ -2102,6 +2077,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
             } finally {
                 if (cancellationRegistry != null) {
                     cancellationRegistry.unregisterPipeline(taskId);
+                }
+                if (pullHeld) {
+                    releasePullPermit(taskId);
                 }
                 if (parseHeld) {
                     releaseParsePermitAndEvict(taskId);

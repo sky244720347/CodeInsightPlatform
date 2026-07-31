@@ -12,7 +12,7 @@ import org.springframework.stereotype.Component;
 
 /**
  * 集群模式下：实例心跳 + AI 集群闸对账续租 + 系统级任务闸（maxConcurrentTasks）对账续租。
- * 本机 task.concurrency / parse.concurrency 不经 Redis。
+ * 本机 task.concurrency / pull.concurrency / parse.concurrency 不经 Redis。
  * 另对流水线任务 DB 租约做续租（单机/集群均执行）。
  */
 @Slf4j

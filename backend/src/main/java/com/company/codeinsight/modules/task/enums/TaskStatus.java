@@ -19,9 +19,19 @@ public enum TaskStatus {
      */
     RESUME_QUEUED,
     /**
+     * 已占任务槽，等待本机拉代码槽（{@code pull.concurrency}）。
+     * 仍持有 task.concurrency，不释放给其它 PENDING。
+     */
+    PULL_QUEUED,
+    /**
      * 代码拉取中（克隆 Git 库或复制本地文件）
      */
     PULLING_CODE,
+    /**
+     * 已占任务槽，等待本机解析槽（{@code parse.concurrency}；仅 AST/入口发现）。
+     * 仍持有 task.concurrency，不释放给其它 PENDING。
+     */
+    PARSE_QUEUED,
     /**
      * 代码静态解析中（执行 JavaParser 静态 AST 解析）
      */

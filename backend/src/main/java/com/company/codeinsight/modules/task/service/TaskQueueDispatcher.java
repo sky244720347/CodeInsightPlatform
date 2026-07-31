@@ -14,7 +14,7 @@ import org.springframework.stereotype.Service;
  * 知识构建任务队列调度器。
  * <p>每个节点均可调度：用 DB {@code FOR UPDATE SKIP LOCKED} 抢 {@code PENDING}/{@code RESUME_QUEUED}，
  * 再占用<strong>本机</strong> {@link TaskConcurrencyLimiter} 槽位后拉起流水线或断点续跑。
- * 任务/解析并发按机器限流；AI 并发仍为集群总闸。</p>
+ * 任务 / 拉代码 / 解析并发按机器限流；AI 并发仍为集群总闸。</p>
  */
 @Slf4j
 @Service
@@ -86,7 +86,7 @@ public class TaskQueueDispatcher {
     }
 
     /**
-     * 普通任务从 PULLING_CODE 起跑；知识纠错任务按 resume_from 直接进入续跑阶段。
+     * 普通任务进入 PULL_QUEUED（等拉代码槽）；知识纠错任务按 resume_from 直接进入续跑阶段。
      */
     void transitPendingToExecutionStart(DecompileTask task) {
         if (KnowledgeRemediationConstants.TRIGGER_SOURCE.equals(task.getTriggerSource())) {
@@ -100,6 +100,6 @@ public class TaskQueueDispatcher {
             }
             return;
         }
-        stateMachineService.transitTo(task, TaskStatus.PULLING_CODE, null);
+        stateMachineService.transitTo(task, TaskStatus.PULL_QUEUED, null);
     }
 }

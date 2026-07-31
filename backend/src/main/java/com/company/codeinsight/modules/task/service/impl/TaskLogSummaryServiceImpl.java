@@ -44,11 +44,21 @@ public class TaskLogSummaryServiceImpl implements TaskLogSummaryService {
     );
 
     private static final Pattern STAGE_DURATION = Pattern.compile(
-            "^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\]\\s+耗时\\s+(\\d+)ms.*$"
+            "^\\[(\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3})\\]\\s+耗时\\s+(\\d+)ms.*$"
     );
 
+    /** 文档生成 AI 落库的 call_stage：默认 function 粒度写 FUNCTION_DOC，module 粒度写 MODULE_DOC */
+    private static final List<String> DOC_AI_STAGES = List.of("FUNCTION_DOC", "MODULE_DOC");
+
     private static final Pattern STAGE_END_OK = Pattern.compile(
-            "^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\] <<< (流水线完成 → PENDING_REVIEW|暂停 — 等待人工复核模块层级|暂停 — 等待人工复核知识入口).*$"
+            "^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\] <<< ("
+                    + "流水线完成 → PENDING_REVIEW"
+                    + "|跳过知识复核"
+                    + "|流水线文档阶段完成"
+                    + "|纠错流水线文档阶段完成"
+                    + "|暂停 — 等待人工复核模块层级"
+                    + "|暂停 — 等待人工复核知识入口"
+                    + ").*$"
     );
     private static final Pattern STAGE_END_ERROR = Pattern.compile(
             "^\\[\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}\\.\\d{3}\\] !!! 流水线异常:\\s*(.+)$"
@@ -123,24 +133,6 @@ public class TaskLogSummaryServiceImpl implements TaskLogSummaryService {
         counters.setTotalFiles(totalFiles == null ? 0 : totalFiles.intValue());
         dto.setCounters(counters);
 
-        java.util.function.Function<String, TaskLogSummaryDto.AiCalls> countByStage = (stage) -> {
-            TaskLogSummaryDto.AiCalls c = new TaskLogSummaryDto.AiCalls();
-            LambdaQueryWrapper<AiCallRecord> totalW = new LambdaQueryWrapper<AiCallRecord>()
-                    .eq(AiCallRecord::getTaskId, taskId)
-                    .eq(AiCallRecord::getCallStage, stage);
-            Long total = aiCallRecordMapper.selectCount(totalW);
-            Long ok = aiCallRecordMapper.selectCount(
-                    new LambdaQueryWrapper<AiCallRecord>()
-                            .eq(AiCallRecord::getTaskId, taskId)
-                            .eq(AiCallRecord::getCallStage, stage)
-                            .eq(AiCallRecord::getIsSuccess, 1)
-            );
-            c.setTotal(total == null ? 0 : total.intValue());
-            c.setSuccess(ok == null ? 0 : ok.intValue());
-            c.setFailed((total == null ? 0 : total.intValue()) - (ok == null ? 0 : ok.intValue()));
-            return c;
-        };
-
         TaskLogSummaryDto.AiCalls aiCalls = new TaskLogSummaryDto.AiCalls();
         Long aiTotal = aiCallRecordMapper.selectCount(
                 new LambdaQueryWrapper<AiCallRecord>().eq(AiCallRecord::getTaskId, taskId)
@@ -154,8 +146,9 @@ public class TaskLogSummaryServiceImpl implements TaskLogSummaryService {
         aiCalls.setSuccess(aiOk == null ? 0 : aiOk.intValue());
         aiCalls.setFailed(aiTotal == null ? 0 : (aiTotal.intValue() - (aiOk == null ? 0 : aiOk.intValue())));
         dto.setAiCalls(aiCalls);
-        dto.setHierarchyAiCalls(countByStage.apply("MODULE_HIERARCHY"));
-        dto.setDocAiCalls(countByStage.apply("MODULE_DOC"));
+        dto.setHierarchyAiCalls(countAiCallsByStages(taskId, List.of("MODULE_HIERARCHY")));
+        // 默认 granularity=function 时落库为 FUNCTION_DOC，不能只查 MODULE_DOC
+        dto.setDocAiCalls(countAiCallsByStages(taskId, DOC_AI_STAGES));
 
         TaskLogSummaryDto.Current current = new TaskLogSummaryDto.Current();
         current.setTotalFiles(counters.getTotalFiles());
@@ -172,6 +165,7 @@ public class TaskLogSummaryServiceImpl implements TaskLogSummaryService {
         if (logContent != null && !logContent.isBlank()) {
             try {
                 PipelineParseResult parsed = parsePipelineLog(logContent, STAGE_LABEL);
+                reconcilePipelineWithTaskStatus(parsed.stages, task.getStatus());
                 dto.setPipeline(parsed.stages);
                 if (parsed.lastError != null && TaskStatus.FAILED.name().equals(task.getStatus())) {
                     dto.setLastError(truncate(parsed.lastError, 200));
@@ -188,6 +182,62 @@ public class TaskLogSummaryServiceImpl implements TaskLogSummaryService {
         }
 
         return dto;
+    }
+
+    private TaskLogSummaryDto.AiCalls countAiCallsByStages(Long taskId, List<String> stages) {
+        TaskLogSummaryDto.AiCalls c = new TaskLogSummaryDto.AiCalls();
+        Long total = aiCallRecordMapper.selectCount(
+                new LambdaQueryWrapper<AiCallRecord>()
+                        .eq(AiCallRecord::getTaskId, taskId)
+                        .in(AiCallRecord::getCallStage, stages)
+        );
+        Long ok = aiCallRecordMapper.selectCount(
+                new LambdaQueryWrapper<AiCallRecord>()
+                        .eq(AiCallRecord::getTaskId, taskId)
+                        .in(AiCallRecord::getCallStage, stages)
+                        .eq(AiCallRecord::getIsSuccess, 1)
+        );
+        int totalInt = total == null ? 0 : total.intValue();
+        int okInt = ok == null ? 0 : ok.intValue();
+        c.setTotal(totalInt);
+        c.setSuccess(okInt);
+        c.setFailed(totalInt - okInt);
+        return c;
+    }
+
+    /**
+     * 任务已离开流水线执行态时，把日志解析残留的 running 收成终态，避免看板仍显示「当前：生成文档」。
+     */
+    public static void reconcilePipelineWithTaskStatus(List<PipelineStageStatDto> stages, String status) {
+        if (stages == null || status == null) {
+            return;
+        }
+        boolean failed = TaskStatus.FAILED.name().equals(status);
+        boolean cancelled = TaskStatus.CANCELLED.name().equals(status);
+        boolean finished = failed || cancelled
+                || TaskStatus.PENDING_REVIEW.name().equals(status)
+                || TaskStatus.REVIEWING.name().equals(status)
+                || TaskStatus.CONFIRMED.name().equals(status)
+                || TaskStatus.PUSHING.name().equals(status)
+                || TaskStatus.PUSHED.name().equals(status)
+                || TaskStatus.ARCHIVED.name().equals(status)
+                || TaskStatus.MODULE_HIERARCHY_REVIEW.name().equals(status)
+                || TaskStatus.ENTRYPOINT_REVIEW.name().equals(status);
+        if (!finished) {
+            return;
+        }
+        for (PipelineStageStatDto s : stages) {
+            if (!"running".equals(s.getStatus())) {
+                continue;
+            }
+            if (failed) {
+                s.setStatus("error");
+            } else if (cancelled) {
+                s.setStatus("skipped");
+            } else {
+                s.setStatus("done");
+            }
+        }
     }
 
     private List<PipelineStageStatDto> emptyPipeline() {
@@ -256,6 +306,9 @@ public class TaskLogSummaryServiceImpl implements TaskLogSummaryService {
         for (String raw : lines) {
             Matcher begin = STAGE_BEGIN.matcher(raw);
             if (begin.find()) {
+                if (terminated) {
+                    continue;
+                }
                 String key = begin.group(2);
                 if (active != null && "running".equals(active.getStatus())) {
                     active.setStatus("done");
@@ -274,11 +327,9 @@ public class TaskLogSummaryServiceImpl implements TaskLogSummaryService {
             if (active != null) {
                 Matcher dur = STAGE_DURATION.matcher(raw);
                 if (dur.find()) {
-                    long ms = Long.parseLong(dur.group(1));
+                    long ms = Long.parseLong(dur.group(2));
                     active.setDurationMs(ms);
-                    if (active.getStartedAt() != null) {
-                        active.setEndedAt(toLocalDateTime(dur.group(1)));
-                    }
+                    active.setEndedAt(toLocalDateTime(dur.group(1)));
                 }
             }
 
@@ -287,8 +338,9 @@ public class TaskLogSummaryServiceImpl implements TaskLogSummaryService {
                 if (active != null && "running".equals(active.getStatus())) {
                     active.setStatus("done");
                 }
+                // 不 break：GENERATING_DOC 的「耗时 Xms」常写在结束标记之后
                 terminated = true;
-                break;
+                continue;
             }
 
             Matcher endErr = STAGE_END_ERROR.matcher(raw);
@@ -298,7 +350,7 @@ public class TaskLogSummaryServiceImpl implements TaskLogSummaryService {
                 }
                 result.lastError = endErr.group(1).trim();
                 terminated = true;
-                break;
+                continue;
             }
 
             Matcher mod = MODULE_PROGRESS.matcher(raw);
@@ -318,9 +370,6 @@ public class TaskLogSummaryServiceImpl implements TaskLogSummaryService {
             }
         }
 
-        if (!terminated && active != null && "running".equals(active.getStatus())) {
-            // 保持 running，由前端结合 task.status 判断
-        }
         return result;
     }
 

@@ -41,7 +41,9 @@ public class TaskConcurrencyLimiter {
 
     /** 流水线占用系统集群闸期间的典型状态（对账用） */
     private static final Set<String> SYSTEM_PERMIT_HOLDING_STATUSES = Set.of(
+            TaskStatus.PULL_QUEUED.name(),
             TaskStatus.PULLING_CODE.name(),
+            TaskStatus.PARSE_QUEUED.name(),
             TaskStatus.PARSING_CODE.name(),
             TaskStatus.SPLITTING_TASK.name(),
             TaskStatus.AI_ANALYZING.name(),
@@ -80,7 +82,7 @@ public class TaskConcurrencyLimiter {
 
     @PostConstruct
     public void init() {
-        rebuildGlobal(systemConfigService.getInt("task.concurrency", 2));
+        rebuildGlobal(systemConfigService.getInt("task.concurrency", 4));
     }
 
     public synchronized void rebuildGlobal(int permits) {
@@ -96,7 +98,7 @@ public class TaskConcurrencyLimiter {
      */
     public boolean tryAcquire(Long systemId, Long taskId) {
         if (nodeLocal == null) {
-            rebuildGlobal(systemConfigService.getInt("task.concurrency", 2));
+            rebuildGlobal(systemConfigService.getInt("task.concurrency", 4));
         }
         if (taskId != null && localHeldTasks.containsKey(taskId)) {
             return true;

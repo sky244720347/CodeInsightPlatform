@@ -91,8 +91,8 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
 
         LocalDateTime now = LocalDateTime.now();
 
-        // 任务首次进入自动执行或从排队重试时记录挂钟启动时间（仅作参考，不参与执行耗时）
-        if (targetStatus == TaskStatus.PULLING_CODE) {
+        // 任务首次进入拉代码排队/拉取时记录挂钟启动时间（仅作参考，不参与执行耗时）
+        if (targetStatus == TaskStatus.PULL_QUEUED || targetStatus == TaskStatus.PULLING_CODE) {
             if (task.getStartedAt() == null
                     || currentStatus == TaskStatus.FAILED
                     || currentStatus == TaskStatus.CANCELLED) {
@@ -122,8 +122,8 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
 
         // 根据所处阶段，自动分配标准进度百分比，供前端进度条进行直观展示
         switch (targetStatus) {
-            case PENDING, RESUME_QUEUED -> task.setProgress(0);
-            case PULLING_CODE -> task.setProgress(10);
+            case PENDING, RESUME_QUEUED, PULL_QUEUED -> task.setProgress(0);
+            case PULLING_CODE, PARSE_QUEUED -> task.setProgress(10);
             case PARSING_CODE -> task.setProgress(35);
             case SPLITTING_TASK -> task.setProgress(40);
             case ENTRYPOINT_REVIEW -> task.setProgress(45);
@@ -135,6 +135,7 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
             case PENDING_REVIEW -> task.setProgress(100);
             case CONFIRMED -> task.setProgress(100);
             case PUSHED -> task.setProgress(100);
+            default -> { /* FAILED/CANCELLED/REVIEWING 等保持既有 progress */ }
         }
 
         // 持久化更新至数据库
@@ -248,9 +249,15 @@ public class TaskStateMachineServiceImpl implements TaskStateMachineService {
         // 根据状态转移矩阵判定流转合法性
         return switch (current) {
             case DRAFT -> target == TaskStatus.PENDING || target == TaskStatus.CANCELLED;
-            case PENDING -> target == TaskStatus.PULLING_CODE || target == TaskStatus.AI_ANALYZING
-                    || target == TaskStatus.GENERATING_DOC || target == TaskStatus.CANCELLED || target == TaskStatus.FAILED;
-            case PULLING_CODE -> target == TaskStatus.PARSING_CODE || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
+            case PENDING -> target == TaskStatus.PULL_QUEUED || target == TaskStatus.PULLING_CODE
+                    || target == TaskStatus.AI_ANALYZING || target == TaskStatus.GENERATING_DOC
+                    || target == TaskStatus.CANCELLED || target == TaskStatus.FAILED;
+            case PULL_QUEUED -> target == TaskStatus.PULLING_CODE || target == TaskStatus.FAILED
+                    || target == TaskStatus.CANCELLED;
+            case PULLING_CODE -> target == TaskStatus.PARSE_QUEUED || target == TaskStatus.PARSING_CODE
+                    || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
+            case PARSE_QUEUED -> target == TaskStatus.PARSING_CODE || target == TaskStatus.FAILED
+                    || target == TaskStatus.CANCELLED;
             case PARSING_CODE -> target == TaskStatus.ENTRYPOINT_REVIEW || target == TaskStatus.AI_ANALYZING
                     || target == TaskStatus.FAILED || target == TaskStatus.CANCELLED;
             case SPLITTING_TASK -> target == TaskStatus.ENTRYPOINT_REVIEW || target == TaskStatus.AI_ANALYZING

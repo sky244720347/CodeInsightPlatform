@@ -29,6 +29,8 @@ public final class TaskExecutionDuration {
             TaskStatus.DRAFT,
             TaskStatus.PENDING,
             TaskStatus.RESUME_QUEUED,
+            TaskStatus.PULL_QUEUED,
+            TaskStatus.PARSE_QUEUED,
             TaskStatus.ENTRYPOINT_REVIEW,
             TaskStatus.MODULE_HIERARCHY_REVIEW,
             TaskStatus.PENDING_REVIEW,

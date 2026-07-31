@@ -25,8 +25,9 @@ import java.util.List;
 import java.util.Set;
 
 /**
- * 孤儿流水线任务自动接管：无认领 ∨ 租约过期。
- * <p>集群下「仅心跳已死但租约仍有效」不抢，避免误杀仍在跑的 worker；真崩溃无法续租，等 lease 过期后再接管。</p>
+ * 孤儿流水线任务自动接管：无认领，或「租约过宽限 ∧ 认领方心跳已死」。
+ * <p>禁止仅租约刚过期就抢；「仅心跳已死但租约未过宽限」也不抢。
+ * 详见 docs/orphan-reclaim-lease-heartbeat-design.md。</p>
  * <p>每个节点均可扫描与续跑（有本机槽才真正拉起）；不再依赖 Leader 独占执行。</p>
  */
 @Slf4j
@@ -35,7 +36,9 @@ import java.util.Set;
 public class TaskOrphanReclaimScheduler {
 
     private static final Set<String> RECLAIMABLE_STATUSES = Set.of(
+            TaskStatus.PULL_QUEUED.name(),
             TaskStatus.PULLING_CODE.name(),
+            TaskStatus.PARSE_QUEUED.name(),
             TaskStatus.PARSING_CODE.name(),
             TaskStatus.AI_ANALYZING.name(),
             TaskStatus.MODULE_HIERARCHY.name(),
@@ -182,53 +185,70 @@ public class TaskOrphanReclaimScheduler {
      * 孤儿判定。
      * <ul>
      *   <li>无认领 → 孤儿</li>
-     *   <li>租约过期 → 孤儿（真死节点无法续租）</li>
-     *   <li>集群：仅心跳已死但租约仍有效 → <b>不</b>接管</li>
+     *   <li>租约过宽限 ∧ 认领方心跳已死 → 孤儿</li>
+     *   <li>单机另：认领不是本进程（热重启）→ 孤儿</li>
+     *   <li>仅租约刚过期 / 仅心跳已死 → <b>不</b>接管</li>
      * </ul>
      */
     boolean isOrphan(DecompileTask task) {
         String claimedBy = task.getClaimedBy();
         LocalDateTime leaseUntil = task.getLeaseUntil();
-        LocalDateTime now = LocalDateTime.now();
-        boolean leaseExpired = leaseUntil != null && leaseUntil.isBefore(now);
         boolean noClaimMeta = !StringUtils.hasText(claimedBy) && leaseUntil == null;
-
-        if (noClaimMeta || leaseExpired) {
+        if (noClaimMeta) {
             return true;
         }
 
         if (!clusterProperties.isEnabled()) {
-            // 单机：认领不是本进程（例如热重启后旧 claimed_by）
-            return StringUtils.hasText(claimedBy) && !clusterInstanceId.get().equals(claimedBy);
+            // 单机：认领不是本进程（热重启后旧 claimed_by）→ 立刻可接管
+            if (StringUtils.hasText(claimedBy) && !clusterInstanceId.get().equals(claimedBy)) {
+                return true;
+            }
+            // 单机不写 Redis 心跳；过宽限即可（活任务仍由 isHeldLocally / isPipelineThreadActive 挡住）
+            return isLeaseExpiredWithGrace(leaseUntil);
         }
 
-        // 集群：心跳死但 lease 仍有效 → 视为可能仍存活（心跳漏续），等租约过期
-        return false;
+        if (!isLeaseExpiredWithGrace(leaseUntil)) {
+            return false;
+        }
+        // 有租约无认领：异常残留，过宽限后可接管
+        if (!StringUtils.hasText(claimedBy)) {
+            return true;
+        }
+        // 集群：过宽限 ∧ 认领方心跳已死
+        return !instanceHeartbeat.isAlive(claimedBy);
+    }
+
+    /** {@code now > lease_until + grace} */
+    boolean isLeaseExpiredWithGrace(LocalDateTime leaseUntil) {
+        if (leaseUntil == null) {
+            return false;
+        }
+        int grace = clusterProperties.resolveTaskLeaseGraceMinutes();
+        return LocalDateTime.now().isAfter(leaseUntil.plusMinutes(grace));
     }
 
     String describeOrphanReason(DecompileTask task) {
         String claimedBy = task.getClaimedBy();
         LocalDateTime leaseUntil = task.getLeaseUntil();
-        boolean leaseExpired = leaseUntil != null && leaseUntil.isBefore(LocalDateTime.now());
         boolean noClaimMeta = !StringUtils.hasText(claimedBy) && leaseUntil == null;
         if (noClaimMeta) {
             return "NO_CLAIM";
         }
-        if (!clusterProperties.isEnabled()) {
-            if (StringUtils.hasText(claimedBy) && !clusterInstanceId.get().equals(claimedBy)) {
-                return "CLAIMED_BY_OTHER_PROCESS";
-            }
-            if (leaseExpired) {
-                return "LEASE_EXPIRED";
-            }
-            return "UNKNOWN";
+        if (!clusterProperties.isEnabled()
+                && StringUtils.hasText(claimedBy)
+                && !clusterInstanceId.get().equals(claimedBy)) {
+            return "CLAIMED_BY_OTHER_PROCESS";
         }
+        boolean pastGrace = isLeaseExpiredWithGrace(leaseUntil);
         boolean heartbeatDead = StringUtils.hasText(claimedBy) && !instanceHeartbeat.isAlive(claimedBy);
-        if (leaseExpired && heartbeatDead) {
-            return "HEARTBEAT_DEAD+LEASE_EXPIRED";
+        if (pastGrace && heartbeatDead) {
+            return "LEASE_GRACE_EXPIRED+HEARTBEAT_DEAD";
         }
-        if (leaseExpired) {
-            return "LEASE_EXPIRED";
+        if (pastGrace && !StringUtils.hasText(claimedBy)) {
+            return "LEASE_GRACE_EXPIRED+NO_CLAIMER";
+        }
+        if (pastGrace) {
+            return "LEASE_GRACE_EXPIRED";
         }
         return "UNKNOWN";
     }

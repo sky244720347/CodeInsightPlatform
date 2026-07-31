@@ -13,8 +13,9 @@ import java.util.concurrent.ConcurrentMap;
 import java.util.concurrent.Semaphore;
 
 /**
- * 重解析阶段并发闸门（AST / 入口发现 / 增量影响 / 层级构建）— <b>本机维度</b>。
- * <p>{@code parse.concurrency} 限制当前 JVM 同时进行重解析的任务数，用于控制本机堆峰值。</p>
+ * 本地重解析阶段并发闸门（AST + 入口发现）— <b>本机维度</b>。
+ * <p>{@code parse.concurrency} 限制当前 JVM 同时进行 JavaParser 重解析的任务数，用于控制本机堆峰值。
+ * 不覆盖 AI 分析 / 模块层级提炼 / 文档生成（那些走 {@code ai.concurrency}）。</p>
  */
 @Slf4j
 @Service

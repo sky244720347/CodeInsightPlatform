@@ -1101,11 +1101,15 @@ COMMENT ON COLUMN ci_system_config.value IS '配置值（文本型，由业务�
 COMMENT ON COLUMN ci_system_config.description IS '配置说明';
 
 INSERT INTO ci_system_config (key, value, description, updated_by, created_by)
-VALUES ('parse.concurrency', '1', '【本机】同时进行重解析（AST/入口发现/层级构建）的任务数上限', 'sys', 'sys')
+VALUES ('task.concurrency', '4', '【本机】同时持有任务执行槽的流水线数上限', 'sys', 'sys')
 ON CONFLICT (key) DO NOTHING;
 
 INSERT INTO ci_system_config (key, value, description, updated_by, created_by)
-VALUES ('task.concurrency', '2', '【本机】同时运行的任务流水线数上限（控制内存）', 'sys', 'sys')
+VALUES ('pull.concurrency', '1', '【本机】同时进行代码拉取（pullAndScan）的任务数上限', 'sys', 'sys')
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO ci_system_config (key, value, description, updated_by, created_by)
+VALUES ('parse.concurrency', '1', '【本机】同时进行重解析（AST + 入口发现）的任务数上限；不含 AI 层级/文档', 'sys', 'sys')
 ON CONFLICT (key) DO NOTHING;
 
 -- ============================================================
