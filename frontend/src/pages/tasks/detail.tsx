@@ -29,7 +29,9 @@ const { Text, Title } = Typography;
 const runningStatuses = [
   'PENDING',
   'RESUME_QUEUED',
+  'PULL_QUEUED',
   'PULLING_CODE',
+  'PARSE_QUEUED',
   'PARSING_CODE',
   'ENTRYPOINT_REVIEW',
   'AI_ANALYZING',
@@ -65,7 +67,9 @@ const statusMeta: Record<string, { color: string; label: string; step: number }>
   PENDING: { color: 'blue', label: '排队中', step: 0 },
   /** step 由 resolveFlowStep 按 resumeFrom 动态计算，此处仅作兜底 */
   RESUME_QUEUED: { color: 'blue', label: '排队续跑', step: FLOW_STEP_AI },
+  PULL_QUEUED: { color: 'blue', label: '排队拉取', step: 1 },
   PULLING_CODE: { color: 'blue', label: '拉取代码', step: 1 },
+  PARSE_QUEUED: { color: 'cyan', label: '排队解析', step: 2 },
   PARSING_CODE: { color: 'cyan', label: '解析代码', step: 2 },
   ENTRYPOINT_REVIEW: { color: 'cyan', label: '入口复核', step: FLOW_STEP_ENTRY_REVIEW },
   AI_ANALYZING: { color: 'orange', label: 'AI 分析中', step: FLOW_STEP_AI },
@@ -320,8 +324,15 @@ const timelineItem = (s: PipelineStageStat) => {
   };
 };
 
-  // 当前进行中的阶段中文名（用于 Timeline 中高亮提示 + 友好提示的默认值）
-  const currentStageLabel = summary?.pipeline?.find((s) => s.status === 'running')?.label ?? '';
+  // 任务已离开执行态时不展示「当前：xxx」（避免跳过知识复核后仍卡在「生成文档」）
+  const taskLeftExecution = !!task && [
+    'FAILED', 'CANCELLED', 'ARCHIVED', 'PUSHED', 'PUSHING',
+    'PENDING_REVIEW', 'REVIEWING', 'CONFIRMED',
+    'ENTRYPOINT_REVIEW', 'MODULE_HIERARCHY_REVIEW',
+  ].includes(task.status);
+  const currentStageLabel = taskLeftExecution
+    ? ''
+    : (summary?.pipeline?.find((s) => s.status === 'running')?.label ?? '');
 
   // 友好提示：失败时不暴露具体异常，仅指向"查看完整日志"
   const friendlyHint = (() => {
@@ -336,6 +347,9 @@ const timelineItem = (s: PipelineStageStat) => {
     }
     if (['PENDING_REVIEW', 'REVIEWING', 'CONFIRMED'].includes(task.status)) {
       return `等待人工复核 · 执行耗时 ${sec} 秒`;
+    }
+    if (['ENTRYPOINT_REVIEW', 'MODULE_HIERARCHY_REVIEW'].includes(task.status)) {
+      return `等待人工断点复核 · 执行耗时 ${sec} 秒`;
     }
     const done = summary?.pipeline?.filter((s) => s.status === 'done' || s.status === 'skipped').length ?? 0;
     const total = summary?.pipeline?.length ?? 9;
@@ -415,8 +429,13 @@ const timelineItem = (s: PipelineStageStat) => {
   };
 
   // 上排固定 6：全量 6+5，增量含基线 6+6
+  const queuedWaiting = '排队中';
   const resumeQueuedWaiting =
-    task.status === 'RESUME_QUEUED' ? '排队中' : undefined;
+    task.status === 'RESUME_QUEUED' ? queuedWaiting : undefined;
+  const pullQueuedWaiting =
+    task.status === 'PULL_QUEUED' ? queuedWaiting : undefined;
+  const parseQueuedWaiting =
+    task.status === 'PARSE_QUEUED' ? queuedWaiting : undefined;
   const resumeOnAi =
     task.status === 'RESUME_QUEUED'
     && (task.resumeFrom === RESUME_AFTER_ENTRYPOINT || !task.resumeFrom);
@@ -431,8 +450,12 @@ const timelineItem = (s: PipelineStageStat) => {
 
   const allStepItems: StepItem[] = [
     makeItem('排队', toDisplayIndex(0)),
-    makeItem('拉取代码', toDisplayIndex(1)),
-    makeItem('静态解析', toDisplayIndex(2)),
+    makeItem('拉取代码', toDisplayIndex(1), {
+      description: pullQueuedWaiting,
+    }),
+    makeItem('静态解析', toDisplayIndex(2), {
+      description: parseQueuedWaiting,
+    }),
     makeItem('入口复核', toDisplayIndex(FLOW_STEP_ENTRY_REVIEW), {
       forced: entryReviewSkipped ? 'finish' : !entryReviewEnabled ? 'wait' : undefined,
       description: entryReviewEnabled ? undefined : (entryReviewSkipped ? '已跳过' : '未启用'),

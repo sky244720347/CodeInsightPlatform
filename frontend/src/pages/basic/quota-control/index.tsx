@@ -217,13 +217,19 @@ const QuotaControlPage: React.FC = () => {
     {
       key: 'task.concurrency',
       label: '单机任务最大并发数',
-      help: '【单机】同时跑几条流水线；系统 maxConcurrentTasks 另为集群闸',
+      help: '【单机】同时持有任务执行槽的流水线数（默认 4）；系统 maxConcurrentTasks 另为集群闸',
+      type: 'int',
+    },
+    {
+      key: 'pull.concurrency',
+      label: '单机拉代码最大并发数',
+      help: '【单机】同时 pullAndScan 的任务上限（默认 1，护磁盘/带宽）',
       type: 'int',
     },
     {
       key: 'parse.concurrency',
       label: '单机解析最大并发数',
-      help: '【单机】同时重解析（AST/入口/层级）的任务上限',
+      help: '【单机】同时重解析（AST + 入口发现）上限（默认 1）；不含 AI 层级/文档',
       type: 'int',
     },
     {
@@ -299,8 +305,8 @@ const QuotaControlPage: React.FC = () => {
           >
             <Spin spinning={configsLoading}>
               <Paragraph type="secondary" style={{ marginBottom: 12 }}>
-                修改后即时生效。task.concurrency / parse.concurrency 为单机上限（护内存）；AI
-                并发为集群总闸（护大模型）。系统 maxConcurrentTasks 在系统配置页维护，为集群级闸。
+                修改后即时生效。task / pull / parse 为单机三闸（任务槽、拉代码、AST
+                解析）；AI 并发为集群总闸。系统 maxConcurrentTasks 在系统配置页维护，为集群级闸。
               </Paragraph>
               {GLOBAL_CONFIG_KEYS.map(renderConfigRow)}
               <Alert

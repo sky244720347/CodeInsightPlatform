@@ -16,8 +16,10 @@ import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.time.LocalDateTime;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
+import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -59,6 +61,7 @@ class TaskOrphanReclaimSchedulerTest {
                 operationLogService,
                 knowledgeDraftMapper,
                 draftService);
+        lenient().when(clusterProperties.resolveTaskLeaseGraceMinutes()).thenReturn(10);
     }
 
     @Test
@@ -73,17 +76,58 @@ class TaskOrphanReclaimSchedulerTest {
     }
 
     @Test
-    void cluster_leaseExpired_isOrphan() {
+    void cluster_leaseJustExpired_withinGrace_isNotOrphan() {
+        when(clusterProperties.isEnabled()).thenReturn(true);
+
         DecompileTask task = new DecompileTask();
         task.setClaimedBy("dead-node:1:abcdef12");
         task.setLeaseUntil(LocalDateTime.now().minusMinutes(1));
 
+        assertFalse(scheduler.isOrphan(task));
+    }
+
+    @Test
+    void cluster_pastGrace_butHeartbeatAlive_isNotOrphan() {
+        when(clusterProperties.isEnabled()).thenReturn(true);
+        when(instanceHeartbeat.isAlive("live-node:1:abcdef12")).thenReturn(true);
+
+        DecompileTask task = new DecompileTask();
+        task.setClaimedBy("live-node:1:abcdef12");
+        task.setLeaseUntil(LocalDateTime.now().minusMinutes(15));
+
+        assertFalse(scheduler.isOrphan(task));
+    }
+
+    @Test
+    void cluster_pastGrace_andHeartbeatDead_isOrphan() {
+        when(clusterProperties.isEnabled()).thenReturn(true);
+        when(instanceHeartbeat.isAlive("dead-node:1:abcdef12")).thenReturn(false);
+
+        DecompileTask task = new DecompileTask();
+        task.setClaimedBy("dead-node:1:abcdef12");
+        task.setLeaseUntil(LocalDateTime.now().minusMinutes(15));
+
         assertTrue(scheduler.isOrphan(task));
+        assertEquals("LEASE_GRACE_EXPIRED+HEARTBEAT_DEAD", scheduler.describeOrphanReason(task));
     }
 
     @Test
     void cluster_noClaim_isOrphan() {
         DecompileTask task = new DecompileTask();
         assertTrue(scheduler.isOrphan(task));
+        assertEquals("NO_CLAIM", scheduler.describeOrphanReason(task));
+    }
+
+    @Test
+    void singleNode_claimedByOtherProcess_isOrphan() {
+        when(clusterProperties.isEnabled()).thenReturn(false);
+        when(clusterInstanceId.get()).thenReturn("self:1:aaaaaaaa");
+
+        DecompileTask task = new DecompileTask();
+        task.setClaimedBy("old-process:1:bbbbbbbb");
+        task.setLeaseUntil(LocalDateTime.now().plusMinutes(20));
+
+        assertTrue(scheduler.isOrphan(task));
+        assertEquals("CLAIMED_BY_OTHER_PROCESS", scheduler.describeOrphanReason(task));
     }
 }

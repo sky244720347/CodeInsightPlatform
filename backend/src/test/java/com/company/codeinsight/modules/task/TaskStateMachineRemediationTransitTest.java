@@ -63,6 +63,16 @@ public class TaskStateMachineRemediationTransitTest {
     }
 
     @Test
+    void pullAndParseQueuedTransitionsAllowed() {
+        Assertions.assertTrue(stateMachineService.canTransit(TaskStatus.PENDING, TaskStatus.PULL_QUEUED));
+        Assertions.assertTrue(stateMachineService.canTransit(TaskStatus.PULL_QUEUED, TaskStatus.PULLING_CODE));
+        Assertions.assertTrue(stateMachineService.canTransit(TaskStatus.PULLING_CODE, TaskStatus.PARSE_QUEUED));
+        Assertions.assertTrue(stateMachineService.canTransit(TaskStatus.PARSE_QUEUED, TaskStatus.PARSING_CODE));
+        Assertions.assertTrue(stateMachineService.canTransit(TaskStatus.PULLING_CODE, TaskStatus.PARSING_CODE));
+        Assertions.assertFalse(stateMachineService.canTransit(TaskStatus.PARSE_QUEUED, TaskStatus.AI_ANALYZING));
+    }
+
+    @Test
     void generatingDocIdempotent() {
         Assertions.assertTrue(stateMachineService.canTransit(TaskStatus.GENERATING_DOC, TaskStatus.GENERATING_DOC));
     }

@@ -22,8 +22,9 @@ code-insight:
     # 实例心跳 TTL；续租走 task-permit-reconcile，须明显大于续租间隔
     instance-heartbeat-ttl-seconds: 180
     task-permit-reconcile-interval-ms: 30000
-    # 任务 DB 租约（分钟）；真崩溃靠租约过期接管（不再单靠心跳死就抢）
-    task-lease-minutes: 10
+    # 任务 DB 租约（分钟）+ 过期宽限；接管须「过宽限 ∧ 心跳已死」（见 orphan-reclaim-lease-heartbeat-design.md）
+    task-lease-minutes: 30
+    task-lease-grace-minutes: 10
     task-lease-renew-interval-ms: 120000
     orphan-reclaim-interval-ms: 30000
   storage:

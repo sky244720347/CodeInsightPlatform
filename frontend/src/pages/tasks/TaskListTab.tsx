@@ -59,7 +59,9 @@ const { RangePicker } = DatePicker;
 const runningStatuses = [
   'PENDING',
   'RESUME_QUEUED',
+  'PULL_QUEUED',
   'PULLING_CODE',
+  'PARSE_QUEUED',
   'PARSING_CODE',
   'ENTRYPOINT_REVIEW',
   'AI_ANALYZING',
@@ -72,11 +74,13 @@ const runningStatuses = [
   'PUSHING',
 ];
 
-const statusMeta: Record<string, { color: string; label: string; loading?: boolean }> = {
+const statusMeta: Record<string, { color: string; label: string; loading?: boolean; subLabel?: string }> = {
   DRAFT: { color: 'default', label: '草稿' },
   PENDING: { color: 'blue', label: '排队中', loading: true },
   RESUME_QUEUED: { color: 'blue', label: '排队续跑', loading: true },
+  PULL_QUEUED: { color: 'blue', label: '排队拉取', loading: true, subLabel: '拉取代码' },
   PULLING_CODE: { color: 'blue', label: '拉取代码', loading: true },
+  PARSE_QUEUED: { color: 'cyan', label: '排队解析', loading: true, subLabel: '静态解析' },
   PARSING_CODE: { color: 'cyan', label: '解析代码', loading: true },
   /** @deprecated 历史任务 */
   SPLITTING_TASK: { color: 'default', label: '任务切片（已废弃）' },
@@ -99,7 +103,7 @@ type GroupKey = 'ALL' | 'RUNNING' | 'PENDING_REVIEW' | 'CONFIRMED' | 'CLOSED';
 
 const GROUP_STATUSES: Record<GroupKey, string[] | null> = {
   ALL: null,
-  RUNNING: ['PENDING', 'RESUME_QUEUED', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'MODULE_HIERARCHY', 'MODULE_HIERARCHY_REVIEW', 'BASELINE_DOC_INHERIT', 'GENERATING_DOC', 'PUSHING'],
+  RUNNING: ['PENDING', 'RESUME_QUEUED', 'PULL_QUEUED', 'PULLING_CODE', 'PARSE_QUEUED', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'MODULE_HIERARCHY', 'MODULE_HIERARCHY_REVIEW', 'BASELINE_DOC_INHERIT', 'GENERATING_DOC', 'PUSHING'],
   PENDING_REVIEW: ['PENDING_REVIEW', 'REVIEWING'],
   CONFIRMED: ['CONFIRMED', 'PUSHED'],
   CLOSED: ['FAILED', 'CANCELLED', 'ARCHIVED'],
@@ -358,16 +362,24 @@ const TaskListTab: React.FC = () => {
       dataIndex: 'status',
       key: 'status',
       width: 190,
-      render: (status: string, record: Task) => (
-        <Space size={4} direction="vertical" style={{ lineHeight: 1.2 }}>
-          {getStatusTag(status)}
-          {record.status === 'REVIEWING' && (
-            <Tag color="warning" style={{ fontSize: 11, margin: 0, lineHeight: '16px', padding: '0 6px' }}>
-              待重跑
-            </Tag>
-          )}
-        </Space>
-      ),
+      render: (status: string, record: Task) => {
+        const meta = statusMeta[status];
+        return (
+          <Space size={4} direction="vertical" style={{ lineHeight: 1.2 }}>
+            {getStatusTag(status)}
+            {meta?.subLabel && (
+              <Text type="secondary" style={{ fontSize: 11 }}>
+                ({meta.subLabel})
+              </Text>
+            )}
+            {record.status === 'REVIEWING' && (
+              <Tag color="warning" style={{ fontSize: 11, margin: 0, lineHeight: '16px', padding: '0 6px' }}>
+                待重跑
+              </Tag>
+            )}
+          </Space>
+        );
+      },
     },
     {
       title: '进度',

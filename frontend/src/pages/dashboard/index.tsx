@@ -23,7 +23,7 @@ import './index.css';
 const { Text } = Typography;
 
 // 运行中状态定义：这些状态下的任务被视为活跃中的分析任务
-const runningStatuses = ['PENDING', 'PULLING_CODE', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'MODULE_HIERARCHY', 'MODULE_HIERARCHY_REVIEW', 'BASELINE_DOC_INHERIT', 'GENERATING_DOC'];
+const runningStatuses = ['PENDING', 'RESUME_QUEUED', 'PULL_QUEUED', 'PULLING_CODE', 'PARSE_QUEUED', 'PARSING_CODE', 'ENTRYPOINT_REVIEW', 'AI_ANALYZING', 'MODULE_HIERARCHY', 'MODULE_HIERARCHY_REVIEW', 'BASELINE_DOC_INHERIT', 'GENERATING_DOC'];
 
 // 分页查询空值兜底模板
 const emptyPage = <T,>(): PageResult<T> => ({
@@ -49,7 +49,9 @@ const statusMeta: Record<string, { color: string; label: string }> = {
   DRAFT: { color: 'default', label: '草稿' },
   PENDING: { color: 'blue', label: '排队中' },
   RESUME_QUEUED: { color: 'blue', label: '排队续跑' },
+  PULL_QUEUED: { color: 'blue', label: '排队拉取' },
   PULLING_CODE: { color: 'blue', label: '拉取代码' },
+  PARSE_QUEUED: { color: 'cyan', label: '排队解析' },
   PARSING_CODE: { color: 'cyan', label: '解析代码' },
   ENTRYPOINT_REVIEW: { color: 'gold', label: '入口复核' },
   AI_ANALYZING: { color: 'gold', label: 'AI 分析中' },

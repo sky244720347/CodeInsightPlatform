@@ -6,7 +6,9 @@ import { getPipelineStats, type PipelineStageStat } from '../../api/dashboard';
 const { Text, Title } = Typography;
 
 const STAGE_LABELS: Record<string, string> = {
+  PULL_QUEUED: '排队拉取',
   PULLING_CODE: '代码拉取',
+  PARSE_QUEUED: '排队解析',
   PARSING_CODE: '静态解析',
   ENTRYPOINT_DISCOVERY: '入口识别',
   ENTRYPOINT_REVIEW: '知识入口复核',

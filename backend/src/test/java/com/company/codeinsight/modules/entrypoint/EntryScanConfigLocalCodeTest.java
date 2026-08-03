@@ -8,6 +8,8 @@ import com.company.codeinsight.modules.entrypoint.model.TypeIncludeRules;
 import com.company.codeinsight.modules.entrypoint.service.EntryPointDiscoveryService;
 import com.company.codeinsight.modules.entrypoint.service.impl.EntryPointDiscoveryServiceImpl;
 import com.company.codeinsight.modules.parser.service.impl.FallbackJavaParserService;
+import com.company.codeinsight.modules.scanner.model.ScanScope;
+import com.company.codeinsight.modules.scanner.service.ScanScopeResolver;
 import org.junit.jupiter.api.Assertions;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.DisplayName;
@@ -125,11 +127,15 @@ public class EntryScanConfigLocalCodeTest {
                 """);
 
         MethodCallService methodCallService = mock(MethodCallService.class);
-        when(methodCallService.listByTaskId(any())).thenReturn(List.of());
+        // forEachEdgeLite 默认 no-op = 无调用边，与原先 listByTaskId 空列表等价
+        ScanScopeResolver scanScopeResolver = mock(ScanScopeResolver.class);
+        when(scanScopeResolver.resolveBestEffort(any(), any())).thenAnswer(inv ->
+                ScanScope.wholeRepository(inv.getArgument(1)));
 
         EntryPointDiscoveryServiceImpl impl = new EntryPointDiscoveryServiceImpl();
         ReflectionTestUtils.setField(impl, "javaParserService", new FallbackJavaParserService());
         ReflectionTestUtils.setField(impl, "methodCallService", methodCallService);
+        ReflectionTestUtils.setField(impl, "scanScopeResolver", scanScopeResolver);
         discovery = impl;
     }
 

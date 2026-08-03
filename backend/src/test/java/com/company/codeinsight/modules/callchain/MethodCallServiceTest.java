@@ -12,6 +12,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.io.File;
 import java.io.FileWriter;
 import java.nio.file.Files;
+import java.util.ArrayList;
 import java.util.List;
 
 /**
@@ -106,6 +107,29 @@ public class Good { private Bar b; void m(){ b.go(); } }
         Assertions.assertTrue(written >= 1, "good file should still produce at least 1 call record");
         Assertions.assertTrue(methodCallService.listByTaskId(taskId).stream()
                 .anyMatch(m -> "Good".equals(m.getClassName())));
+    }
+
+    @Test
+    public void testForEachEdgeLitePagesWithoutFullEntities() throws Exception {
+        Long taskId = 905L;
+        File root = Files.createTempDirectory("mc-test-905").toFile();
+        root.deleteOnExit();
+        File f = new File(root, "Lite.java");
+        try (FileWriter w = new FileWriter(f)) {
+            w.write("""
+package x;
+public class Lite { private Y y; void m(){ y.go(); } }
+""");
+        }
+
+        int written = methodCallService.persistAstForTask(taskId, root);
+        Assertions.assertTrue(written >= 1);
+
+        List<com.company.codeinsight.modules.callchain.model.MethodCallEdgeLite> collected = new ArrayList<>();
+        methodCallService.forEachEdgeLite(taskId, collected::addAll);
+        Assertions.assertFalse(collected.isEmpty());
+        Assertions.assertTrue(collected.stream().anyMatch(e -> "Lite".equals(e.getClassName())));
+        Assertions.assertTrue(collected.stream().allMatch(e -> e.getId() != null));
     }
 
     @Test

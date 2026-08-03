@@ -47,7 +47,7 @@ public class TaskQueueDispatcherRemediationTest {
         DecompileTask task = new DecompileTask();
         task.setTriggerSource("MANUAL");
         invokeTransit(task);
-        Mockito.verify(stateMachineService).transitTo(task, TaskStatus.PULLING_CODE, null);
+        Mockito.verify(stateMachineService).transitTo(task, TaskStatus.PULL_QUEUED, null);
     }
 
     @Test
