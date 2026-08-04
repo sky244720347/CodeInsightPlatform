@@ -382,6 +382,8 @@ export interface KnowledgeDraft {
   hash: string;
   createdDate: string;
   updatedDate: string;
+  /** 正文最后一次 AI/流水线生成时间 */
+  generatedAt?: string | null;
 }
 
 export interface TokenUsageAudit {

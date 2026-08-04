@@ -54,6 +54,8 @@ export interface KnowledgeDraft {
   hash: string;
   createdDate: string;
   updatedDate: string;
+  /** 正文最后一次 AI/流水线生成时间；继承保留原文 */
+  generatedAt?: string | null;
 }
 
 /**
@@ -73,6 +75,8 @@ export interface DraftTreeNode {
   children: DraftTreeNode[];
   /** v1: INCREMENTAL 任务基线继承标识（NULL=本次新增；非空=从该基线任务继承） */
   baselineTaskId?: number;
+  /** 正文最后一次 AI/流水线生成时间 */
+  generatedAt?: string | null;
 }
 
 /** v2: 草稿 diff 视图 DTO（前端 Phase 4 UI 用） */

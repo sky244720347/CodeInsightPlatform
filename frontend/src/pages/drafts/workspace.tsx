@@ -1888,6 +1888,11 @@ const DraftReviewWorkspace: React.FC<DraftReviewWorkspaceProps> = ({ taskId }) =
                         <span>从左侧模块目录选择一个 Markdown 草稿开始</span>
                       </div>
                     )}
+                    {selectedDraft?.generatedAt ? (
+                      <div className="ci-review-title-path" title="正文最后一次 AI/流水线生成时间">
+                        <span>生成时间：{new Date(selectedDraft.generatedAt).toLocaleString()}</span>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               }
@@ -2596,6 +2601,7 @@ function findDraftInTree(nodes: DraftTreeNode[], id: number): KnowledgeDraft | n
         hash: '',
         createdDate: '',
         updatedDate: '',
+        generatedAt: n.generatedAt ?? null,
       };
       return draft;
     }
