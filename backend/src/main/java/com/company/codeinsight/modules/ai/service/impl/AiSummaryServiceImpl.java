@@ -18,6 +18,7 @@ import com.company.codeinsight.modules.ai.model.FunctionSourceBundle;
 import com.company.codeinsight.modules.ai.service.AiSummaryService;
 import com.company.codeinsight.modules.ai.service.PipelineAiCaller;
 import com.company.codeinsight.modules.ai.support.DocSourceBudgetShrinker;
+import com.company.codeinsight.modules.ai.support.SourceFileLocator;
 import com.company.codeinsight.modules.draft.dto.RegenerateDraftResult;
 import com.company.codeinsight.modules.draft.entity.DraftRevision;
 import com.company.codeinsight.modules.draft.entity.DraftWorkspace;
@@ -200,6 +201,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
     @Autowired
     private MethodFunctionBindingMapper methodFunctionBindingMapper;
+
+    @Autowired
+    private com.company.codeinsight.modules.entrypoint.mapper.EntrypointMapper entrypointMapper;
 
     @Autowired
     private com.company.codeinsight.modules.callchain.service.MethodCallGraphService methodCallGraphService;
@@ -620,9 +624,16 @@ public class AiSummaryServiceImpl implements AiSummaryService {
 
         FunctionSourceBundle bundle = collectFunctionSourceBundle(taskId, functionDto, projectDir);
         if (!bundle.hasPromptText()) {
-            log.warn("Function {} BFS 无可达源码，写 TEMPLATE 降级稿", funcName);
+            log.warn("Function {} 首次取源为空，尝试文档侧可达性修复", funcName);
             execLog.log(taskId, String.format(
-                    "[DOC-DEGRADE] stage=FUNCTION_DOC target=%s reason=source_unreachable tier=TEMPLATE",
+                    "[DOC-SOURCE-REPAIR] stage=FUNCTION_DOC target=%s", label));
+            ensureFunctionSourceReachable(task, functionDto, projectDir);
+            bundle = collectFunctionSourceBundle(taskId, functionDto, projectDir);
+        }
+        if (!bundle.hasPromptText()) {
+            log.warn("Function {} 修复后仍无可达源码，写 TEMPLATE 降级稿（尽量保留 refs）", funcName);
+            execLog.log(taskId, String.format(
+                    "[DOC-SOURCE-REPAIR-FAIL] stage=FUNCTION_DOC target=%s reason=source_unreachable tier=TEMPLATE",
                     label));
             upsertFunctionDraft(task, ws, moduleDto, subModuleDto, functionDto,
                     buildDegradedDoc(moduleDto, subModuleDto, functionDto, bundle, "source_unreachable"),
@@ -715,10 +726,16 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         }
 
         Set<String> rootSignatures = loadFunctionRootSignatures(taskId, fn);
+        // 类级锚点不能进 BFS，走整文件回退
+        rootSignatures.removeIf(sig -> {
+            int h = sig.indexOf('#');
+            return h > 0 && SourceFileLocator.isClassAnchorSignature(sig.substring(h + 1));
+        });
         bundle.setRootSignatures(new LinkedHashSet<>(rootSignatures));
         ScanScope scope = (projectOk && taskId != null)
                 ? scanScopeResolver.resolveBestEffort(taskId, projectDir)
                 : null;
+        java.util.function.Predicate<String> scopePred = scope == null ? null : scope::accepts;
 
         if (rootSignatures.isEmpty()) {
             int classPathCount = fn != null && fn.getClassPaths() != null ? fn.getClassPaths().size() : 0;
@@ -758,17 +775,13 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         for (Map.Entry<String, Set<String>> entry : classToMethodSigs.entrySet()) {
             String className = entry.getKey();
             Set<String> methodSigs = entry.getValue();
-            String classFilePath = lookupClassFilePath(taskId, className);
+            String classFilePath = resolveExistingClassFilePath(taskId, className, projectDir, scopePred, fn);
             if (classFilePath == null) {
                 missLookup++;
-                log.warn("collectFunctionSourceBundle: 无 filePath 映射 class={} taskId={}", className, taskId);
+                log.warn("collectFunctionSourceBundle: 无可用源文件 class={} taskId={}", className, taskId);
                 continue;
             }
-            if (scope != null && !scope.accepts(classFilePath)) {
-                log.warn("collectFunctionSourceBundle: 超出扫描范围，跳过 class={} path={}", className, classFilePath);
-                continue;
-            }
-            File classFile = new File(projectDir, classFilePath);
+            File classFile = new File(projectDir, classFilePath.replace('/', File.separatorChar));
             if (!classFile.exists()) {
                 missFile++;
                 log.warn("collectFunctionSourceBundle: 源文件不存在 class={} rel={} abs={}",
@@ -777,6 +790,17 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             }
             ClassMethodSnippet snippet = filterClassToMethods(classFile, methodSigs);
             if (snippet == null || !StringUtils.hasText(snippet.methodsBody)) {
+                // 方法截取失败 → 整文件兜底，保证可达
+                try {
+                    String content = Files.readString(classFile.toPath());
+                    if (StringUtils.hasText(content)) {
+                        String fq = resolveFqClassName(taskId, className, projectDir, null);
+                        sb.append("// === Class: ").append(fq).append(" ===\n").append(content).append("\n\n");
+                        continue;
+                    }
+                } catch (IOException e) {
+                    log.warn("collectFunctionSourceBundle: 整文件兜底读失败 class={}: {}", className, e.getMessage());
+                }
                 missFilter++;
                 log.warn("collectFunctionSourceBundle: 方法截取为空 class={} methods={}",
                         className, sampleForLog(methodSigs, 8));
@@ -785,9 +809,11 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             appendClassMethodSnippet(sb, taskId, className, projectDir, snippet);
         }
         if (!StringUtils.hasText(sb.toString())) {
-            log.warn("collectFunctionSourceBundle: 组装结果为空 taskId={} function={} roots={} reachable={} missLookup={} missFile={} missFilter={}",
+            log.warn("collectFunctionSourceBundle: BFS 组装为空，回退 classPaths 整文件 taskId={} function={} roots={} reachable={} missLookup={} missFile={} missFilter={}",
                     taskId, funcName, rootSignatures.size(), reachableMethods.size(),
                     missLookup, missFile, missFilter);
+            buildFallbackClassPathBundle(bundle, taskId, fn, projectDir, scope, funcName, fnId);
+            return bundle;
         }
         bundle.setPromptText(sb.toString());
         return bundle;
@@ -800,23 +826,24 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         if (fn == null || fn.getClassPaths() == null || fn.getClassPaths().isEmpty()) {
             return;
         }
+        if (projectDir == null || !projectDir.isDirectory()) {
+            log.warn("collectFunctionSourceBundle fallback: projectDir 不可用 taskId={} function={}",
+                    taskId, funcName);
+            return;
+        }
+        java.util.function.Predicate<String> scopePred = scope == null ? null : scope::accepts;
         StringBuilder sb = new StringBuilder();
         List<FunctionSourceBundle.RefItem> refs = new ArrayList<>();
         int missLookup = 0;
         int missFile = 0;
         int bfsOrder = 0;
         for (String cp : fn.getClassPaths()) {
-            String classFilePath = lookupClassFilePath(taskId, cp);
+            String classFilePath = resolveExistingClassFilePath(taskId, cp, projectDir, scopePred, fn);
             if (classFilePath == null) {
                 missLookup++;
                 continue;
             }
-            if (scope != null && !scope.accepts(classFilePath)) {
-                log.warn("collectFunctionSourceBundle fallback 超出扫描范围，跳过: class={} path={}",
-                        cp, classFilePath);
-                continue;
-            }
-            File f = new File(projectDir, classFilePath);
+            File f = new File(projectDir, classFilePath.replace('/', File.separatorChar));
             if (!f.exists()) {
                 missFile++;
                 log.warn("collectFunctionSourceBundle fallback 文件不存在: class={} rel={} abs={}",
@@ -849,6 +876,159 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         bundle.setRefs(refs);
     }
 
+    /**
+     * 文档侧即时回填 binding（source=BACKFILL），保证重跑前表里有锚点。
+     * 单功能失败只打日志，不抛到任务级。
+     */
+    private void ensureFunctionSourceReachable(DecompileTask task,
+                                               com.company.codeinsight.modules.hierarchy.model.FunctionDto fn,
+                                               File projectDir) {
+        if (task == null || fn == null || !StringUtils.hasText(fn.getId())
+                || methodFunctionBindingMapper == null) {
+            return;
+        }
+        Long taskId = task.getId();
+        try {
+            List<MethodFunctionBinding> existing =
+                    methodFunctionBindingMapper.selectByTaskAndFunction(taskId, fn.getId());
+            if (existing != null && !existing.isEmpty()) {
+                return;
+            }
+            if (fn.getClassPaths() == null || fn.getClassPaths().isEmpty()) {
+                return;
+            }
+            ScanScope scope = (projectDir != null && projectDir.isDirectory())
+                    ? scanScopeResolver.resolveBestEffort(taskId, projectDir) : null;
+            java.util.function.Predicate<String> scopePred = scope == null ? null : scope::accepts;
+            String moduleId = "mBACK";
+            String subId = "sBACK";
+            List<MethodFunctionBinding> rows = new ArrayList<>();
+            for (String cp : fn.getClassPaths()) {
+                if (!StringUtils.hasText(cp)) {
+                    continue;
+                }
+                String path = resolveExistingClassFilePath(taskId, cp, projectDir, scopePred, fn);
+                Set<String> sigs = new LinkedHashSet<>();
+                if (fn.getMethodSignatures() != null) {
+                    for (String s : fn.getMethodSignatures()) {
+                        if (StringUtils.hasText(s)) {
+                            sigs.add(s.trim());
+                        }
+                    }
+                }
+                if (sigs.isEmpty()) {
+                    sigs.add(SourceFileLocator.CLASS_ANCHOR_SIGNATURE);
+                }
+                for (String sig : sigs) {
+                    MethodFunctionBinding row = new MethodFunctionBinding();
+                    row.setTaskId(taskId);
+                    row.setSystemId(task.getSystemId());
+                    row.setModuleNodeId(moduleId);
+                    row.setSubModuleNodeId(subId);
+                    row.setFunctionNodeId(fn.getId());
+                    row.setClassName(cp);
+                    row.setMethodSignature(sig);
+                    row.setFilePath(path);
+                    row.setSource("BACKFILL");
+                    rows.add(row);
+                }
+            }
+            if (rows.isEmpty()) {
+                return;
+            }
+            Exception last = null;
+            for (int attempt = 1; attempt <= 3; attempt++) {
+                try {
+                    methodFunctionBindingMapper.deleteByTaskIdAndFunctionNodeIds(taskId, List.of(fn.getId()));
+                    methodFunctionBindingMapper.deleteByTaskIdAndClassMethodKeys(taskId, rows);
+                    methodFunctionBindingMapper.batchInsertBindings(rows);
+                    log.info("[DOC-SOURCE-REPAIR] backfill binding ok taskId={} functionId={} rows={} attempt={}",
+                            taskId, fn.getId(), rows.size(), attempt);
+                    return;
+                } catch (Exception e) {
+                    last = e;
+                    log.warn("[DOC-SOURCE-REPAIR] backfill retry taskId={} attempt={}: {}",
+                            taskId, attempt, e.toString());
+                }
+            }
+            log.warn("[DOC-SOURCE-REPAIR] backfill failed taskId={} functionId={} last={}",
+                    taskId, fn.getId(), last != null ? last.toString() : "unknown");
+        } catch (Exception e) {
+            log.warn("ensureFunctionSourceReachable failed taskId={} fn={}: {}",
+                    taskId, fn.getId(), e.toString());
+        }
+    }
+
+    /**
+     * 解析真实存在的源文件相对路径：binding.file_path → method_call → entrypoint → 物理查找 → FQ 推断（须 exists）。
+     */
+    private String resolveExistingClassFilePath(Long taskId, String className, File projectDir,
+                                                java.util.function.Predicate<String> scopePred,
+                                                com.company.codeinsight.modules.hierarchy.model.FunctionDto fn) {
+        List<String> candidates = new ArrayList<>();
+        if (taskId != null && fn != null && StringUtils.hasText(fn.getId())
+                && methodFunctionBindingMapper != null) {
+            try {
+                List<MethodFunctionBinding> bindings =
+                        methodFunctionBindingMapper.selectByTaskAndFunction(taskId, fn.getId());
+                if (bindings != null) {
+                    String shortName = SourceFileLocator.stripPackage(className);
+                    for (MethodFunctionBinding b : bindings) {
+                        if (b == null || !StringUtils.hasText(b.getFilePath())) {
+                            continue;
+                        }
+                        String cn = b.getClassName();
+                        if (className.equals(cn) || (shortName != null && shortName.equals(SourceFileLocator.stripPackage(cn)))) {
+                            candidates.add(b.getFilePath());
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+                // continue
+            }
+        }
+        String fromDb = lookupClassFilePathExact(taskId, className);
+        if (fromDb != null) {
+            candidates.add(fromDb);
+        }
+        String shortName = SourceFileLocator.stripPackage(className);
+        if (StringUtils.hasText(shortName) && !shortName.equals(className)) {
+            String fromShort = lookupClassFilePathExact(taskId, shortName);
+            if (fromShort != null) {
+                candidates.add(fromShort);
+            }
+        }
+        if (entrypointMapper != null && taskId != null) {
+            try {
+                List<com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity> eps =
+                        entrypointMapper.selectByTaskId(taskId);
+                if (eps != null) {
+                    for (com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity ep : eps) {
+                        if (ep == null || !StringUtils.hasText(ep.getFilePath())) {
+                            continue;
+                        }
+                        String cn = ep.getClassName();
+                        if (className.equals(cn) || (shortName != null && shortName.equals(SourceFileLocator.stripPackage(cn)))) {
+                            candidates.add(ep.getFilePath());
+                        }
+                    }
+                }
+            } catch (Exception ignored) {
+                // continue
+            }
+        }
+        String inferred = SourceFileLocator.inferMavenMainPath(className);
+        if (inferred != null) {
+            candidates.add(inferred);
+        }
+        String hit = SourceFileLocator.firstExisting(candidates, projectDir, scopePred);
+        if (hit != null) {
+            return hit;
+        }
+        List<String> found = SourceFileLocator.findBySimpleName(projectDir, className, scopePred, 3);
+        return found.isEmpty() ? null : found.get(0);
+    }
+
     private FunctionSourceBundle.RefItem buildRefItemFromCallerSignature(Long taskId, String callerSig,
                                                                          Set<String> rootSignatures,
                                                                          ScanScope scope, File projectDir,
@@ -859,14 +1039,13 @@ public class AiSummaryServiceImpl implements AiSummaryService {
         }
         String className = callerSig.substring(0, hashIdx);
         String methodSig = callerSig.substring(hashIdx + 1);
-        String classFilePath = lookupClassFilePath(taskId, className);
+        java.util.function.Predicate<String> scopePred = scope == null ? null : scope::accepts;
+        String classFilePath = resolveExistingClassFilePath(taskId, className, projectDir, scopePred, null);
         if (classFilePath == null) {
             return null;
         }
-        if (scope != null && !scope.accepts(classFilePath)) {
-            return null;
-        }
-        File classFile = projectDir != null ? new File(projectDir, classFilePath) : null;
+        File classFile = projectDir != null
+                ? new File(projectDir, classFilePath.replace('/', File.separatorChar)) : null;
         if (classFile == null || !classFile.exists()) {
             return null;
         }
@@ -1053,6 +1232,9 @@ public class AiSummaryServiceImpl implements AiSummaryService {
                     if (!StringUtils.hasText(b.getClassName())
                             || !StringUtils.hasText(b.getMethodSignature())) {
                         continue;
+                    }
+                    if (SourceFileLocator.isClassAnchorSignature(b.getMethodSignature())) {
+                        continue; // 类级锚点不进 BFS 根，由整文件回退覆盖
                     }
                     String key = toCallerSignatureKey(b.getClassName(), b.getMethodSignature());
                     if (key != null) {
@@ -1438,6 +1620,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             draft.setFunctionNodeId(fn.getId());
             draft.setCreatedDate(LocalDateTime.now());
             draft.setUpdatedDate(LocalDateTime.now());
+            draft.setGeneratedAt(LocalDateTime.now());
             knowledgeDraftMapper.insert(draft);
         } else {
             String contentUri = com.company.codeinsight.common.util.DraftFileUtil.buildDraftUri(
@@ -1449,6 +1632,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             draft.setFunctionNodeId(fn.getId());
             draft.setBaselineTaskId(null);           // AI 重生成 → 不再是基线继承，标记为 modified（需 FieldStrategy.ALWAYS）
             draft.setUpdatedDate(LocalDateTime.now());
+            draft.setGeneratedAt(LocalDateTime.now());
             knowledgeDraftMapper.updateById(draft);
         }
         if (bundle != null && bundle.getRefs() != null && !bundle.getRefs().isEmpty()) {
@@ -2002,6 +2186,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             draft.setHash(hash);
             draft.setCreatedDate(LocalDateTime.now());
             draft.setUpdatedDate(LocalDateTime.now());
+            draft.setGeneratedAt(LocalDateTime.now());
             knowledgeDraftMapper.insert(draft);
         } else {
             draft.setHash(hash);
@@ -2010,6 +2195,7 @@ public class AiSummaryServiceImpl implements AiSummaryService {
             draft.setContentUri(storePath.toAbsolutePath().toUri().toString());
             draft.setBaselineTaskId(null); // 覆盖继承草稿时清标记（需 FieldStrategy.ALWAYS）
             draft.setUpdatedDate(LocalDateTime.now());
+            draft.setGeneratedAt(LocalDateTime.now());
             knowledgeDraftMapper.updateById(draft);
         }
 

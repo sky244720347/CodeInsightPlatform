@@ -432,6 +432,10 @@ ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS source_commit VARCHAR(100);
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS active_segment_started_at TIMESTAMP;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS require_entrypoint_review BOOLEAN DEFAULT TRUE NOT NULL;
 ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS require_knowledge_review BOOLEAN DEFAULT TRUE NOT NULL;
+-- 创建时后端 CODE_INSIGHT_ENV 是否为 dev（dev 进程只跑 is_dev=true 的任务）
+ALTER TABLE ci_task ADD COLUMN IF NOT EXISTS is_dev BOOLEAN DEFAULT FALSE;
+-- client_ip 已废弃：机器区分走 ci_operation_log.ip_address，任务亲和走 is_dev
+ALTER TABLE ci_task DROP COLUMN IF EXISTS client_ip;
 ALTER TABLE ci_task DROP COLUMN IF EXISTS prompt_version;
 ALTER TABLE ci_task DROP COLUMN IF EXISTS modularize_prompt_version;
 ALTER TABLE ci_task DROP COLUMN IF EXISTS document_prompt_version;
@@ -702,6 +706,9 @@ COMMENT ON COLUMN ci_knowledge_draft.sort_order IS '同级排序权重（升序�
 COMMENT ON COLUMN ci_knowledge_draft.hash IS '草稿内容的 MD5 Hash';
 COMMENT ON COLUMN ci_knowledge_draft.function_node_id IS '功能节点 ID（f 前缀），与 binding 对齐；单篇重跑定位用';
 COMMENT ON COLUMN ci_knowledge_draft.baseline_task_id IS 'INCREMENTAL 基线任务 ID（NULL=本次生成）';
+
+ALTER TABLE ci_knowledge_draft ADD COLUMN IF NOT EXISTS generated_at TIMESTAMP;
+COMMENT ON COLUMN ci_knowledge_draft.generated_at IS '正文最后一次 AI/流水线生成时间；继承保留原文；人工编辑不刷新';
 
 
 -- ============================================================
@@ -1751,12 +1758,13 @@ CREATE TABLE IF NOT EXISTS ci_method_function_binding (
     function_node_id    VARCHAR(16)  NOT NULL,
     class_name          VARCHAR(512) NOT NULL,
     method_signature    VARCHAR(512) NOT NULL,
+    file_path           VARCHAR(500),
     source              VARCHAR(16)  NOT NULL,
     confidence          DECIMAL(4,3),
     created_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at          TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
     CONSTRAINT chk_mfb_source
-        CHECK (source IN ('AI', 'USER', 'MIGRATED'))
+        CHECK (source IN ('AI', 'USER', 'MIGRATED', 'BACKFILL'))
 );
 
 CREATE INDEX IF NOT EXISTS idx_mfb_task_function
@@ -1789,8 +1797,15 @@ COMMENT ON COLUMN ci_method_function_binding.sub_module_node_id IS '所属子模
 COMMENT ON COLUMN ci_method_function_binding.function_node_id   IS '所属功能节点 ID（f 前缀）';
 COMMENT ON COLUMN ci_method_function_binding.class_name         IS '入口类全限定名';
 COMMENT ON COLUMN ci_method_function_binding.method_signature   IS '方法签名 methodName(ParamType1,ParamType2)（不含返回类型）';
-COMMENT ON COLUMN ci_method_function_binding.source             IS '归属来源：AI-hierarchy 阶段 AI 输出；USER-人工在 MODULE_HIERARCHY_REVIEW 调整；MIGRATED-从旧 ci_module_hierarchy.method_signatures 一次性迁移';
+COMMENT ON COLUMN ci_method_function_binding.source             IS '归属来源：AI / USER / MIGRATED / BACKFILL（程序回填保证文档可达）';
 COMMENT ON COLUMN ci_method_function_binding.confidence        IS 'AI 输出的归属置信度（0-1，可空）';
+
+-- 文档源码可达性：固化相对路径 + 允许 BACKFILL（幂等）
+ALTER TABLE ci_method_function_binding ADD COLUMN IF NOT EXISTS file_path VARCHAR(500);
+COMMENT ON COLUMN ci_method_function_binding.file_path IS '源文件相对路径（落表时尽量固化，文档取源优先）';
+ALTER TABLE ci_method_function_binding DROP CONSTRAINT IF EXISTS chk_mfb_source;
+ALTER TABLE ci_method_function_binding ADD CONSTRAINT chk_mfb_source
+    CHECK (source IN ('AI', 'USER', 'MIGRATED', 'BACKFILL'));
 
 
 -- ============================================================

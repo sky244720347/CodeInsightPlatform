@@ -5,6 +5,7 @@ import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
 import com.company.codeinsight.common.cluster.ClusterInstanceId;
 import com.company.codeinsight.common.cluster.ClusterProperties;
+import com.company.codeinsight.common.config.CodeInsightEnvProperties;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.common.exception.ErrorCode;
 import com.company.codeinsight.common.exception.TaskCancelledException;
@@ -252,6 +253,9 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
     @Autowired
     private com.company.codeinsight.modules.knowledge.service.KnowledgePublishFacade knowledgePublishFacade;
 
+    @Autowired
+    private CodeInsightEnvProperties envProperties;
+
     /**
      * 列表展示排序档位（越小越靠前）：
      * <ol>
@@ -443,6 +447,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         task.setRequireEntrypointReview(requireEntrypointReview == null ? Boolean.TRUE : requireEntrypointReview);
         // 知识复核断点：null → TRUE（与库默认一致）；下发页显式传 false 跳过
         task.setRequireKnowledgeReview(Boolean.TRUE);
+        task.setIsDev(envProperties.isDev());
 
         this.save(task);
         return task;
@@ -501,6 +506,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         task.setRequireHierarchyReview(requireHierarchyReview == null ? Boolean.TRUE : requireHierarchyReview);
         task.setRequireEntrypointReview(requireEntrypointReview == null ? Boolean.TRUE : requireEntrypointReview);
         task.setRequireKnowledgeReview(Boolean.TRUE);
+        task.setIsDev(envProperties.isDev());
 
         this.save(task);
         return task;
@@ -718,6 +724,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         if (!TaskStatus.DRAFT.name().equals(task.getStatus())) {
             throw new BusinessException("仅 DRAFT 状态可启动；当前状态: " + task.getStatus());
         }
+        assertDevTaskAffinity(task);
         decompilePromptService.validateTaskPromptBinding(task.getModularizePromptId(), task.getDocumentPromptId());
         // 缺省优先级：SCHEDULED=60, MANUAL=50
         if (task.getPriority() == null) {
@@ -767,6 +774,18 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
 
     private int defaultPriorityFor(String triggerSource) {
         return "SCHEDULED".equalsIgnoreCase(triggerSource) ? 60 : 50;
+    }
+
+    /** 本地 dev 进程只允许执行创建时标记为 is_dev=true 的任务。 */
+    private void assertDevTaskAffinity(DecompileTask task) {
+        if (!envProperties.isDev()) {
+            return;
+        }
+        if (Boolean.TRUE.equals(task.getIsDev())) {
+            return;
+        }
+        throw new BusinessException("dev 仅允许执行本地创建的任务（is_dev="
+                + task.getIsDev() + "）");
     }
 
     private void acquirePullPermit(Long taskId) throws InterruptedException {
@@ -894,6 +913,7 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         if (!"FAILED".equals(cur) && !"CANCELLED".equals(cur)) {
             throw new BusinessException("仅 FAILED/CANCELLED 状态可重试；当前状态: " + cur);
         }
+        assertDevTaskAffinity(task);
         if (task.getPriority() == null) {
             task.setPriority(defaultPriorityFor(task.getTriggerSource()));
         }
@@ -1452,7 +1472,8 @@ public class DecompileTaskServiceImpl extends ServiceImpl<DecompileTaskMapper, D
         execLog.log(taskId, ">>> AI_ANALYZING — AI 归纳");
         execLog.log(taskId, "  aiMock=" + aiSummaryService.isAiMock() + " | model="
                 + (task.getModelName() != null ? task.getModelName() : "(default)"));
-        execLog.log(taskId, "  aiRetry       = hierarchyMaxAttempts=" + aiRetryProperties.getHierarchyMaxAttempts()
+        execLog.log(taskId, "  aiRetry       = unlimitedAttempts=" + aiRetryProperties.isUnlimitedAttempts()
+                + " hierarchyMaxAttempts=" + aiRetryProperties.getHierarchyMaxAttempts()
                 + " docMaxAttempts=" + aiRetryProperties.getDocMaxAttempts()
                 + " backoffMs=" + aiRetryProperties.getBackoffMs());
         long aiT0 = System.currentTimeMillis();

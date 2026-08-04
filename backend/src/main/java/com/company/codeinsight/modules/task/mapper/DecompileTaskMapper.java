@@ -15,8 +15,10 @@ public interface DecompileTaskMapper extends BaseMapper<DecompileTask> {
     /**
      * 在事务内调用：锁定下一条可调度 PENDING 任务主键（SKIP LOCKED）。
      * 无可用任务时返回 null。
+     *
+     * @param devOnly true 时仅认领 {@code is_dev=true}（本地 dev）；null/false 不过滤
      */
-    Long selectNextPendingIdForUpdate();
+    Long selectNextPendingIdForUpdate(@Param("devOnly") Boolean devOnly);
 
     /**
      * CAS 接管认领：status 与 claimed_by 与期望一致时，写入新 claimed_by / lease。

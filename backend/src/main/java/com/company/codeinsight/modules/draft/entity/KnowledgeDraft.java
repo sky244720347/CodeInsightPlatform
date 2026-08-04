@@ -84,4 +84,11 @@ public class KnowledgeDraft extends BaseEntity {
      * function 粒度草稿生成时写入，单篇「重跑此篇」定位用。
      */
     private String functionNodeId;
+
+    /**
+     * 正文最后一次由 AI/流水线生成的时间。
+     * <p>继承文档保留基线原文时间；人工编辑不刷新；重跑成功刷新。</p>
+     */
+    @TableField("generated_at")
+    private java.time.LocalDateTime generatedAt;
 }

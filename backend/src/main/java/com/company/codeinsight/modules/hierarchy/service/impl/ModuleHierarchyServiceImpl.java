@@ -8,6 +8,7 @@ import com.company.codeinsight.common.util.Base62Generator;
 import com.company.codeinsight.common.util.PromptTemplateLoader;
 import com.company.codeinsight.modules.ai.service.AiSummaryService;
 import com.company.codeinsight.modules.ai.service.PipelineAiCaller;
+import com.company.codeinsight.modules.ai.support.SourceFileLocator;
 import com.company.codeinsight.modules.businessknowledge.service.BusinessKnowledgeService;
 import com.company.codeinsight.modules.entrypoint.model.EntryPoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
@@ -1392,10 +1393,13 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         CallGraphWhitelist whitelist = collectCallGraphWhitelist(taskId);
         Set<String> signatureSet = whitelist.signatures();
         Set<String> classSet = whitelist.classNames();
+        // 空白名单 = 跳过交叉校验（避免 method_call 未落库时把 AI 元组全剔光）
+        boolean skipCrossCheck = signatureSet.isEmpty() && classSet.isEmpty();
 
         List<MethodFunctionBinding> rows = new ArrayList<>();
         int skippedEmptyCartesian = 0;
         int skippedNotExisting = 0;
+        int backfilled = 0;
         for (JsonNode modNode : modulesNode) {
             JsonNode subs = modNode.path("sub_modules");
             if (!subs.isArray()) continue;
@@ -1415,73 +1419,269 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     }
                     Set<String> classPaths = collectAsTextSet(fnNode.path("class_paths"));
                     Set<String> methodSigs = collectAsTextSet(fnNode.path("method_signatures"));
-                    if (classPaths.isEmpty() || methodSigs.isEmpty()) {
+                    if (classPaths.isEmpty()) {
                         skippedEmptyCartesian++;
                         continue;
                     }
-                    // 笛卡尔积 → (class, sig) 元组
                     int before = rows.size();
-                    for (String cp : classPaths) {
-                        // AI 输出 class_paths 是 FQ（如 com.demo.UserController）；
-                        // 白名单里的 className 是短名，caller_signature 也是短类名拼接。
-                        // 因此把 cp 截短为短类名用于 Tier 1 匹配。
-                        String cpShort = stripPackage(cp);
-                        boolean cpClassHit = !classSet.isEmpty()
-                                && (classSet.contains(cp) || classSet.contains(cpShort));
-                        for (String sig : methodSigs) {
-                            // Tier 1：caller_signature 严格命中（短类名#完整签名）
-                            String fullShort = cpShort + "#" + sig;
-                            boolean sigHit = !signatureSet.isEmpty() && signatureSet.contains(fullShort);
-                            // Tier 2 兜底：class 出现在调用图里（caller 或 callee 端均可）
-                            boolean classHit = cpClassHit;
-                            if (!sigHit && !classHit) {
-                                skippedNotExisting++;
-                                log.warn("modules 元组既不在 caller_signature 也不在调用图 class 白名单, 跳过 (entry={}, tuple={})",
-                                        entryClassName, fullShort);
-                                continue;
+                    if (!methodSigs.isEmpty()) {
+                        for (String cp : classPaths) {
+                            String cpShort = stripPackage(cp);
+                            boolean cpClassHit = !classSet.isEmpty()
+                                    && (classSet.contains(cp) || classSet.contains(cpShort));
+                            for (String sig : methodSigs) {
+                                if (!skipCrossCheck) {
+                                    String fullShort = cpShort + "#" + sig;
+                                    boolean sigHit = signatureSet.contains(fullShort);
+                                    if (!sigHit && !cpClassHit) {
+                                        skippedNotExisting++;
+                                        log.warn("modules 元组既不在 caller_signature 也不在调用图 class 白名单, 跳过 (entry={}, tuple={})",
+                                                entryClassName, fullShort);
+                                        continue;
+                                    }
+                                }
+                                rows.add(newAiBinding(taskId, systemId, moduleId, subModuleId, functionId, cp, sig));
                             }
-                            MethodFunctionBinding row = new MethodFunctionBinding();
-                            row.setTaskId(taskId);
-                            row.setSystemId(systemId);
-                            row.setModuleNodeId(moduleId);
-                            row.setSubModuleNodeId(subModuleId);
-                            row.setFunctionNodeId(functionId);
-                            row.setClassName(cp);
-                            row.setMethodSignature(sig);
-                            row.setSource("AI");
-                            rows.add(row);
                         }
+                    } else {
+                        skippedEmptyCartesian++;
                     }
+                    // 笛卡尔空或白名单剔光 → BACKFILL，保证 function 表里至少有行
                     if (rows.size() == before) {
-                        log.info("entry={} 的 function={} 笛卡尔后所有元组都被交叉校验剔除",
+                        log.info("entry={} function={} AI 元组为空，程序 BACKFILL",
                                 entryClassName, functionId);
+                        List<MethodFunctionBinding> filled = buildBackfillBindings(
+                                taskId, systemId, moduleId, subModuleId, functionId,
+                                classPaths, methodsByClass, entry);
+                        rows.addAll(filled);
+                        backfilled += filled.size();
                     }
                 }
             }
         }
         if (rows.isEmpty()) {
-            if (skippedNotExisting > 0 || skippedEmptyCartesian > 0) {
-                log.info("入口 {} binding 入库为空（笛卡尔空 {} 条, call-graph 不存在 {} 条）",
-                        entryClassName, skippedEmptyCartesian, skippedNotExisting);
-            }
+            log.warn("入口 {} binding 仍为空（笛卡尔空 {} / call-graph 剔除 {} / backfill 0），跳过入库",
+                    entryClassName, skippedEmptyCartesian, skippedNotExisting);
             return;
+        }
+        for (MethodFunctionBinding row : rows) {
+            if (!StringUtils.hasText(row.getFilePath())) {
+                row.setFilePath(lookupBindingFilePath(taskId, row.getClassName(), entry));
+            }
         }
         int beforeDedupe = rows.size();
         rows = dedupeBindingsByClassMethod(rows, entryClassName);
-        // 方案 B：plain INSERT 前逻辑删 — 同 function 旧行 + 即将写入的 (class,sig) 活行键
-        java.util.Set<String> functionIds = new java.util.LinkedHashSet<>();
-        for (MethodFunctionBinding r : rows) {
-            if (StringUtils.hasText(r.getFunctionNodeId())) {
-                functionIds.add(r.getFunctionNodeId());
+        persistBindingsWithRetry(taskId, rows, entryClassName, beforeDedupe, skippedNotExisting, backfilled);
+    }
+
+    private static MethodFunctionBinding newAiBinding(Long taskId, Long systemId,
+                                                      String moduleId, String subModuleId,
+                                                      String functionId, String className, String sig) {
+        MethodFunctionBinding row = new MethodFunctionBinding();
+        row.setTaskId(taskId);
+        row.setSystemId(systemId);
+        row.setModuleNodeId(moduleId);
+        row.setSubModuleNodeId(subModuleId);
+        row.setFunctionNodeId(functionId);
+        row.setClassName(className);
+        row.setMethodSignature(sig);
+        row.setSource("AI");
+        return row;
+    }
+
+    /**
+     * 程序回填：优先入口方法视图 / method_call 签名；仍无则类级锚点 {@link SourceFileLocator#CLASS_ANCHOR_SIGNATURE}。
+     */
+    private List<MethodFunctionBinding> buildBackfillBindings(
+            Long taskId, Long systemId, String moduleId, String subModuleId, String functionId,
+            Set<String> classPaths, Map<String, List<EntrypointMethodView>> methodsByClass,
+            EntryPoint entry) {
+        List<MethodFunctionBinding> out = new ArrayList<>();
+        for (String cp : classPaths) {
+            if (!StringUtils.hasText(cp)) {
+                continue;
+            }
+            Set<String> sigs = new LinkedHashSet<>();
+            String shortName = stripPackage(cp);
+            if (methodsByClass != null) {
+                appendMethodViewSigs(sigs, methodsByClass.get(cp));
+                if (shortName != null) {
+                    appendMethodViewSigs(sigs, methodsByClass.get(shortName));
+                }
+            }
+            if (sigs.isEmpty()) {
+                sigs.addAll(loadMethodSignaturesFromCallGraph(taskId, cp));
+            }
+            if (sigs.isEmpty()) {
+                sigs.add(SourceFileLocator.CLASS_ANCHOR_SIGNATURE);
+            }
+            String filePath = lookupBindingFilePath(taskId, cp, entry);
+            for (String sig : sigs) {
+                MethodFunctionBinding row = new MethodFunctionBinding();
+                row.setTaskId(taskId);
+                row.setSystemId(systemId);
+                row.setModuleNodeId(moduleId);
+                row.setSubModuleNodeId(subModuleId);
+                row.setFunctionNodeId(functionId);
+                row.setClassName(cp);
+                row.setMethodSignature(sig);
+                row.setFilePath(filePath);
+                row.setSource("BACKFILL");
+                out.add(row);
             }
         }
-        if (!functionIds.isEmpty()) {
-            methodFunctionBindingMapper.deleteByTaskIdAndFunctionNodeIds(taskId, functionIds);
+        return out;
+    }
+
+    private static void appendMethodViewSigs(Set<String> sigs, List<EntrypointMethodView> views) {
+        if (views == null) {
+            return;
         }
-        methodFunctionBindingMapper.deleteByTaskIdAndClassMethodKeys(taskId, rows);
-        int inserted = methodFunctionBindingMapper.batchInsertBindings(rows);
-        log.info("入口 {} binding 入库: 笛卡尔+交叉校验后 {} 行, 去重后 {} 行, insert {} 行 (call-graph 不存在 {} 条)",
-                entryClassName, beforeDedupe, rows.size(), inserted, skippedNotExisting);
+        for (EntrypointMethodView v : views) {
+            if (v == null || !StringUtils.hasText(v.getMethodSignature())) {
+                continue;
+            }
+            String raw = v.getMethodSignature().trim();
+            int hash = raw.indexOf('#');
+            sigs.add(hash >= 0 && hash + 1 < raw.length() ? raw.substring(hash + 1) : raw);
+        }
+    }
+
+    private Set<String> loadMethodSignaturesFromCallGraph(Long taskId, String classNameOrFq) {
+        Set<String> sigs = new LinkedHashSet<>();
+        if (methodCallMapper == null || taskId == null || !StringUtils.hasText(classNameOrFq)) {
+            return sigs;
+        }
+        String shortName = stripPackage(classNameOrFq);
+        try {
+            List<com.company.codeinsight.modules.callchain.entity.MethodCall> calls = methodCallMapper.selectList(
+                    new LambdaQueryWrapper<com.company.codeinsight.modules.callchain.entity.MethodCall>()
+                            .eq(com.company.codeinsight.modules.callchain.entity.MethodCall::getTaskId, taskId)
+                            .and(w -> w.eq(com.company.codeinsight.modules.callchain.entity.MethodCall::getClassName, classNameOrFq)
+                                    .or()
+                                    .eq(com.company.codeinsight.modules.callchain.entity.MethodCall::getClassName, shortName))
+                            .last("LIMIT 50"));
+            for (com.company.codeinsight.modules.callchain.entity.MethodCall c : calls) {
+                if (c == null || !StringUtils.hasText(c.getCallerSignature())) {
+                    continue;
+                }
+                String cs = c.getCallerSignature();
+                int hash = cs.indexOf('#');
+                if (hash > 0 && hash + 1 < cs.length()) {
+                    sigs.add(cs.substring(hash + 1).trim());
+                }
+            }
+        } catch (Exception e) {
+            log.warn("loadMethodSignaturesFromCallGraph failed class={}: {}", classNameOrFq, e.toString());
+        }
+        return sigs;
+    }
+
+    /** 从 method_call / entrypoint 解析相对路径（不校验磁盘；文档侧再 exists）。 */
+    private String lookupBindingFilePath(Long taskId, String classNameOrFq, EntryPoint entry) {
+        if (!StringUtils.hasText(classNameOrFq)) {
+            return null;
+        }
+        String shortName = stripPackage(classNameOrFq);
+        if (entry != null && StringUtils.hasText(entry.getFilePath())) {
+            String entryCn = entry.getClassName();
+            if (classNameOrFq.equals(entryCn) || shortName.equals(stripPackage(entryCn))) {
+                return entry.getFilePath().replace('\\', '/');
+            }
+        }
+        if (methodCallMapper != null && taskId != null) {
+            try {
+                List<com.company.codeinsight.modules.callchain.entity.MethodCall> calls = methodCallMapper.selectList(
+                        new LambdaQueryWrapper<com.company.codeinsight.modules.callchain.entity.MethodCall>()
+                                .eq(com.company.codeinsight.modules.callchain.entity.MethodCall::getTaskId, taskId)
+                                .and(w -> w.eq(com.company.codeinsight.modules.callchain.entity.MethodCall::getClassName, classNameOrFq)
+                                        .or()
+                                        .eq(com.company.codeinsight.modules.callchain.entity.MethodCall::getClassName, shortName))
+                                .isNotNull(com.company.codeinsight.modules.callchain.entity.MethodCall::getFilePath)
+                                .last("LIMIT 1"));
+                if (!calls.isEmpty() && StringUtils.hasText(calls.get(0).getFilePath())) {
+                    return calls.get(0).getFilePath().replace('\\', '/');
+                }
+            } catch (Exception e) {
+                log.warn("lookupBindingFilePath method_call failed class={}: {}", classNameOrFq, e.toString());
+            }
+        }
+        if (entrypointMapper != null && taskId != null) {
+            try {
+                List<com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity> eps =
+                        entrypointMapper.selectByTaskId(taskId);
+                if (eps != null) {
+                    for (com.company.codeinsight.modules.entrypoint.entity.EntrypointEntity ep : eps) {
+                        if (ep == null || !StringUtils.hasText(ep.getFilePath())) {
+                            continue;
+                        }
+                        String cn = ep.getClassName();
+                        if (classNameOrFq.equals(cn) || shortName.equals(stripPackage(cn))) {
+                            return ep.getFilePath().replace('\\', '/');
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                log.warn("lookupBindingFilePath entrypoint failed class={}: {}", classNameOrFq, e.toString());
+            }
+        }
+        return SourceFileLocator.inferMavenMainPath(classNameOrFq);
+    }
+
+    /**
+     * 逻辑删 + 批量插入，失败重试；不因单入口失败抛到任务级（仅 warn）。
+     */
+    private void persistBindingsWithRetry(Long taskId, List<MethodFunctionBinding> rows,
+                                          String entryClassName, int beforeDedupe,
+                                          int skippedNotExisting, int backfilled) {
+        if (rows == null || rows.isEmpty() || methodFunctionBindingMapper == null) {
+            return;
+        }
+        final int maxAttempts = 3;
+        Exception last = null;
+        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+            try {
+                java.util.Set<String> functionIds = new java.util.LinkedHashSet<>();
+                for (MethodFunctionBinding r : rows) {
+                    if (StringUtils.hasText(r.getFunctionNodeId())) {
+                        functionIds.add(r.getFunctionNodeId());
+                    }
+                }
+                if (!functionIds.isEmpty()) {
+                    methodFunctionBindingMapper.deleteByTaskIdAndFunctionNodeIds(taskId, functionIds);
+                }
+                methodFunctionBindingMapper.deleteByTaskIdAndClassMethodKeys(taskId, rows);
+                int inserted = methodFunctionBindingMapper.batchInsertBindings(rows);
+                // 回读校验：至少一个 function 有活行
+                boolean ok = false;
+                for (String fid : functionIds) {
+                    List<MethodFunctionBinding> check =
+                            methodFunctionBindingMapper.selectByTaskAndFunction(taskId, fid);
+                    if (check != null && !check.isEmpty()) {
+                        ok = true;
+                        break;
+                    }
+                }
+                if (!ok && !functionIds.isEmpty()) {
+                    throw new IllegalStateException("binding 回读为空 functionIds=" + functionIds);
+                }
+                log.info("入口 {} binding 入库: 笛卡尔后 {} 行, 去重后 {} 行, insert {} 行, backfill≈{} (call-graph 剔除 {} 条) attempt={}",
+                        entryClassName, beforeDedupe, rows.size(), inserted, backfilled, skippedNotExisting, attempt);
+                return;
+            } catch (Exception e) {
+                last = e;
+                log.warn("[PERSIST-RETRY] binding 入库失败 entry={} attempt={}/{}: {}",
+                        entryClassName, attempt, maxAttempts, e.toString());
+                try {
+                    Thread.sleep(50L * attempt);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
+            }
+        }
+        log.error("[PERSIST-FAIL] binding 入库最终失败 entry={} rows={} last={}",
+                entryClassName, rows.size(), last != null ? last.toString() : "unknown");
     }
 
     /**

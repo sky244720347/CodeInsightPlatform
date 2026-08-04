@@ -3,6 +3,8 @@ package com.company.codeinsight.modules.log.service.impl;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.extension.plugins.pagination.Page;
 import com.baomidou.mybatisplus.extension.service.impl.ServiceImpl;
+import com.company.codeinsight.common.auth.ClientIpContext;
+import com.company.codeinsight.common.auth.OperatorContext;
 import com.company.codeinsight.modules.log.entity.OperationLog;
 import com.company.codeinsight.modules.log.mapper.OperationLogMapper;
 import com.company.codeinsight.modules.log.service.OperationLogService;
@@ -13,28 +15,30 @@ import java.time.LocalDateTime;
 
 /**
  * 系统操作审计日志服务实现类
- * 负责审计日志信息的拼装入库（采用 Mock 简易用户身份）和分页模糊条件匹配逻辑。
+ * 负责审计日志信息的拼装入库和分页模糊条件匹配逻辑。
  */
 @Service
 public class OperationLogServiceImpl extends ServiceImpl<OperationLogMapper, OperationLog> implements OperationLogService {
 
     private static final int MAX_DETAIL_LENGTH = 1000;
     private static final int MAX_ACTION_TYPE_LENGTH = 50;
+    private static final int MAX_IP_LENGTH = 50;
 
     /**
-     * 保存单条操作日志
-     * 临时采用固定用户（id=1L, username="Owner"）和固定 IP ("127.0.0.1") 写入。
+     * 保存单条操作日志。
+     * <p>操作人取自 {@link OperatorContext}；IP 取自 {@link ClientIpContext}
+     * （HTTP 非回环 peer；回环或调度线程回落本机网卡可辨识 IP，便于区分不同机器）。</p>
      */
     @Override
     public void logOperation(Long systemId, Long taskId, String actionType, String detail, String exceptionMsg, boolean success) {
         OperationLog log = new OperationLog();
         log.setSystemId(systemId);
         log.setTaskId(taskId);
-        log.setUserId(1L); // Mock 用户 ID
-        log.setUsername("Owner"); // Mock 用户名
+        log.setUserId(OperatorContext.getUserId());
+        log.setUsername(truncate(OperatorContext.get(), 100));
         log.setActionType(truncate(actionType, MAX_ACTION_TYPE_LENGTH));
         log.setDetail(truncate(detail, MAX_DETAIL_LENGTH));
-        log.setIpAddress("127.0.0.1");
+        log.setIpAddress(truncate(ClientIpContext.get(), MAX_IP_LENGTH));
         log.setExceptionMsg(com.company.codeinsight.common.util.DbStringLimits.truncate(
                 exceptionMsg, com.company.codeinsight.common.util.DbStringLimits.EXCEPTION_MSG));
         log.setIsSuccess(success ? 1 : 0);
@@ -69,4 +73,3 @@ public class OperationLogServiceImpl extends ServiceImpl<OperationLogMapper, Ope
         return value.substring(0, maxLength - 3) + "...";
     }
 }
-

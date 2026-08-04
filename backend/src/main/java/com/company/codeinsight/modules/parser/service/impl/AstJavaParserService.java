@@ -627,7 +627,12 @@ public class AstJavaParserService implements JavaParserService {
         String prefix = "task_" + taskId + "/";
         int parseRemoved = 0;
         for (String key : parseCache.keySet()) {
-            if (key != null && key.startsWith(prefix) && parseCache.remove(key) != null) {
+            if (key == null) {
+                continue;
+            }
+            // 相对 key（task_{id}/...）与绝对路径兜底 key 均按任务边界匹配删除
+            boolean match = key.startsWith(prefix) || matchesTaskWorkspacePath(key, taskId);
+            if (match && parseCache.remove(key) != null) {
                 parseRemoved++;
             }
         }
@@ -636,6 +641,11 @@ public class AstJavaParserService implements JavaParserService {
         if (parseRemoved > 0 || solverRemoved > 0 || subtypeRemoved > 0) {
             log.info("evictTaskCaches taskId={} parse={} symbolSolver={} subtypeIndex={} | remaining {}",
                     taskId, parseRemoved, solverRemoved, subtypeRemoved, cacheStatsSummary());
+        }
+        List<String> leftover = sampleLeftoverKeysForTask(taskId, 5);
+        if (!leftover.isEmpty()) {
+            log.warn("evictTaskCaches incomplete taskId={} leftoverSamples={} | remaining {}",
+                    taskId, leftover, cacheStatsSummary());
         }
     }
 
@@ -674,19 +684,66 @@ public class AstJavaParserService implements JavaParserService {
         return removed;
     }
 
-    /** workspace / SymbolSolver 绝对路径是否属于 task_{id} */
+    /**
+     * 驱逐后仍命中本 taskId 的 key 样例（parse / symbolSolver / subtype），供排查路径匹配边角。
+     */
+    private List<String> sampleLeftoverKeysForTask(Long taskId, int limit) {
+        List<String> samples = new ArrayList<>();
+        if (taskId == null || limit <= 0) {
+            return samples;
+        }
+        for (String key : parseCache.keySet()) {
+            if (key != null && matchesTaskWorkspacePath(key, taskId)) {
+                samples.add("parse:" + key);
+                if (samples.size() >= limit) {
+                    return samples;
+                }
+            }
+        }
+        for (String key : SYMBOL_SOLVER_CACHE.keySet()) {
+            if (key != null && matchesTaskWorkspacePath(key, taskId)) {
+                samples.add("symbolSolver:" + key);
+                if (samples.size() >= limit) {
+                    return samples;
+                }
+            }
+        }
+        for (String key : SUBTYPE_INDEX_CACHE.keySet()) {
+            if (key != null && matchesTaskWorkspacePath(key, taskId)) {
+                samples.add("subtypeIndex:" + key);
+                if (samples.size() >= limit) {
+                    return samples;
+                }
+            }
+        }
+        return samples;
+    }
+
+    /** workspace / SymbolSolver 绝对路径是否属于 task_{id}（边界匹配，避免 task_1 误伤 task_10）。 */
     public static boolean matchesTaskWorkspacePath(String path, Long taskId) {
         if (path == null || taskId == null) {
             return false;
         }
         String n = path.replace('\\', '/');
         String token = "task_" + taskId;
-        int idx = n.indexOf(token);
-        if (idx < 0) {
-            return false;
+        int from = 0;
+        while (from <= n.length()) {
+            int idx = n.indexOf(token, from);
+            if (idx < 0) {
+                return false;
+            }
+            // 左侧须为路径分隔或串首，避免误匹配 foo_task_1
+            if (idx > 0 && n.charAt(idx - 1) != '/') {
+                from = idx + 1;
+                continue;
+            }
+            int after = idx + token.length();
+            if (after >= n.length() || n.charAt(after) == '/' || n.charAt(after) == '-') {
+                return true;
+            }
+            from = idx + 1;
         }
-        int after = idx + token.length();
-        return after >= n.length() || n.charAt(after) == '/' || n.charAt(after) == '-';
+        return false;
     }
 
     private static String simpleName(String annotation) {

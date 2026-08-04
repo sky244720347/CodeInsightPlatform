@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8" ?>
+﻿<?xml version="1.0" encoding="UTF-8" ?>
 <!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
         "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
 <mapper namespace="com.company.codeinsight.modules.task.mapper.DecompileTaskMapper">
@@ -6,6 +6,7 @@
     <!--
       认领下一条可调度任务：新建 PENDING 或断点续跑 RESUME_QUEUED
       （PostgreSQL SKIP LOCKED）。跳过已被其他节点预留且 lease 未过期的行。
+      devOnly=true 时仅认领创建自本地 dev 的任务（is_dev=true）。
     -->
     <select id="selectNextPendingIdForUpdate" resultType="long">
         SELECT id
@@ -13,6 +14,9 @@
         WHERE status IN ('PENDING', 'RESUME_QUEUED')
           AND is_deleted = 0
           AND (claimed_by IS NULL OR lease_until IS NULL OR lease_until &lt; NOW())
+          <if test="devOnly != null and devOnly == true">
+          AND is_dev = TRUE
+          </if>
         ORDER BY priority DESC, created_date ASC
         LIMIT 1
         FOR UPDATE SKIP LOCKED

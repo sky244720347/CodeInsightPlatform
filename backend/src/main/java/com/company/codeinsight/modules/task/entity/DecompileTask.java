@@ -193,5 +193,12 @@ public class DecompileTask extends BaseEntity {
      */
     @TableField("source_commit")
     private String sourceCommit;
+
+    /**
+     * 创建时后端是否处于 dev（{@code CODE_INSIGHT_ENV=dev}）。
+     * <p>本地 dev 进程只自动/手动执行 {@code is_dev=true} 的任务，避免误连共享库抢 STG 任务。</p>
+     */
+    @TableField("is_dev")
+    private Boolean isDev;
 }
 

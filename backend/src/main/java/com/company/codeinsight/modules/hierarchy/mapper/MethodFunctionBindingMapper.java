@@ -24,10 +24,10 @@ public interface MethodFunctionBindingMapper extends BaseMapper<MethodFunctionBi
      */
     @Insert("INSERT INTO ci_method_function_binding " +
             "(task_id, system_id, module_node_id, sub_module_node_id, function_node_id, " +
-            " class_name, method_signature, source, confidence, created_date, updated_date) " +
+            " class_name, method_signature, file_path, source, confidence, created_date, updated_date) " +
             "VALUES " +
             "(#{taskId}, #{systemId}, #{moduleNodeId}, #{subModuleNodeId}, #{functionNodeId}, " +
-            " #{className}, #{methodSignature}, #{source}, #{confidence}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
+            " #{className}, #{methodSignature}, #{filePath}, #{source}, #{confidence}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)")
     int insertBinding(MethodFunctionBinding binding);
 
     /**
@@ -36,10 +36,10 @@ public interface MethodFunctionBindingMapper extends BaseMapper<MethodFunctionBi
     @Insert("<script>" +
             "INSERT INTO ci_method_function_binding " +
             "(task_id, system_id, module_node_id, sub_module_node_id, function_node_id, " +
-            " class_name, method_signature, source, confidence, created_date, updated_date) VALUES " +
+            " class_name, method_signature, file_path, source, confidence, created_date, updated_date) VALUES " +
             "<foreach collection='list' item='item' separator=','>" +
             "(#{item.taskId}, #{item.systemId}, #{item.moduleNodeId}, #{item.subModuleNodeId}, #{item.functionNodeId}, " +
-            " #{item.className}, #{item.methodSignature}, #{item.source}, #{item.confidence}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)" +
+            " #{item.className}, #{item.methodSignature}, #{item.filePath}, #{item.source}, #{item.confidence}, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)" +
             "</foreach>" +
             "</script>")
     int batchInsertBindings(@Param("list") List<MethodFunctionBinding> list);

@@ -124,10 +124,15 @@ public class KnowledgeServiceImpl implements KnowledgeService {
                     content = "# " + draft.getModuleName();
                 }
                 Files.writeString(staged, content);
-                yamlBuilder.append("  - name: \"").append(draft.getModuleName()).append("\"\n");
+                yamlBuilder.append("  - name: \"").append(escapeYamlDoubleQuoted(draft.getModuleName())).append("\"\n");
                 yamlBuilder.append("    path: \"docs/code-insight/modules/")
                         .append(KnowledgeIndexServiceImpl.flattenKnowledgeDocFileName(draft.getModuleName()))
                         .append("\"\n");
+                if (draft.getGeneratedAt() != null) {
+                    yamlBuilder.append("    generatedAt: \"")
+                            .append(draft.getGeneratedAt().toString())
+                            .append("\"\n");
+                }
             }
 
             try {
@@ -409,6 +414,14 @@ public class KnowledgeServiceImpl implements KnowledgeService {
             throw new BusinessException("该仓库已存在版本号 " + normalized + "，请使用不同的 versionNum");
         }
         return normalized;
+    }
+
+    /** module-map.yaml 双引号值转义（模块名偶含引号） */
+    private static String escapeYamlDoubleQuoted(String raw) {
+        if (raw == null) {
+            return "";
+        }
+        return raw.replace("\\", "\\\\").replace("\"", "\\\"");
     }
 
     /**

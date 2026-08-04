@@ -373,8 +373,20 @@ public class BaselineInheritanceService {
                 copy.setSortOrder(sortOrder++);
                 copy.setHash(hash);
                 copy.setBaselineTaskId(baselineTaskId);
+                // 行创建审计用 now；生成时间保留基线原文（禁止冒充继承时刻）
                 copy.setCreatedDate(now);
                 copy.setUpdatedDate(now);
+                LocalDateTime generatedAt = entry.generatedAt();
+                if (generatedAt == null) {
+                    generatedAt = version.getPushedAt() != null
+                            ? version.getPushedAt()
+                            : version.getCreatedDate();
+                }
+                if (generatedAt == null) {
+                    generatedAt = now;
+                    log.warn("基线继承缺 generatedAt，回退为继承时刻 moduleName={}", entry.moduleName());
+                }
+                copy.setGeneratedAt(generatedAt);
                 toInsert.add(copy);
             }
 
@@ -407,7 +419,7 @@ public class BaselineInheritanceService {
     }
 
     /** module-map.yaml 中的一条模块映射 */
-    private record ModuleMapEntry(String moduleName, String fileName) {}
+    private record ModuleMapEntry(String moduleName, String fileName, LocalDateTime generatedAt) {}
 
     /**
      * 解析 module-map.yaml — 格式简单固定，手动行解析避免引入 YAML 依赖。
@@ -416,6 +428,7 @@ public class BaselineInheritanceService {
      * modules:
      *   - name: "模块名"
      *     path: "docs/code-insight/modules/文件名.md"
+     *     generatedAt: "2026-08-03T17:00:00"   # 可选
      * </pre>
      */
     private List<ModuleMapEntry> parseModuleMapYaml(java.nio.file.Path yamlFile) {
@@ -423,10 +436,17 @@ public class BaselineInheritanceService {
         try {
             List<String> lines = java.nio.file.Files.readAllLines(yamlFile);
             String pendingName = null;
+            String pendingFile = null;
+            LocalDateTime pendingGeneratedAt = null;
             for (String line : lines) {
                 String trimmed = line.trim();
                 if (trimmed.startsWith("- name:")) {
+                    if (pendingName != null && pendingFile != null) {
+                        entries.add(new ModuleMapEntry(pendingName, pendingFile, pendingGeneratedAt));
+                    }
                     pendingName = parseYamlQuotedValue(trimmed.substring("- name:".length()));
+                    pendingFile = null;
+                    pendingGeneratedAt = null;
                 } else if (trimmed.startsWith("path:") && pendingName != null) {
                     String path = parseYamlQuotedValue(trimmed.substring("path:".length()));
                     String fileName = path;
@@ -434,15 +454,43 @@ public class BaselineInheritanceService {
                     if (lastSlash >= 0) {
                         fileName = path.substring(lastSlash + 1);
                     }
-                    entries.add(new ModuleMapEntry(pendingName, fileName));
-                    pendingName = null;
+                    pendingFile = fileName;
+                } else if (trimmed.startsWith("generatedAt:") && pendingName != null) {
+                    pendingGeneratedAt = parseGeneratedAt(parseYamlQuotedValue(
+                            trimmed.substring("generatedAt:".length())));
                 }
+            }
+            if (pendingName != null && pendingFile != null) {
+                entries.add(new ModuleMapEntry(pendingName, pendingFile, pendingGeneratedAt));
             }
         } catch (java.io.IOException e) {
             throw new com.company.codeinsight.common.exception.BusinessException(
                     "解析 module-map.yaml 失败: " + e.getMessage());
         }
         return entries;
+    }
+
+    static LocalDateTime parseGeneratedAt(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return null;
+        }
+        String s = raw.trim();
+        try {
+            return LocalDateTime.parse(s);
+        } catch (Exception ignored) {
+            // fall through
+        }
+        try {
+            return java.time.OffsetDateTime.parse(s).toLocalDateTime();
+        } catch (Exception ignored) {
+            // fall through
+        }
+        try {
+            return java.time.Instant.parse(s).atZone(java.time.ZoneId.systemDefault()).toLocalDateTime();
+        } catch (Exception e) {
+            log.warn("无法解析 generatedAt={}", raw);
+            return null;
+        }
     }
 
     /** 提取 YAML 引号内的值："value" 或 'value' → value */

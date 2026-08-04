@@ -56,11 +56,16 @@ public class MethodFunctionBinding extends BaseEntity {
      * 方法签名 methodName(ParamType1,ParamType2)（不含返回类型）。
      * 风格与 ci_method_call.caller_signature 拆分后的函数名部分一致，
      * 便于按方法级反查调用链（拼上 class_name + "#" 即得到 caller_signature）。
+     * <p>无具体方法时可用 {@code $CLASS_ANCHOR$} 作类级锚点（source=BACKFILL）。</p>
      */
     @TableField("method_signature")
     private String methodSignature;
 
-    /** 归属来源：AI / USER / MIGRATED */
+    /** 源文件相对路径（落表时尽量固化；文档取源优先） */
+    @TableField("file_path")
+    private String filePath;
+
+    /** 归属来源：AI / USER / MIGRATED / BACKFILL */
     private String source;
 
     /** AI 输出的归属置信度（0-1，可空） */

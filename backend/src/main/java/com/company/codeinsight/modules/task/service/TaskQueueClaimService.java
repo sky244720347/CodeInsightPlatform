@@ -2,6 +2,7 @@ package com.company.codeinsight.modules.task.service;
 
 import com.company.codeinsight.common.cluster.ClusterInstanceId;
 import com.company.codeinsight.common.cluster.ClusterProperties;
+import com.company.codeinsight.common.config.CodeInsightEnvProperties;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import lombok.RequiredArgsConstructor;
@@ -14,6 +15,7 @@ import java.time.LocalDateTime;
  * 在事务内预留 PENDING / RESUME_QUEUED 任务行（{@code FOR UPDATE SKIP LOCKED}），避免多节点重复调度；
  * 并提供租约续租 / CAS 接管（孤儿任务恢复）。
  * <p>每个调度节点均可调用；认领写入本机 {@link ClusterInstanceId}。</p>
+ * <p>dev 时仅认领 {@code is_dev=true} 的任务。</p>
  */
 @Service
 @RequiredArgsConstructor
@@ -22,13 +24,15 @@ public class TaskQueueClaimService {
     private final DecompileTaskMapper taskMapper;
     private final ClusterInstanceId instanceId;
     private final ClusterProperties clusterProperties;
+    private final CodeInsightEnvProperties envProperties;
 
     /**
      * 预留一条 PENDING 或 RESUME_QUEUED 任务：写入 claimed_by / lease，状态不变。
      */
     @Transactional
     public DecompileTask reserveNextPending() {
-        Long id = taskMapper.selectNextPendingIdForUpdate();
+        Boolean devOnly = envProperties.isDev() ? Boolean.TRUE : null;
+        Long id = taskMapper.selectNextPendingIdForUpdate(devOnly);
         if (id == null) {
             return null;
         }
@@ -114,14 +118,13 @@ public class TaskQueueClaimService {
         } else {
             task.setClaimedBy(previousClaimedBy);
             task.setLeaseUntil(previousLeaseUntil);
-            // claimed_at 保持原值意义不大；暂不回滚
         }
         task.setUpdatedDate(now);
         taskMapper.updateById(task);
     }
 
     /**
-     * CAS 接管孤儿任务认领权：仅当 status / claimed_by 与快照一致时成功。
+     * CAS 接管孤儿任务认领权：仅当 status / claimed_by 与期望一致时成功。
      *
      * @return true 表示本节点已拿到认领
      */

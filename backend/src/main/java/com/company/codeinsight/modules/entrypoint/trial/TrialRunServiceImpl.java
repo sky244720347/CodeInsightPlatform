@@ -13,6 +13,7 @@ import com.company.codeinsight.modules.entrypoint.model.DiscoveredEntrypoint;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfig;
 import com.company.codeinsight.modules.entrypoint.model.EntryPointConfigCodec;
 import com.company.codeinsight.modules.entrypoint.service.EntryPointDiscoveryService;
+import com.company.codeinsight.modules.parser.service.TaskParseMemoryService;
 import com.company.codeinsight.modules.scanner.model.ScanResult;
 import com.company.codeinsight.modules.scanner.service.CodeScannerService;
 import com.fasterxml.jackson.core.type.TypeReference;
@@ -67,6 +68,8 @@ public class TrialRunServiceImpl implements TrialRunService {
     private CodeScannerService codeScannerService;
     @Autowired
     private TaskWorkspacePaths taskWorkspacePaths;
+    @Autowired
+    private TaskParseMemoryService taskParseMemoryService;
 
     @PostConstruct
     public void onStartup() {
@@ -193,6 +196,13 @@ public class TrialRunServiceImpl implements TrialRunService {
                 updateStatus(trialId, EntryScanTrialEntity.STATUS_FAILED, LocalDateTime.now(), null, msg);
             }
         } finally {
+            try {
+                if (taskParseMemoryService != null) {
+                    taskParseMemoryService.evict(trialId);
+                }
+            } catch (Exception e) {
+                log.warn("trial run parse-memory evict failed: trialId={}: {}", trialId, e.getMessage());
+            }
             if (lockKey != null) safeUnlock(lockKey, null);
         }
     }

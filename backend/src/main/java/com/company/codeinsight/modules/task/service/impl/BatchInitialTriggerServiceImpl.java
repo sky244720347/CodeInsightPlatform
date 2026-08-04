@@ -1,6 +1,7 @@
 package com.company.codeinsight.modules.task.service.impl;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.company.codeinsight.common.auth.ClientIpContext;
 import com.company.codeinsight.common.auth.OperatorContext;
 import com.company.codeinsight.common.config.AsyncExecutorConfig;
 import com.company.codeinsight.common.exception.BusinessException;
@@ -114,8 +115,9 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
 
             OperatorContext.Snapshot snapshot = new OperatorContext.Snapshot(
                     OperatorContext.get(), OperatorContext.getUserId(), OperatorContext.getRole());
+            String clientIp = ClientIpContext.isPresent() ? ClientIpContext.get() : null;
             List<CodeRepository> repoSnapshot = List.copyOf(repos);
-            batchInitialExecutor.execute(() -> runJob(jobId, repoSnapshot, snapshot, resolvedModel));
+            batchInitialExecutor.execute(() -> runJob(jobId, repoSnapshot, snapshot, clientIp, resolvedModel));
             return accepted;
         } catch (RuntimeException e) {
             releaseLockQuietly();
@@ -137,8 +139,11 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
     }
 
     private void runJob(String jobId, List<CodeRepository> repos, OperatorContext.Snapshot snapshot,
-                        String modelName) {
+                        String clientIp, String modelName) {
         OperatorContext.set(snapshot.username(), snapshot.userId(), snapshot.role());
+        if (clientIp != null) {
+            ClientIpContext.set(clientIp);
+        }
         try {
             BatchInitialTriggerResult progress = BatchInitialTriggerResult.builder()
                     .jobId(jobId)
@@ -201,6 +206,7 @@ public class BatchInitialTriggerServiceImpl implements BatchInitialTriggerServic
             saveJob(failed);
         } finally {
             releaseLockQuietly();
+            ClientIpContext.clear();
             OperatorContext.clear();
         }
     }

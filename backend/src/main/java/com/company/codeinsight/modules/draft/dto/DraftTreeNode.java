@@ -69,6 +69,11 @@ public class DraftTreeNode {
     private Long baselineTaskId;
 
     /**
+     * 正文最后一次 AI/流水线生成时间（继承保留原文；重跑成功刷新）。
+     */
+    private java.time.LocalDateTime generatedAt;
+
+    /**
      * 从 KnowledgeDraft 实体构造叶子节点
      */
     public static DraftTreeNode fromDraft(KnowledgeDraft d) {
@@ -82,6 +87,7 @@ public class DraftTreeNode {
         n.setSortOrder(d.getSortOrder() == null ? 0 : d.getSortOrder());
         n.setIsFolder(false);
         n.setBaselineTaskId(d.getBaselineTaskId());
+        n.setGeneratedAt(d.getGeneratedAt());
         return n;
     }
 }

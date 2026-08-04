@@ -1,5 +1,6 @@
 package com.company.codeinsight.modules.knowledge.remediation;
 
+import com.company.codeinsight.common.config.CodeInsightEnvProperties;
 import com.company.codeinsight.common.exception.BusinessException;
 import com.company.codeinsight.modules.entrypoint.model.ExcludeTarget;
 import com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy;
@@ -42,6 +43,7 @@ public class KnowledgeRemediationServiceImpl implements KnowledgeRemediationServ
     private final RepositoryPublishedHierarchyLoader hierarchyLoader;
     private final DecompilePromptService decompilePromptService;
     private final RepoGitConnectivityService repoGitConnectivityService;
+    private final CodeInsightEnvProperties envProperties;
     private final ObjectMapper objectMapper;
 
     @Override
@@ -157,6 +159,7 @@ public class KnowledgeRemediationServiceImpl implements KnowledgeRemediationServ
         task.setRemediationScopeJson(scopeJson);
         task.setEntryScanConfig(repo.getEntryScanConfig());
         task.setPriority(70);
+        task.setIsDev(envProperties.isDev());
         decompileTaskService.save(task);
         return task;
     }

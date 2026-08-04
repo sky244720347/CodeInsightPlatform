@@ -111,19 +111,20 @@ public class PipelineAiCaller {
         if (taskId == null || !StringUtils.hasText(initialPrompt)) {
             return CallOutcome.fail("empty prompt or taskId");
         }
+        boolean unlimited = retryProperties.isUnlimitedAttempts();
         int maxAttempts = retryProperties.resolveMaxAttempts(stage);
-        long backoffMs = Math.max(0L, retryProperties.getBackoffMs());
+        String maxLabel = unlimited ? "unlimited" : String.valueOf(maxAttempts);
         String stageTag = StringUtils.hasText(stage) ? stage : "AI";
         String target = StringUtils.hasText(targetLabel) ? targetLabel : "-";
         String currentPrompt = initialPrompt;
         String lastReason = "unknown";
 
         int attempt = 1;
-        while (attempt <= maxAttempts) {
+        while (unlimited || attempt <= maxAttempts) {
             if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
                 execLog.log(taskId, String.format(
-                        "[AI-CANCEL] stage=%s target=%s before attempt %d/%d",
-                        stageTag, target, attempt, maxAttempts));
+                        "[AI-CANCEL] stage=%s target=%s before attempt %d/%s",
+                        stageTag, target, attempt, maxLabel));
                 throw new TaskCancelledException(taskId);
             }
             try {
@@ -133,8 +134,8 @@ public class PipelineAiCaller {
                 if (vr.success()) {
                     if (attempt > 1) {
                         execLog.log(taskId, String.format(
-                                "[AI-OK] stage=%s target=%s recovered on attempt %d/%d",
-                                stageTag, target, attempt, maxAttempts));
+                                "[AI-OK] stage=%s target=%s recovered on attempt %d/%s",
+                                stageTag, target, attempt, maxLabel));
                     }
                     String payload = StringUtils.hasText(vr.normalizedResponse()) ? vr.normalizedResponse() : response;
                     return CallOutcome.ok(payload);
@@ -158,25 +159,26 @@ public class PipelineAiCaller {
                             stageTag, target, truncateReason(lastReason)));
                     return CallOutcome.fail(lastReason);
                 }
-                // 并发类（已达上限 / 等待超时 / 被中断）：与其它可恢复失败一样消耗 attempt
+                // 并发类（已达上限 / 等待超时 / 被中断）：与其它可恢复失败一样进入下一轮
             } catch (Exception e) {
                 if (TaskCancelledException.isCancellation(e)) {
                     throw new TaskCancelledException(taskId);
                 }
                 lastReason = e.getMessage();
                 log.warn("Pipeline AI call exception stage={} target={} attempt={}/{}: {}",
-                        stageTag, target, attempt, maxAttempts, lastReason);
+                        stageTag, target, attempt, maxLabel, lastReason);
             }
 
-            if (attempt < maxAttempts) {
+            boolean willRetry = unlimited || attempt < maxAttempts;
+            if (willRetry) {
                 if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
                     throw new TaskCancelledException(taskId);
                 }
                 String tag = isConcurrencyFailure(lastReason) ? "[AI-CONCURRENCY]" : "[AI-RETRY]";
                 execLog.log(taskId, String.format(
-                        "%s stage=%s target=%s attempt=%d/%d reason=%s",
-                        tag, stageTag, target, attempt, maxAttempts, truncateReason(lastReason)));
-                sleepBackoff(backoffMs * attempt);
+                        "%s stage=%s target=%s attempt=%d/%s reason=%s",
+                        tag, stageTag, target, attempt, maxLabel, truncateReason(lastReason)));
+                sleepBackoff(retryProperties.resolveBackoffWaitMs(attempt, isConcurrencyFailure(lastReason)));
                 if (promptMutator != null) {
                     currentPrompt = promptMutator.mutate(initialPrompt, currentPrompt, attempt, lastReason);
                 }

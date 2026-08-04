@@ -3,6 +3,7 @@ package com.company.codeinsight.modules.task.service;
 import com.company.codeinsight.common.cluster.ClusterInstanceId;
 import com.company.codeinsight.common.cluster.ClusterProperties;
 import com.company.codeinsight.common.cluster.InstanceHeartbeat;
+import com.company.codeinsight.common.config.CodeInsightEnvProperties;
 import com.company.codeinsight.modules.draft.enums.DraftStatus;
 import com.company.codeinsight.modules.draft.mapper.KnowledgeDraftMapper;
 import com.company.codeinsight.modules.draft.service.DraftService;
@@ -23,12 +24,14 @@ import org.springframework.util.StringUtils;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 /**
  * 孤儿流水线任务自动接管：无认领，或「租约过宽限 ∧ 认领方心跳已死」。
  * <p>禁止仅租约刚过期就抢；「仅心跳已死但租约未过宽限」也不抢。
  * 详见 docs/orphan-reclaim-lease-heartbeat-design.md。</p>
  * <p>每个节点均可扫描与续跑（有本机槽才真正拉起）；不再依赖 Leader 独占执行。</p>
+ * <p>{@code CODE_INSIGHT_ENV=dev} 时整段禁用（含草稿 REGENERATING 清理），见 docs/dev-shared-db-safety-plan.md。</p>
  */
 @Slf4j
 @Component
@@ -65,9 +68,15 @@ public class TaskOrphanReclaimScheduler {
     private final OperationLogService operationLogService;
     private final KnowledgeDraftMapper knowledgeDraftMapper;
     private final DraftService draftService;
+    private final CodeInsightEnvProperties envProperties;
+
+    private final AtomicBoolean devSkipLogged = new AtomicBoolean(false);
 
     @EventListener(ApplicationReadyEvent.class)
     public void onReady() {
+        if (skipWhenDev("startup")) {
+            return;
+        }
         // 稍晚于其它 Ready 钩子，避免与调度器抢跑；失败不影响启动
         try {
             Thread.sleep(2000);
@@ -88,6 +97,9 @@ public class TaskOrphanReclaimScheduler {
 
     @Scheduled(fixedDelayString = "${code-insight.cluster.orphan-reclaim-interval-ms:30000}")
     public void scheduledReclaim() {
+        if (skipWhenDev("scheduled")) {
+            return;
+        }
         try {
             reclaimOnce("scheduled");
         } catch (Exception e) {
@@ -100,7 +112,22 @@ public class TaskOrphanReclaimScheduler {
         }
     }
 
+    private boolean skipWhenDev(String trigger) {
+        if (!envProperties.isDev()) {
+            return false;
+        }
+        if (devSkipLogged.compareAndSet(false, true)) {
+            log.info("dev 禁用孤儿接管（含草稿 REGENERATING 清理） trigger={}", trigger);
+        } else {
+            log.debug("dev 禁用孤儿接管 trigger={}", trigger);
+        }
+        return true;
+    }
+
     public int reclaimOnce(String trigger) {
+        if (envProperties.isDev()) {
+            return 0;
+        }
         List<DecompileTask> candidates = taskMapper.selectList(
                 new LambdaQueryWrapper<DecompileTask>()
                         .in(DecompileTask::getStatus, RECLAIMABLE_STATUSES)

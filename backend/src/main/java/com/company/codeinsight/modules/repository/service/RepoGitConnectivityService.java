@@ -21,7 +21,9 @@ import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.time.Duration;
 import java.time.LocalDateTime;
+import java.util.ArrayList;
 import java.util.Collection;
 import java.util.List;
 import java.util.concurrent.CompletableFuture;
@@ -31,10 +33,12 @@ import java.util.concurrent.Executors;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
+import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 仓库 Git 连通性探测：超时 ls-remote、落库、按系统异步批量、全库有限并发扫描。
+ * 仓库 Git 连通性探测：超时 ls-remote、落库、按系统异步批量、定时分批+TTL 扫描。
  */
 @Slf4j
 @Service
@@ -46,6 +50,11 @@ public class RepoGitConnectivityService {
     private final CodeRepositoryMapper codeRepositoryMapper;
     private final RepoGitCheckProperties properties;
     private final Executor repoGitCheckExecutor;
+
+    /** 定时全库 sweep 防重入 */
+    private final AtomicBoolean scheduledSweepRunning = new AtomicBoolean(false);
+    /** 跨 tick 游标（本机 Leader 内存；重启归零无妨） */
+    private final AtomicLong sweepCursorId = new AtomicLong(0L);
 
     public RepoGitConnectivityService(
             CodeRepositoryMapper codeRepositoryMapper,
@@ -162,7 +171,7 @@ public class RepoGitConnectivityService {
                 .build();
     }
 
-    /** 全库有限并发探测（供 Leader 调度调用） */
+    /** 全库定时探测入口（供 Leader 调度调用）：分批 + TTL + 防重入 + 游标 */
     public void checkAllRepositories() {
         checkAllRepositories(null);
     }
@@ -171,9 +180,150 @@ public class RepoGitConnectivityService {
      * @param heartbeat 可选：每完成一个仓库后回调（用于 Leader 锁续租）
      */
     public void checkAllRepositories(Runnable heartbeat) {
-        List<CodeRepository> repos = codeRepositoryMapper.selectList(
-                new LambdaQueryWrapper<CodeRepository>().orderByAsc(CodeRepository::getId));
-        checkAllLimited(repos, heartbeat);
+        if (!scheduledSweepRunning.compareAndSet(false, true)) {
+            log.info("Git connectivity sweep skipped: previous sweep still running");
+            return;
+        }
+        long started = System.nanoTime();
+        try {
+            int batchSize = Math.max(1, Math.min(properties.getGitCheckBatchSize(), 500));
+            int maxSweepSec = Math.max(10, properties.getGitCheckMaxSweepSeconds());
+            long deadlineNanos = started + TimeUnit.SECONDS.toNanos(maxSweepSec);
+
+            List<CodeRepository> due = selectDueBatch(sweepCursorId.get(), batchSize);
+            if (due.isEmpty() && sweepCursorId.get() > 0) {
+                sweepCursorId.set(0L);
+                due = selectDueBatch(0L, batchSize);
+            }
+            if (due.isEmpty()) {
+                log.info("Git connectivity sweep: no due repositories (cursor={})", sweepCursorId.get());
+                return;
+            }
+
+            int concurrency = Math.max(1, properties.getGitCheckConcurrency());
+            AtomicInteger ok = new AtomicInteger();
+            AtomicInteger fail = new AtomicInteger();
+            int processed = 0;
+            long lastId = sweepCursorId.get();
+
+            int i = 0;
+            while (i < due.size()) {
+                if (System.nanoTime() >= deadlineNanos) {
+                    log.info("Git connectivity sweep hit wall-clock budget ({}s), processed={}/{}",
+                            maxSweepSec, processed, due.size());
+                    break;
+                }
+                int end = Math.min(i + concurrency, due.size());
+                List<CodeRepository> wave = due.subList(i, end);
+                List<CompletableFuture<Void>> futures = new ArrayList<>(wave.size());
+                for (CodeRepository repo : wave) {
+                    futures.add(CompletableFuture.runAsync(() -> {
+                        try {
+                            GitConnectivityResult r = checkAndPersist(repo);
+                            if (r.isReachable()) {
+                                ok.incrementAndGet();
+                            } else {
+                                fail.incrementAndGet();
+                            }
+                        } catch (Exception e) {
+                            fail.incrementAndGet();
+                            log.warn("Git check failed for repo #{}: {}", repo.getId(), e.toString());
+                        } finally {
+                            if (heartbeat != null) {
+                                try {
+                                    heartbeat.run();
+                                } catch (Exception ignored) {
+                                    // ignore renew failures
+                                }
+                            }
+                        }
+                    }, repoGitCheckExecutor));
+                }
+                long remainMs = Math.max(1L,
+                        TimeUnit.NANOSECONDS.toMillis(deadlineNanos - System.nanoTime()));
+                try {
+                    CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new))
+                            .get(remainMs, TimeUnit.MILLISECONDS);
+                } catch (TimeoutException te) {
+                    log.info("Git connectivity wave timed out under sweep budget, processed so far={}",
+                            processed);
+                    for (CompletableFuture<Void> f : futures) {
+                        f.cancel(false);
+                    }
+                    break;
+                } catch (Exception e) {
+                    log.warn("Git connectivity wave join failed: {}", e.toString());
+                }
+                for (CodeRepository repo : wave) {
+                    if (repo.getId() != null && repo.getId() > lastId) {
+                        lastId = repo.getId();
+                    }
+                }
+                processed += wave.size();
+                i = end;
+            }
+            sweepCursorId.set(lastId);
+            long elapsedMs = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
+            log.info("Git connectivity sweep done: picked={} processed={} reachable={} unreachable={} cursor={} elapsedMs={}",
+                    due.size(), processed, ok.get(), fail.get(), lastId, elapsedMs);
+        } finally {
+            scheduledSweepRunning.set(false);
+        }
+    }
+
+    /**
+     * 选出本轮 due 仓库：未检测优先 → 不通到期 → 已连通到期；id &gt; afterId 游标。
+     */
+    List<CodeRepository> selectDueBatch(long afterId, int limit) {
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime reachableBefore = now.minus(
+                Duration.ofMillis(Math.max(0L, properties.getGitCheckReachableTtlMs())));
+        LocalDateTime unreachableBefore = now.minus(
+                Duration.ofMillis(Math.max(0L, properties.getGitCheckUnreachableTtlMs())));
+        int safeLimit = Math.max(1, Math.min(limit, 500));
+
+        LambdaQueryWrapper<CodeRepository> q = new LambdaQueryWrapper<>();
+        q.gt(CodeRepository::getId, afterId)
+                .and(w -> w.isNull(CodeRepository::getGitReachable)
+                        .or(u -> u.eq(CodeRepository::getGitReachable, UNREACHABLE)
+                                .and(t -> t.isNull(CodeRepository::getGitCheckedAt)
+                                        .or()
+                                        .lt(CodeRepository::getGitCheckedAt, unreachableBefore)))
+                        .or(r -> r.eq(CodeRepository::getGitReachable, REACHABLE)
+                                .and(t -> t.isNull(CodeRepository::getGitCheckedAt)
+                                        .or()
+                                        .lt(CodeRepository::getGitCheckedAt, reachableBefore))))
+                .last("ORDER BY CASE WHEN git_reachable IS NULL THEN 0 WHEN git_reachable = 0 THEN 1 ELSE 2 END, "
+                        + "git_checked_at ASC NULLS FIRST, id ASC LIMIT " + safeLimit);
+        return codeRepositoryMapper.selectList(q);
+    }
+
+    /**
+     * 是否应按 TTL 纳入定时探测（供单测）。
+     */
+    public static boolean isDueForScheduledCheck(CodeRepository repo, LocalDateTime now,
+                                          long reachableTtlMs, long unreachableTtlMs) {
+        if (repo == null) {
+            return false;
+        }
+        Integer flag = repo.getGitReachable();
+        LocalDateTime checkedAt = repo.getGitCheckedAt();
+        if (flag == null) {
+            return true;
+        }
+        if (flag == UNREACHABLE) {
+            if (checkedAt == null) {
+                return true;
+            }
+            return checkedAt.isBefore(now.minus(Duration.ofMillis(Math.max(0L, unreachableTtlMs))));
+        }
+        if (flag == REACHABLE) {
+            if (checkedAt == null) {
+                return true;
+            }
+            return checkedAt.isBefore(now.minus(Duration.ofMillis(Math.max(0L, reachableTtlMs))));
+        }
+        return true;
     }
 
     private void checkAllLimited(List<CodeRepository> repos) {
@@ -218,7 +368,7 @@ public class RepoGitConnectivityService {
                 }, repoGitCheckExecutor))
                 .toList();
         CompletableFuture.allOf(futures.toArray(CompletableFuture[]::new)).join();
-        log.info("Git connectivity sweep done: total={} reachable={} unreachable={}",
+        log.info("Git connectivity batch done: total={} reachable={} unreachable={}",
                 repos.size(), ok.get(), fail.get());
     }
 
