@@ -10,14 +10,19 @@ import com.company.codeinsight.common.util.DbStringLimits;
 import com.company.codeinsight.modules.repository.dto.GitBatchCheckAccepted;
 import com.company.codeinsight.modules.repository.dto.GitConnectivityResult;
 import com.company.codeinsight.modules.repository.dto.GitConnectivitySummary;
+import com.company.codeinsight.modules.repository.dto.GitRemoteHeadResult;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
+import com.company.codeinsight.modules.repository.stack.RepoStackProbeService;
 import lombok.extern.slf4j.Slf4j;
 import org.eclipse.jgit.api.Git;
 import org.eclipse.jgit.api.LsRemoteCommand;
+import org.eclipse.jgit.lib.Constants;
+import org.eclipse.jgit.lib.ObjectId;
 import org.eclipse.jgit.lib.Ref;
 import org.eclipse.jgit.transport.UsernamePasswordCredentialsProvider;
 import org.springframework.beans.factory.annotation.Qualifier;
+import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
@@ -25,7 +30,9 @@ import java.time.Duration;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executor;
 import java.util.concurrent.ExecutorService;
@@ -50,6 +57,7 @@ public class RepoGitConnectivityService {
     private final CodeRepositoryMapper codeRepositoryMapper;
     private final RepoGitCheckProperties properties;
     private final Executor repoGitCheckExecutor;
+    private final RepoStackProbeService stackProbeService;
 
     /** 定时全库 sweep 防重入 */
     private final AtomicBoolean scheduledSweepRunning = new AtomicBoolean(false);
@@ -59,10 +67,12 @@ public class RepoGitConnectivityService {
     public RepoGitConnectivityService(
             CodeRepositoryMapper codeRepositoryMapper,
             RepoGitCheckProperties properties,
-            @Qualifier(AsyncExecutorConfig.REPO_GIT_CHECK_EXECUTOR) Executor repoGitCheckExecutor) {
+            @Qualifier(AsyncExecutorConfig.REPO_GIT_CHECK_EXECUTOR) Executor repoGitCheckExecutor,
+            @Lazy RepoStackProbeService stackProbeService) {
         this.codeRepositoryMapper = codeRepositoryMapper;
         this.properties = properties;
         this.repoGitCheckExecutor = repoGitCheckExecutor;
+        this.stackProbeService = stackProbeService;
     }
 
     /**
@@ -381,6 +391,14 @@ public class RepoGitConnectivityService {
                 .set(CodeRepository::getGitReachable, result.isReachable() ? REACHABLE : UNREACHABLE)
                 .set(CodeRepository::getGitCheckedAt, result.getCheckedAt())
                 .set(CodeRepository::getGitCheckMsg, DbStringLimits.truncate(result.getMessage(), 255)));
+        if (result.isReachable()) {
+            try {
+                stackProbeService.onGitBecameReachable(repositoryId);
+            } catch (Exception e) {
+                log.warn("stack probe wake after git reachable failed repoId={}: {}",
+                        repositoryId, e.getMessage());
+            }
+        }
     }
 
     private GitConnectivityResult probe(Long repositoryId, String gitUrl, String username, String password) {
@@ -440,13 +458,241 @@ public class RepoGitConnectivityService {
         }
     }
 
+    /**
+     * 解析远端 tip commit（优先仓库配置分支 → HEAD → master/main）。
+     * <p>超时标 inconclusive，不下发、不误标不通；明确成功/失败可顺带刷新连通性。</p>
+     */
+    public GitRemoteHeadResult resolveRemoteHead(CodeRepository repo) {
+        if (repo == null) {
+            return GitRemoteHeadResult.builder()
+                    .reachable(false)
+                    .message("代码库不存在")
+                    .build();
+        }
+        return resolveRemoteHead(repo.getId(), repo.getGitUrl(), repo.getUsername(),
+                repo.getPassword(), repo.getBranch());
+    }
+
+    public GitRemoteHeadResult resolveRemoteHead(Long repositoryId, String gitUrl,
+                                                 String username, String password,
+                                                 String preferredBranch) {
+        return resolveRemoteHead(repositoryId, gitUrl, username, password, preferredBranch,
+                properties.getGitCheckTimeoutSeconds());
+    }
+
+    /**
+     * 定时扫描专用：超时/不确定结论按次数重试，明确失败不重试。
+     */
+    public GitRemoteHeadResult resolveRemoteHeadWithRetry(CodeRepository repo,
+                                                          int timeoutSeconds,
+                                                          int maxAttempts,
+                                                          long retryBackoffMs) {
+        if (repo == null) {
+            return GitRemoteHeadResult.builder()
+                    .reachable(false)
+                    .message("代码库不存在")
+                    .build();
+        }
+        int attempts = Math.max(1, maxAttempts);
+        long backoff = Math.max(0L, retryBackoffMs);
+        GitRemoteHeadResult last = null;
+        for (int i = 1; i <= attempts; i++) {
+            last = resolveRemoteHead(repo.getId(), repo.getGitUrl(), repo.getUsername(),
+                    repo.getPassword(), repo.getBranch(), timeoutSeconds);
+            if (last != null && StringUtils.hasText(last.getHeadCommit())) {
+                return last;
+            }
+            if (last != null && !last.isInconclusive()) {
+                // 明确失败（鉴权/无 refs 等）：不再空转重试
+                return last;
+            }
+            if (i < attempts && backoff > 0) {
+                try {
+                    Thread.sleep(backoff * i);
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    return GitRemoteHeadResult.builder()
+                            .repositoryId(repo.getId())
+                            .reachable(false)
+                            .inconclusive(true)
+                            .message("检测重试被中断")
+                            .build();
+                }
+            }
+        }
+        return last != null ? last : GitRemoteHeadResult.builder()
+                .repositoryId(repo.getId())
+                .reachable(false)
+                .inconclusive(true)
+                .message("探测重试耗尽")
+                .build();
+    }
+
+    public GitRemoteHeadResult resolveRemoteHead(Long repositoryId, String gitUrl,
+                                                 String username, String password,
+                                                 String preferredBranch,
+                                                 int timeoutSeconds) {
+        LocalDateTime now = LocalDateTime.now();
+        if (!StringUtils.hasText(gitUrl)) {
+            return GitRemoteHeadResult.builder()
+                    .repositoryId(repositoryId)
+                    .reachable(false)
+                    .message("Git 地址为空")
+                    .build();
+        }
+        int timeoutSec = Math.max(1, timeoutSeconds);
+        ExecutorService single = Executors.newSingleThreadExecutor(r -> {
+            Thread t = new Thread(r, "git-ls-remote-head");
+            t.setDaemon(true);
+            return t;
+        });
+        try {
+            String head = single.submit(() -> lsRemoteHead(
+                            gitUrl.trim(), username, password, preferredBranch))
+                    .get(timeoutSec, TimeUnit.SECONDS);
+            if (StringUtils.hasText(head)) {
+                GitRemoteHeadResult ok = GitRemoteHeadResult.builder()
+                        .repositoryId(repositoryId)
+                        .headCommit(head)
+                        .reachable(true)
+                        .build();
+                persistReachability(repositoryId, true, now, null);
+                return ok;
+            }
+            GitRemoteHeadResult fail = GitRemoteHeadResult.builder()
+                    .repositoryId(repositoryId)
+                    .reachable(false)
+                    .message("ls-remote 无有效 refs 或无法解析 HEAD")
+                    .build();
+            persistReachability(repositoryId, false, now, fail.getMessage());
+            return fail;
+        } catch (TimeoutException te) {
+            return GitRemoteHeadResult.builder()
+                    .repositoryId(repositoryId)
+                    .reachable(false)
+                    .inconclusive(true)
+                    .message("检测超时（" + timeoutSec + "s），状态保持不变")
+                    .build();
+        } catch (InterruptedException ie) {
+            Thread.currentThread().interrupt();
+            return GitRemoteHeadResult.builder()
+                    .repositoryId(repositoryId)
+                    .reachable(false)
+                    .inconclusive(true)
+                    .message("检测被中断，状态保持不变")
+                    .build();
+        } catch (Exception e) {
+            Throwable cause = e.getCause() != null ? e.getCause() : e;
+            String msg = cause.getMessage() != null ? cause.getMessage() : cause.toString();
+            String truncated = DbStringLimits.truncate(msg, 255);
+            persistReachability(repositoryId, false, now, truncated);
+            return GitRemoteHeadResult.builder()
+                    .repositoryId(repositoryId)
+                    .reachable(false)
+                    .message(truncated)
+                    .build();
+        } finally {
+            single.shutdownNow();
+        }
+    }
+
+    private void persistReachability(Long repositoryId, boolean reachable,
+                                     LocalDateTime checkedAt, String message) {
+        if (repositoryId == null) {
+            return;
+        }
+        codeRepositoryMapper.update(null, new LambdaUpdateWrapper<CodeRepository>()
+                .eq(CodeRepository::getId, repositoryId)
+                .set(CodeRepository::getGitReachable, reachable ? REACHABLE : UNREACHABLE)
+                .set(CodeRepository::getGitCheckedAt, checkedAt)
+                .set(CodeRepository::getGitCheckMsg, message == null ? null : DbStringLimits.truncate(message, 255)));
+        if (reachable) {
+            try {
+                stackProbeService.onGitBecameReachable(repositoryId);
+            } catch (Exception e) {
+                log.warn("stack probe wake after git reachable failed repoId={}: {}",
+                        repositoryId, e.getMessage());
+            }
+        }
+    }
+
     private static boolean lsRemote(String gitUrl, String username, String password) throws Exception {
+        Collection<Ref> refs = lsRemoteRefs(gitUrl, username, password);
+        return refs != null && !refs.isEmpty();
+    }
+
+    private static String lsRemoteHead(String gitUrl, String username, String password,
+                                       String preferredBranch) throws Exception {
+        return pickRemoteHead(lsRemoteRefs(gitUrl, username, password), preferredBranch);
+    }
+
+    private static Collection<Ref> lsRemoteRefs(String gitUrl, String username, String password)
+            throws Exception {
         LsRemoteCommand lsRemote = Git.lsRemoteRepository().setRemote(gitUrl);
         if (StringUtils.hasText(username)) {
             lsRemote.setCredentialsProvider(new UsernamePasswordCredentialsProvider(
                     username, password != null ? password : ""));
         }
-        Collection<Ref> refs = lsRemote.call();
-        return refs != null && !refs.isEmpty();
+        return lsRemote.call();
+    }
+
+    /**
+     * 从 ls-remote refs 挑选 tip：配置分支 → HEAD → master → main。
+     */
+    public static String pickRemoteHead(Collection<Ref> refs, String preferredBranch) {
+        if (refs == null || refs.isEmpty()) {
+            return null;
+        }
+        Map<String, Ref> byName = new HashMap<>();
+        for (Ref r : refs) {
+            if (r != null && r.getName() != null) {
+                byName.put(r.getName(), r);
+            }
+        }
+        if (StringUtils.hasText(preferredBranch)) {
+            String id = objectIdName(byName.get(Constants.R_HEADS + preferredBranch.trim()));
+            if (id != null) {
+                return id;
+            }
+        }
+        Ref head = byName.get(Constants.HEAD);
+        if (head != null) {
+            if (head.isSymbolic()) {
+                Ref target = head.getTarget();
+                String id = objectIdName(target);
+                if (id != null) {
+                    return id;
+                }
+                if (target != null && target.getName() != null) {
+                    id = objectIdName(byName.get(target.getName()));
+                    if (id != null) {
+                        return id;
+                    }
+                }
+            }
+            String id = objectIdName(head);
+            if (id != null) {
+                return id;
+            }
+        }
+        for (String name : List.of(Constants.R_HEADS + "master", Constants.R_HEADS + "main")) {
+            String id = objectIdName(byName.get(name));
+            if (id != null) {
+                return id;
+            }
+        }
+        return null;
+    }
+
+    private static String objectIdName(Ref ref) {
+        if (ref == null) {
+            return null;
+        }
+        ObjectId id = ref.getObjectId();
+        if (id == null) {
+            id = ref.getPeeledObjectId();
+        }
+        return id != null ? id.getName() : null;
     }
 }
+

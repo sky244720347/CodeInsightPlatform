@@ -16,6 +16,7 @@ public class AsyncExecutorConfig {
     public static final String BATCH_INITIAL_EXECUTOR = "batchInitialExecutor";
     public static final String REPO_GIT_CHECK_EXECUTOR = "repoGitCheckExecutor";
     public static final String RELEASE_PRUNE_EXECUTOR = "releasePruneExecutor";
+    public static final String STACK_PROBE_EXECUTOR = "stackProbeExecutor";
 
     @Bean(name = KNOWLEDGE_PUBLISH_EXECUTOR)
     public Executor knowledgePublishExecutor() {
@@ -66,6 +67,20 @@ public class AsyncExecutorConfig {
         executor.setMaxPoolSize(2);
         executor.setQueueCapacity(200);
         executor.setThreadNamePrefix("release-prune-");
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(120);
+        executor.initialize();
+        return executor;
+    }
+
+    /** 真空仓类型/技术栈探测（新建立即探 + 批内异步） */
+    @Bean(name = STACK_PROBE_EXECUTOR)
+    public Executor stackProbeExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(2);
+        executor.setMaxPoolSize(4);
+        executor.setQueueCapacity(200);
+        executor.setThreadNamePrefix("stack-probe-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(120);
         executor.initialize();

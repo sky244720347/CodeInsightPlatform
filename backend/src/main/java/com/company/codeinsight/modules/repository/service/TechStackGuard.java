@@ -58,7 +58,11 @@ public class TechStackGuard {
         }
     }
 
-    /** 规范化后写回（trim）；非法时抛错 */
+    /**
+     * 规范化后写回（trim）。
+     * <p>类型与技术栈皆空（真空）允许保存，交给 {@code RepoStackProbe} 自动识别；
+     * 任一端有值则须成对合法。</p>
+     */
     public void normalizeAndValidate(CodeRepository repository) {
         if (repository == null) {
             return;
@@ -67,6 +71,9 @@ public class TechStackGuard {
         String stack = StringUtils.hasText(repository.getTechStack()) ? repository.getTechStack().trim() : null;
         repository.setRepoType(type);
         repository.setTechStack(stack);
+        if (type == null && stack == null) {
+            return;
+        }
         requireValidCatalogPair(type, stack);
     }
 }

@@ -188,14 +188,8 @@ WHERE is_deleted = 0
   AND git_check_msg IS NOT NULL
   AND git_check_msg LIKE '检测超时%';
 
--- 历史仓库回填：未配置类型/技术栈的视为后端 Java（仅补空，不覆盖已填值）
-UPDATE ci_repository
-SET repo_type = '后端',
-    tech_stack = 'Java',
-    updated_date = CURRENT_TIMESTAMP
-WHERE is_deleted = 0
-  AND (repo_type IS NULL OR btrim(repo_type) = ''
-       OR tech_stack IS NULL OR btrim(tech_stack) = '');
+-- 类型/技术栈真空由 RepoStackProbe 多机探测补全（docs/repo-stack-probe-plan.md）；
+-- 不再 schema 回填「后端/Java」，以免挡住自动识别。
 
 
 -- ============================================================
@@ -315,6 +309,64 @@ COMMENT ON COLUMN ci_scan_window.week_days IS '周几位掩码，bit0..bit6 对�
 COMMENT ON COLUMN ci_scan_window.hour IS '小时 0-23';
 COMMENT ON COLUMN ci_scan_window.minute IS '分钟 0-59';
 COMMENT ON COLUMN ci_scan_window.last_fired_at IS '最近一次实际触发时间，用于幂等（同分钟窗口不重复触发）';
+
+-- ============================================================
+-- 4b. ci_scan_probe_record — 定时 commit 探测流水（每次尝试一行）
+-- 对应 Entity: ScanProbeRecordEntity.java (modules/scanwindow)
+-- 见 docs/scan-orchestration-ui-plan.md
+-- ============================================================
+CREATE TABLE IF NOT EXISTS ci_scan_probe_record (
+    id BIGSERIAL PRIMARY KEY,
+    probe_date DATE NOT NULL,
+    repository_id BIGINT NOT NULL,
+    system_id BIGINT,
+    attempt_no INT,
+    status VARCHAR(32) NOT NULL,
+    remote_head VARCHAR(64),
+    baseline_commit VARCHAR(64),
+    dispatch_action VARCHAR(32),
+    task_id BIGINT,
+    message VARCHAR(512),
+    probed_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    is_deleted SMALLINT DEFAULT 0 NOT NULL,
+    created_by VARCHAR(100) DEFAULT 'sys' NOT NULL,
+    updated_by VARCHAR(100) DEFAULT 'sys' NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_scan_probe_date_probed
+    ON ci_scan_probe_record (probe_date, probed_at DESC);
+CREATE INDEX IF NOT EXISTS idx_scan_probe_date_repo
+    ON ci_scan_probe_record (probe_date, repository_id, probed_at DESC);
+COMMENT ON TABLE ci_scan_probe_record IS '定时 commit 探测流水：每次 ls-remote/决策尝试一行，同仓同日可多行';
+COMMENT ON COLUMN ci_scan_probe_record.id IS '主键';
+COMMENT ON COLUMN ci_scan_probe_record.probe_date IS '探测所属自然日（按日统计/筛选）';
+COMMENT ON COLUMN ci_scan_probe_record.repository_id IS '代码库 ID（ci_repository.id）';
+COMMENT ON COLUMN ci_scan_probe_record.system_id IS '所属系统 ID（ci_system.id）';
+COMMENT ON COLUMN ci_scan_probe_record.attempt_no IS '同仓同日第几次探测尝试（从 1 递增）';
+COMMENT ON COLUMN ci_scan_probe_record.status IS '探测结论：SUCCESS=了结成功；FAILED=探测明确失败；SKIPPED_LOCAL=本地路径/空 URL；INCONCLUSIVE=超时等不确定；DEFERRED_DISPATCH=探测成功但下发暂缓（技术栈等）；DISPATCH_FAILED=历史下发失败状态';
+COMMENT ON COLUMN ci_scan_probe_record.remote_head IS '本次 ls-remote 解析到的远端 tip commit';
+COMMENT ON COLUMN ci_scan_probe_record.baseline_commit IS '比对时仓库发布基线 commit（ci_repository.last_commit_id）';
+COMMENT ON COLUMN ci_scan_probe_record.dispatch_action IS '下发动作：INITIAL=全量；INCREMENTAL=增量；NONE=不下发；空=未决策到下发';
+COMMENT ON COLUMN ci_scan_probe_record.task_id IS '若已创建并启动任务则记录 ci_task.id，否则为空';
+COMMENT ON COLUMN ci_scan_probe_record.message IS '说明或失败/延期原因摘要';
+COMMENT ON COLUMN ci_scan_probe_record.probed_at IS '本次探测发生时间';
+
+-- 审计字段统一（is_deleted / created_by / updated_by / created_date / updated_date）
+-- AUDIT_FIELDS_BEGIN ci_scan_probe_record
+ALTER TABLE ci_scan_probe_record ADD COLUMN IF NOT EXISTS created_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_scan_probe_record ADD COLUMN IF NOT EXISTS updated_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP;
+ALTER TABLE ci_scan_probe_record ADD COLUMN IF NOT EXISTS is_deleted   SMALLINT     DEFAULT 0 NOT NULL;
+ALTER TABLE ci_scan_probe_record ADD COLUMN IF NOT EXISTS created_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+ALTER TABLE ci_scan_probe_record ADD COLUMN IF NOT EXISTS updated_by   VARCHAR(100) DEFAULT 'sys' NOT NULL;
+UPDATE ci_scan_probe_record SET created_date = COALESCE(created_date, probed_at, CURRENT_TIMESTAMP);
+UPDATE ci_scan_probe_record SET updated_date = COALESCE(updated_date, created_date, probed_at, CURRENT_TIMESTAMP);
+COMMENT ON COLUMN ci_scan_probe_record.created_date IS '创建时间';
+COMMENT ON COLUMN ci_scan_probe_record.updated_date IS '更新时间';
+COMMENT ON COLUMN ci_scan_probe_record.is_deleted   IS '逻辑删除：0=未删除 1=已删除';
+COMMENT ON COLUMN ci_scan_probe_record.created_by   IS '创建人';
+COMMENT ON COLUMN ci_scan_probe_record.updated_by   IS '最后修改人';
+-- AUDIT_FIELDS_END ci_scan_probe_record
 
 
 -- ============================================================

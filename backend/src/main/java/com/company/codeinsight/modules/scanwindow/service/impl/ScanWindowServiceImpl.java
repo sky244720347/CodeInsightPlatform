@@ -50,6 +50,9 @@ public class ScanWindowServiceImpl implements ScanWindowService {
         existing.setHour(w.getHour());
         existing.setMinute(w.getMinute());
         existing.setEnabled(w.getEnabled());
+        if (w.getLastFiredAt() != null) {
+            existing.setLastFiredAt(w.getLastFiredAt());
+        }
         existing.setUpdatedDate(now);
         mapper.updateById(existing);
         return getByRepository(w.getRepositoryId());

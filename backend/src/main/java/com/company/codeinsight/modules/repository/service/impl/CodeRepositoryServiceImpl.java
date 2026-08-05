@@ -10,12 +10,15 @@ import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
 import com.company.codeinsight.modules.repository.service.CodeRepositoryService;
 import com.company.codeinsight.modules.repository.service.RepoGitConnectivityService;
 import com.company.codeinsight.modules.repository.service.TechStackGuard;
+import com.company.codeinsight.modules.repository.stack.RepoStackProbeService;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.mapper.DecompileTaskMapper;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.support.TransactionSynchronization;
+import org.springframework.transaction.support.TransactionSynchronizationManager;
 import org.springframework.util.StringUtils;
 
 import java.util.Set;
@@ -43,6 +46,9 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
 
     @Autowired
     private RepoGitConnectivityService repoGitConnectivityService;
+
+    @Autowired
+    private RepoStackProbeService repoStackProbeService;
 
     @Override
     public Page<CodeRepository> listRepositoriesPage(int current, int size, Long systemId, String gitUrl, Boolean hasPublished) {
@@ -104,7 +110,28 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
         techStackGuard.normalizeAndValidate(repository);
         repository.setId(null);
         this.save(repository);
+        scheduleStackProbeIfVacuum(repository);
         return repository;
+    }
+
+    private void scheduleStackProbeIfVacuum(CodeRepository repository) {
+        if (repository == null || repository.getId() == null) {
+            return;
+        }
+        if (StringUtils.hasText(repository.getRepoType()) || StringUtils.hasText(repository.getTechStack())) {
+            return;
+        }
+        Long repoId = repository.getId();
+        if (TransactionSynchronizationManager.isSynchronizationActive()) {
+            TransactionSynchronizationManager.registerSynchronization(new TransactionSynchronization() {
+                @Override
+                public void afterCommit() {
+                    repoStackProbeService.wakeAndProbeAsync(repoId);
+                }
+            });
+        } else {
+            repoStackProbeService.wakeAndProbeAsync(repoId);
+        }
     }
 
     @Override
@@ -139,6 +166,7 @@ public class CodeRepositoryServiceImpl extends ServiceImpl<CodeRepositoryMapper,
         }
         repository.setId(id);
         this.updateById(repository);
+        scheduleStackProbeIfVacuum(repository);
         return repository;
     }
 

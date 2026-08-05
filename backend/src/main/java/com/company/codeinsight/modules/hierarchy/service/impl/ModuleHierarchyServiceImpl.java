@@ -38,7 +38,8 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Lazy;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.annotation.Transactional;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.util.StringUtils;
 
 import jakarta.annotation.PostConstruct;
@@ -56,15 +57,14 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
-import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 /**
  * 模块层级服务实现
  * - 加载已有节点 → DTO 重建
- * - 入口逐个调 AI → 解析 JSON → 复用/新增 ID → 注入 classPaths
- * - 全量重写表（delete + batch insert）保证幂等
+ * - 入口逐个调 AI（无事务）→ 内存 merge → 收集 binding
+ * - 终局短事务落库（hierarchy + bindings），失败重试 3 次
  */
 @Slf4j
 @Service
@@ -79,6 +79,12 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     private static final String LEVEL_MODULE = "MODULE";
     private static final String LEVEL_SUB_MODULE = "SUB_MODULE";
     private static final String LEVEL_FUNCTION = "FUNCTION";
+
+    /** 终局 hierarchy+bindings 落库最大重试次数（瞬时 SQL/连接失败不直接 FAILED） */
+    private static final int PERSIST_MAX_ATTEMPTS = 3;
+
+    /** binding 批量 INSERT 分片，避免单条 SQL 过大 */
+    private static final int BINDING_INSERT_CHUNK = 500;
 
     @Autowired
     private ModuleHierarchyNodeMapper nodeMapper;
@@ -135,7 +141,13 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     @Autowired
     private TaskWorkspacePaths taskWorkspacePaths;
 
+    @Autowired
+    private PlatformTransactionManager transactionManager;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
+
+    /** 短事务模板：仅包 SQL，绝不包 LLM */
+    private TransactionTemplate transactionTemplate;
 
     /** AI 调用专用线程池，并发度由 {@code code-insight.ai.hierarchy-parallelism} 控制，避免打爆 LLM API */
     @Value("${code-insight.ai.hierarchy-parallelism:4}")
@@ -145,6 +157,7 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
 
     @PostConstruct
     public void initAiExecutor() {
+        transactionTemplate = new TransactionTemplate(transactionManager);
         aiExecutor = Executors.newFixedThreadPool(hierarchyParallelism, r -> {
             Thread t = new Thread(r, "hierarchy-ai-");
             t.setDaemon(true);
@@ -153,19 +166,16 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public ModuleHierarchy buildAndPersist(Long taskId, File projectDir) {
         return buildAndPersist(taskId, projectDir, IncrementalContext.fullScan());
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public ModuleHierarchy buildAndPersist(Long taskId, File projectDir, IncrementalContext ctx) {
         return buildAndPersist(taskId, projectDir, ctx, null);
     }
 
     @Override
-    @Transactional(rollbackFor = Exception.class)
     public ModuleHierarchy buildAndPersist(Long taskId, File projectDir, IncrementalContext ctx,
                                            com.company.codeinsight.modules.callchain.model.IncrementalImpact impact) {
         if (taskId == null) {
@@ -210,9 +220,11 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                 collectModuleTreeNodeIds(deletedMod, reservedDeletedNodeIds);
             }
             if (!reservedDeletedNodeIds.isEmpty()) {
-                int softDeleted = nodeMapper.deleteByTaskIdAndNodeIds(taskId, reservedDeletedNodeIds);
+                final Set<String> toDelete = reservedDeletedNodeIds;
+                Integer softDeleted = transactionTemplate.execute(status ->
+                        nodeMapper.deleteByTaskIdAndNodeIds(taskId, toDelete));
                 log.info("预处理逻辑删已删入口模块树 — taskId={} reservedNodeIds={} dbRows={}",
-                        taskId, reservedDeletedNodeIds.size(), softDeleted);
+                        taskId, reservedDeletedNodeIds.size(), softDeleted == null ? 0 : softDeleted);
             }
             log.info("ModuleHierarchy.buildAndPersist 预处理 — taskId={} baselineTaskId={} deletedEntries={} preprocessedDeletedModules={}",
                     taskId, effective.getBaselineTaskId(), deletedNames.size(), preprocessedDeleted.size());
@@ -246,26 +258,29 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         }
 
         int processedByAi = 0;
+        // AI 成功增量暂存；终局 reconcile 后再解析 binding，避免 ID remap 后绑定错位
+        List<EntryAiResult> aiResults = new ArrayList<>();
         if (!toProcess.isEmpty()) {
-            // 方案 B：INITIAL 全量重写 binding 前先逻辑删腾出 uk_mfb_*_active
-            if (!effective.isIncremental() && methodFunctionBindingMapper != null) {
-                methodFunctionBindingMapper.deleteByTaskId(taskId);
-            }
             // INCREMENTAL：不再按 sourceEntryClass 整入口清空 FUNCTION（否则 AI 会重划未变方法的挂载）。
             // 删除签名的清理在 merge 后 purgeDeletedMethodSignatures 中按入口 DIFF 处理。
+            // INITIAL binding 全量逻辑删挪到终局短事务（与 hierarchy 同事务）。
             final String finalPrompt = promptTemplate;
             final com.company.codeinsight.modules.entrypoint.model.EntryPointConfig finalConfig =
                     entrypointReviewService.resolveConfig(task);
             final DecompileTask finalTask = task;
             final File finalProjectDir = projectDir;
             Long baselineTaskIdForDiff = effective.isIncremental() ? effective.getBaselineTaskId() : null;
+            int entryTotal = toProcess.size();
+            int entryIndex = 0;
             for (EntryPoint entry : toProcess) {
+                entryIndex++;
                 if (cancellationRegistry != null && cancellationRegistry.isCancelled(taskId)) {
                     execLog.log(taskId, String.format(
                             "  MODULE_HIERARCHY 因用户终止停止 — 已完成 %d / 共 %d",
-                            processedByAi, toProcess.size()));
+                            processedByAi, entryTotal));
                     throw new TaskCancelledException(taskId);
                 }
+                execLog.log(taskId, "  [entry " + entryIndex + "/" + entryTotal + "] " + entry.getClassName());
                 Map<String, String> methodDiffBySig = baselineTaskIdForDiff == null
                         ? java.util.Collections.emptyMap()
                         : buildEntrypointMethodDiffStatus(taskId, baselineTaskIdForDiff, entry.getClassName());
@@ -274,11 +289,10 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                 if (inc != null) {
                     mergeEntryResult(hierarchy, entry, inc, methodDiffBySig, reservedDeletedNodeIds);
                     purgeDeletedMethodSignatures(hierarchy, methodDiffBySig);
-                    persistMethodBindingsFromIncrement(taskId, task.getSystemId(),
-                            entry, inc, methodsByClass, hierarchy);
+                    aiResults.add(new EntryAiResult(entry, inc));
                     processedByAi++;
                     log.info("MODULE_HIERARCHY 串行处理进度 — taskId={} {}/{} entry={} modules={}",
-                            taskId, processedByAi, toProcess.size(), entry.getClassName(),
+                            taskId, entryIndex, entryTotal, entry.getClassName(),
                             hierarchy.getModules().size());
                 }
             }
@@ -305,15 +319,11 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     taskId, effective.getDeletedPaths().size(), removedRefs);
         }
 
-        // 6. 落表：
-        //   - INITIAL 模式：走原 persistAll（deleteByTaskId + 3 步 batchInsert）
-        //   - INCREMENTAL 模式：retarget 入口的旧节点已在前置步骤删除；其余节点来自基线继承不动；
-        //     只对 retarget 入口的新 DTO 子树做 batchInsert 3 步（生成新 DB ID 和 parent_id）
-        if (effective.isIncremental()) {
-            persistIncremental(taskId, task.getSystemId(), hierarchy, toProcess);
-        } else {
-            persistAll(taskId, task.getSystemId(), hierarchy);
-        }
+        // 6. 在最终 hierarchy 上解析 binding（内存），再短事务落库并重试
+        List<MethodFunctionBinding> bindingRows = buildAllBindingsAfterMerge(
+                taskId, task.getSystemId(), aiResults, methodsByClass, hierarchy);
+        persistHierarchyAndBindingsWithRetry(
+                taskId, task.getSystemId(), hierarchy, toProcess, effective.isIncremental(), bindingRows);
 
         int failedByAi = toProcess.size() - processedByAi;
         execLog.log(taskId, String.format(
@@ -1372,29 +1382,71 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
      * <p>净效果：BFS 沿 binding 表走，源头不再是 {@code ci_module_hierarchy.method_signatures}
      * 的"全集污染"；AI 输出契约保持不变。</p>
      */
+    /**
+     * 单入口 binding 构建并立即落库（供集成测试反射调用；流水线主路径走终局短事务）。
+     */
     private void persistMethodBindingsFromIncrement(Long taskId, Long systemId,
                                                     EntryPoint entry,
                                                     JsonNode increment,
                                                     Map<String, List<EntrypointMethodView>> methodsByClass,
                                                     ModuleHierarchy hierarchy) {
-        if (taskId == null || entry == null || increment == null || methodFunctionBindingMapper == null) {
+        BindingBuildResult built = buildMethodBindingsFromIncrement(
+                taskId, systemId, entry, increment, methodsByClass, hierarchy, null);
+        if (built.rows().isEmpty()) {
             return;
         }
-        // 入口类本身的限定（本入口外的 class 不做白名单限制——并行阶段其他入口已落库）
-        String entryClassName = entry.getClassName();
+        persistBindingsCovering(taskId, built.rows());
+        log.info("入口 {} binding 入库: 笛卡尔后去重 {} 行, backfill≈{} (call-graph 剔除 {} 条)",
+                entry != null ? entry.getClassName() : "?",
+                built.rows().size(), built.backfilled(), built.skippedNotExisting());
+    }
 
+    /** 全部 AI 成功入口在最终 hierarchy 上解析 binding（内存）。 */
+    private List<MethodFunctionBinding> buildAllBindingsAfterMerge(
+            Long taskId,
+            Long systemId,
+            List<EntryAiResult> aiResults,
+            Map<String, List<EntrypointMethodView>> methodsByClass,
+            ModuleHierarchy hierarchy) {
+        if (aiResults == null || aiResults.isEmpty() || methodFunctionBindingMapper == null) {
+            return List.of();
+        }
+        CallGraphWhitelist whitelist = collectCallGraphWhitelist(taskId);
+        List<MethodFunctionBinding> all = new ArrayList<>();
+        for (EntryAiResult r : aiResults) {
+            BindingBuildResult built = buildMethodBindingsFromIncrement(
+                    taskId, systemId, r.entry(), r.increment(), methodsByClass, hierarchy, whitelist);
+            all.addAll(built.rows());
+        }
+        if (all.isEmpty()) {
+            return List.of();
+        }
+        return dedupeBindingsByClassMethod(all, "ALL_ENTRIES");
+    }
+
+    /**
+     * 解析 AI 增量 → binding 行（不写库）。
+     * {@code whitelist} 为 null 时现场收集调用图白名单。
+     */
+    private BindingBuildResult buildMethodBindingsFromIncrement(
+            Long taskId,
+            Long systemId,
+            EntryPoint entry,
+            JsonNode increment,
+            Map<String, List<EntrypointMethodView>> methodsByClass,
+            ModuleHierarchy hierarchy,
+            CallGraphWhitelist whitelist) {
+        if (taskId == null || entry == null || increment == null) {
+            return BindingBuildResult.empty();
+        }
+        String entryClassName = entry.getClassName();
         JsonNode modulesNode = increment.path("modules");
         if (!modulesNode.isArray()) {
-            return;
+            return BindingBuildResult.empty();
         }
-        // 一次 SQL 收集 task 内调用图白名单：signatures（Tier 1 严格匹配）+ classNames（Tier 2 兜底）。
-        // Tier 1 用 caller 端完整签名白名单校验 (cp, sig) 元组；
-        // Tier 2 用 caller + callee 端类名白名单兜底，避免 Service/Repository 这类 leaf callee
-        // 因不出现在 caller_signature 而被误剔除。
-        CallGraphWhitelist whitelist = collectCallGraphWhitelist(taskId);
-        Set<String> signatureSet = whitelist.signatures();
-        Set<String> classSet = whitelist.classNames();
-        // 空白名单 = 跳过交叉校验（避免 method_call 未落库时把 AI 元组全剔光）
+        CallGraphWhitelist wl = whitelist != null ? whitelist : collectCallGraphWhitelist(taskId);
+        Set<String> signatureSet = wl.signatures();
+        Set<String> classSet = wl.classNames();
         boolean skipCrossCheck = signatureSet.isEmpty() && classSet.isEmpty();
 
         List<MethodFunctionBinding> rows = new ArrayList<>();
@@ -1405,13 +1457,16 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         for (JsonNode modNode : modulesNode) {
             JsonNode subs = modNode.path("sub_modules");
             if (!subs.isArray()) {
-                // 兼容 AI 偶发 camelCase（与 mergeIncrementIntoHierarchy 一致）
                 subs = modNode.path("subModules");
             }
-            if (!subs.isArray()) continue;
+            if (!subs.isArray()) {
+                continue;
+            }
             for (JsonNode subNode : subs) {
                 JsonNode fns = subNode.path("functions");
-                if (!fns.isArray()) continue;
+                if (!fns.isArray()) {
+                    continue;
+                }
                 for (JsonNode fnNode : fns) {
                     String[] nodeIds = resolveBindingNodeIds(hierarchy, modNode, subNode, fnNode);
                     if (nodeIds == null) {
@@ -1461,7 +1516,6 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     } else {
                         skippedEmptyCartesian++;
                     }
-                    // 笛卡尔空或白名单剔光 → BACKFILL，保证 function 表里至少有行
                     if (rows.size() == before) {
                         log.info("entry={} function={} AI 元组为空，程序 BACKFILL",
                                 entryClassName, functionId);
@@ -1479,18 +1533,17 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     entryClassName, skippedUnresolvedId);
         }
         if (rows.isEmpty()) {
-            log.warn("入口 {} binding 仍为空（笛卡尔空 {} / call-graph 剔除 {} / backfill 0），跳过入库",
+            log.warn("入口 {} binding 仍为空（笛卡尔空 {} / call-graph 剔除 {} / backfill 0），跳过",
                     entryClassName, skippedEmptyCartesian, skippedNotExisting);
-            return;
+            return new BindingBuildResult(List.of(), skippedNotExisting, backfilled);
         }
         for (MethodFunctionBinding row : rows) {
             if (!StringUtils.hasText(row.getFilePath())) {
                 row.setFilePath(lookupBindingFilePath(taskId, row.getClassName(), entry));
             }
         }
-        int beforeDedupe = rows.size();
         rows = dedupeBindingsByClassMethod(rows, entryClassName);
-        persistBindingsWithRetry(taskId, rows, entryClassName, beforeDedupe, skippedNotExisting, backfilled);
+        return new BindingBuildResult(rows, skippedNotExisting, backfilled);
     }
 
     private static MethodFunctionBinding newAiBinding(Long taskId, Long systemId,
@@ -1704,49 +1757,52 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     }
 
     /**
-     * 逻辑删 + 批量插入，失败重试；不因单入口失败抛到任务级（仅 warn）。
+     * 终局短事务：hierarchy + bindings 一体提交；瞬时 SQL 失败最多重试 {@link #PERSIST_MAX_ATTEMPTS} 次，
+     * 仍失败则抛 {@link BusinessException} 让流水线 FAILED。
      */
-    private void persistBindingsWithRetry(Long taskId, List<MethodFunctionBinding> rows,
-                                          String entryClassName, int beforeDedupe,
-                                          int skippedNotExisting, int backfilled) {
-        if (rows == null || rows.isEmpty() || methodFunctionBindingMapper == null) {
-            return;
-        }
-        final int maxAttempts = 3;
+    private void persistHierarchyAndBindingsWithRetry(
+            Long taskId,
+            Long systemId,
+            ModuleHierarchy hierarchy,
+            List<EntryPoint> toProcess,
+            boolean incremental,
+            List<MethodFunctionBinding> bindingRows) {
         Exception last = null;
-        for (int attempt = 1; attempt <= maxAttempts; attempt++) {
+        for (int attempt = 1; attempt <= PERSIST_MAX_ATTEMPTS; attempt++) {
             try {
-                java.util.Set<String> functionIds = new java.util.LinkedHashSet<>();
-                for (MethodFunctionBinding r : rows) {
-                    if (StringUtils.hasText(r.getFunctionNodeId())) {
-                        functionIds.add(r.getFunctionNodeId());
+                final List<MethodFunctionBinding> bindings =
+                        bindingRows == null ? List.of() : bindingRows;
+                transactionTemplate.executeWithoutResult(status -> {
+                    if (incremental) {
+                        persistIncremental(taskId, systemId, hierarchy, toProcess);
+                        persistBindingsCovering(taskId, bindings);
+                    } else {
+                        persistAll(taskId, systemId, hierarchy);
+                        if (methodFunctionBindingMapper != null) {
+                            methodFunctionBindingMapper.deleteByTaskId(taskId);
+                            batchInsertBindingsChunked(bindings);
+                            assertBindingsReadable(taskId, bindings);
+                        }
                     }
+                });
+                log.info("MODULE_HIERARCHY 终局落库成功 — taskId={} incremental={} bindings={} attempt={}",
+                        taskId, incremental, bindings.size(), attempt);
+                if (execLog != null) {
+                    execLog.log(taskId, String.format(
+                            "  终局落库成功（hierarchy+bindings=%d，attempt=%d/%d）",
+                            bindings.size(), attempt, PERSIST_MAX_ATTEMPTS));
                 }
-                if (!functionIds.isEmpty()) {
-                    methodFunctionBindingMapper.deleteByTaskIdAndFunctionNodeIds(taskId, functionIds);
-                }
-                methodFunctionBindingMapper.deleteByTaskIdAndClassMethodKeys(taskId, rows);
-                int inserted = methodFunctionBindingMapper.batchInsertBindings(rows);
-                // 回读校验：至少一个 function 有活行
-                boolean ok = false;
-                for (String fid : functionIds) {
-                    List<MethodFunctionBinding> check =
-                            methodFunctionBindingMapper.selectByTaskAndFunction(taskId, fid);
-                    if (check != null && !check.isEmpty()) {
-                        ok = true;
-                        break;
-                    }
-                }
-                if (!ok && !functionIds.isEmpty()) {
-                    throw new IllegalStateException("binding 回读为空 functionIds=" + functionIds);
-                }
-                log.info("入口 {} binding 入库: 笛卡尔后 {} 行, 去重后 {} 行, insert {} 行, backfill≈{} (call-graph 剔除 {} 条) attempt={}",
-                        entryClassName, beforeDedupe, rows.size(), inserted, backfilled, skippedNotExisting, attempt);
                 return;
             } catch (Exception e) {
                 last = e;
-                log.warn("[PERSIST-RETRY] binding 入库失败 entry={} attempt={}/{}: {}",
-                        entryClassName, attempt, maxAttempts, e.toString());
+                log.warn("[PERSIST-RETRY] hierarchy+bindings 落库失败 taskId={} attempt={}/{}: {}",
+                        taskId, attempt, PERSIST_MAX_ATTEMPTS, e.toString());
+                if (execLog != null) {
+                    execLog.log(taskId, String.format(
+                            "  [PERSIST-RETRY] 终局落库失败 attempt=%d/%d: %s",
+                            attempt, PERSIST_MAX_ATTEMPTS,
+                            e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName()));
+                }
                 try {
                     Thread.sleep(50L * attempt);
                 } catch (InterruptedException ie) {
@@ -1755,8 +1811,84 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                 }
             }
         }
-        log.error("[PERSIST-FAIL] binding 入库最终失败 entry={} rows={} last={}",
-                entryClassName, rows.size(), last != null ? last.toString() : "unknown");
+        log.error("[PERSIST-FAIL] hierarchy+bindings 落库最终失败 taskId={} last={}",
+                taskId, last != null ? last.toString() : "unknown", last);
+        throw new BusinessException("模块层级落库失败（已重试 " + PERSIST_MAX_ATTEMPTS + " 次）: "
+                + (last != null && last.getMessage() != null ? last.getMessage() : "unknown"));
+    }
+
+    /**
+     * 覆盖写 binding：按 function / (class,sig) 腾键后分片 INSERT（调用方事务内执行）。
+     */
+    private void persistBindingsCovering(Long taskId, List<MethodFunctionBinding> rows) {
+        if (rows == null || rows.isEmpty() || methodFunctionBindingMapper == null) {
+            return;
+        }
+        Set<String> functionIds = new LinkedHashSet<>();
+        for (MethodFunctionBinding r : rows) {
+            if (StringUtils.hasText(r.getFunctionNodeId())) {
+                functionIds.add(r.getFunctionNodeId());
+            }
+        }
+        if (!functionIds.isEmpty()) {
+            List<String> fidList = new ArrayList<>(functionIds);
+            for (int i = 0; i < fidList.size(); i += BINDING_INSERT_CHUNK) {
+                int end = Math.min(i + BINDING_INSERT_CHUNK, fidList.size());
+                methodFunctionBindingMapper.deleteByTaskIdAndFunctionNodeIds(
+                        taskId, fidList.subList(i, end));
+            }
+        }
+        for (int i = 0; i < rows.size(); i += BINDING_INSERT_CHUNK) {
+            int end = Math.min(i + BINDING_INSERT_CHUNK, rows.size());
+            methodFunctionBindingMapper.deleteByTaskIdAndClassMethodKeys(
+                    taskId, rows.subList(i, end));
+        }
+        batchInsertBindingsChunked(rows);
+        assertBindingsReadable(taskId, rows);
+    }
+
+    private void batchInsertBindingsChunked(List<MethodFunctionBinding> rows) {
+        if (rows == null || rows.isEmpty() || methodFunctionBindingMapper == null) {
+            return;
+        }
+        for (int i = 0; i < rows.size(); i += BINDING_INSERT_CHUNK) {
+            int end = Math.min(i + BINDING_INSERT_CHUNK, rows.size());
+            methodFunctionBindingMapper.batchInsertBindings(rows.subList(i, end));
+        }
+    }
+
+    private void assertBindingsReadable(Long taskId, List<MethodFunctionBinding> rows) {
+        if (rows == null || rows.isEmpty() || methodFunctionBindingMapper == null) {
+            return;
+        }
+        Set<String> functionIds = new LinkedHashSet<>();
+        for (MethodFunctionBinding r : rows) {
+            if (StringUtils.hasText(r.getFunctionNodeId())) {
+                functionIds.add(r.getFunctionNodeId());
+            }
+        }
+        if (functionIds.isEmpty()) {
+            return;
+        }
+        for (String fid : functionIds) {
+            List<MethodFunctionBinding> check =
+                    methodFunctionBindingMapper.selectByTaskAndFunction(taskId, fid);
+            if (check != null && !check.isEmpty()) {
+                return;
+            }
+        }
+        throw new IllegalStateException("binding 回读为空 functionIds=" + functionIds);
+    }
+
+    private record EntryAiResult(EntryPoint entry, JsonNode increment) {
+    }
+
+    private record BindingBuildResult(List<MethodFunctionBinding> rows,
+                                      int skippedNotExisting,
+                                      int backfilled) {
+        static BindingBuildResult empty() {
+            return new BindingBuildResult(List.of(), 0, 0);
+        }
     }
 
     /**

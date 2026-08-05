@@ -145,7 +145,7 @@ public class DecompileTask extends BaseEntity {
      * 任务触发来源：
      * <ul>
      *   <li>MANUAL - 前端用户手动创建并启动（默认）</li>
-     *   <li>SCHEDULED - 由定时扫描任务（{@link ScanWindowScheduler}）触发</li>
+     *   <li>SCHEDULED - 由定时 commit 轮询（{@link com.company.codeinsight.modules.scanwindow.scheduler.ScanWindowScheduler}）触发</li>
      * </ul>
      */
     @TableField("trigger_source")
