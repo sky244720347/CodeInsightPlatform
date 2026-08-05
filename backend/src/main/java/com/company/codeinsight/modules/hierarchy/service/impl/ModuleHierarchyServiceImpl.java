@@ -275,7 +275,7 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                     mergeEntryResult(hierarchy, entry, inc, methodDiffBySig, reservedDeletedNodeIds);
                     purgeDeletedMethodSignatures(hierarchy, methodDiffBySig);
                     persistMethodBindingsFromIncrement(taskId, task.getSystemId(),
-                            entry, inc, methodsByClass);
+                            entry, inc, methodsByClass, hierarchy);
                     processedByAi++;
                     log.info("MODULE_HIERARCHY 串行处理进度 — taskId={} {}/{} entry={} modules={}",
                             taskId, processedByAi, toProcess.size(), entry.getClassName(),
@@ -1365,8 +1365,8 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
      *   <li>把每个 (class, sig) 元组与 {@code ci_method_call.caller_signature} 做存在性交叉校验——
      *       数据库里没有这条 caller 边的鬼魂元组会被丢弃并 warn</li>
      *   <li>校验通过的元组按 (module, sub_module, function) 三段 Base62 ID 落表；
-     *       ID 是从 {@code mergeIncrementIntoHierarchy} 后的 {@code ModuleHierarchy} DTO 里取，
-     *       而不是从 AI JSON 里读，因此不可能出现 ID 不全的丢弃路径</li>
+     *       ID 优先从 {@code mergeIncrementIntoHierarchy} 后的 {@code ModuleHierarchy} DTO 按名称解析，
+     *       禁止直接写 AI JSON 原始 id（AI 常输出超长/非约定 ID，会撞 {@code VARCHAR(16)}）</li>
      * </ul>
      *
      * <p>净效果：BFS 沿 binding 表走，源头不再是 {@code ci_module_hierarchy.method_signatures}
@@ -1375,7 +1375,8 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
     private void persistMethodBindingsFromIncrement(Long taskId, Long systemId,
                                                     EntryPoint entry,
                                                     JsonNode increment,
-                                                    Map<String, List<EntrypointMethodView>> methodsByClass) {
+                                                    Map<String, List<EntrypointMethodView>> methodsByClass,
+                                                    ModuleHierarchy hierarchy) {
         if (taskId == null || entry == null || increment == null || methodFunctionBindingMapper == null) {
             return;
         }
@@ -1399,26 +1400,40 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         List<MethodFunctionBinding> rows = new ArrayList<>();
         int skippedEmptyCartesian = 0;
         int skippedNotExisting = 0;
+        int skippedUnresolvedId = 0;
         int backfilled = 0;
         for (JsonNode modNode : modulesNode) {
             JsonNode subs = modNode.path("sub_modules");
+            if (!subs.isArray()) {
+                // 兼容 AI 偶发 camelCase（与 mergeIncrementIntoHierarchy 一致）
+                subs = modNode.path("subModules");
+            }
             if (!subs.isArray()) continue;
             for (JsonNode subNode : subs) {
                 JsonNode fns = subNode.path("functions");
                 if (!fns.isArray()) continue;
                 for (JsonNode fnNode : fns) {
-                    String moduleId = modNode.path("id").asText("").trim();
-                    String subModuleId = subNode.path("id").asText("").trim();
-                    String functionId = fnNode.path("id").asText("").trim();
-                    if (!StringUtils.hasText(moduleId)
-                            || !StringUtils.hasText(subModuleId)
-                            || !StringUtils.hasText(functionId)) {
-                        log.warn("modules 跳过 ID 不全 (entry={}): moduleId/subModuleId/functionId 至少一段缺失",
-                                entryClassName);
+                    String[] nodeIds = resolveBindingNodeIds(hierarchy, modNode, subNode, fnNode);
+                    if (nodeIds == null) {
+                        skippedUnresolvedId++;
+                        log.warn("modules 跳过无法解析规范 node id (entry={}): aiModId={} aiSubId={} aiFnId={}",
+                                entryClassName,
+                                modNode.path("id").asText(""),
+                                subNode.path("id").asText(""),
+                                fnNode.path("id").asText(""));
                         continue;
                     }
+                    String moduleId = nodeIds[0];
+                    String subModuleId = nodeIds[1];
+                    String functionId = nodeIds[2];
                     Set<String> classPaths = collectAsTextSet(fnNode.path("class_paths"));
+                    if (classPaths.isEmpty()) {
+                        classPaths = collectAsTextSet(fnNode.path("classPaths"));
+                    }
                     Set<String> methodSigs = collectAsTextSet(fnNode.path("method_signatures"));
+                    if (methodSigs.isEmpty()) {
+                        methodSigs = collectAsTextSet(fnNode.path("methodSignatures"));
+                    }
                     if (classPaths.isEmpty()) {
                         skippedEmptyCartesian++;
                         continue;
@@ -1459,6 +1474,10 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
                 }
             }
         }
+        if (skippedUnresolvedId > 0) {
+            log.warn("入口 {} binding 跳过无法解析规范 id 的 function 共 {} 个",
+                    entryClassName, skippedUnresolvedId);
+        }
         if (rows.isEmpty()) {
             log.warn("入口 {} binding 仍为空（笛卡尔空 {} / call-graph 剔除 {} / backfill 0），跳过入库",
                     entryClassName, skippedEmptyCartesian, skippedNotExisting);
@@ -1487,6 +1506,62 @@ public class ModuleHierarchyServiceImpl implements ModuleHierarchyService {
         row.setMethodSignature(sig);
         row.setSource("AI");
         return row;
+    }
+
+    /**
+     * 解析 binding 落表用的三段规范 node id。
+     * <p>优先按名称从 merge 后的 {@link ModuleHierarchy} 取（与 {@link #mergeIncrementIntoHierarchy} 同名复用语义一致）；
+     * hierarchy 不可用时再对 AI 原始 id 做 {@link #normalizeAiNodeId}，保证不超过 {@code VARCHAR(16)}。</p>
+     *
+     * @return {@code [moduleId, subModuleId, functionId]}，无法解析时返回 {@code null}
+     */
+    private String[] resolveBindingNodeIds(ModuleHierarchy hierarchy,
+                                           JsonNode modNode, JsonNode subNode, JsonNode fnNode) {
+        if (modNode == null || subNode == null || fnNode == null) {
+            return null;
+        }
+        String modName = readAiName(modNode, "module_name", "moduleName", "name");
+        String subName = readAiName(subNode, "sub_module_name", "subModuleName", "name");
+        String fnName = readAiName(fnNode, "function_name", "functionName", "name");
+        if (hierarchy != null && hierarchy.getModules() != null
+                && StringUtils.hasText(modName)
+                && StringUtils.hasText(subName)
+                && StringUtils.hasText(fnName)) {
+            ModuleDto module = findModuleByName(hierarchy, modName);
+            SubModuleDto sub = module == null ? null : findSubModuleByName(module, subName);
+            FunctionDto fn = sub == null ? null : findFunctionByName(sub, fnName);
+            if (module != null && sub != null && fn != null
+                    && StringUtils.hasText(module.getId())
+                    && StringUtils.hasText(sub.getId())
+                    && StringUtils.hasText(fn.getId())) {
+                return new String[]{module.getId(), sub.getId(), fn.getId()};
+            }
+        }
+
+        String rawModId = modNode.path("id").asText("").trim();
+        String rawSubId = subNode.path("id").asText("").trim();
+        String rawFnId = fnNode.path("id").asText("").trim();
+        if (!StringUtils.hasText(rawModId)
+                || !StringUtils.hasText(rawSubId)
+                || !StringUtils.hasText(rawFnId)) {
+            return null;
+        }
+        // 无 hierarchy（单测直调）或名称未命中：归一化 AI 原始 id，避免超长写入 VARCHAR(16)
+        Set<String> occupied = new HashSet<>();
+        String moduleId = normalizeAiNodeId(rawModId, 'm', occupied);
+        occupied.add(moduleId);
+        String subModuleId = normalizeAiNodeId(rawSubId, 's', occupied);
+        occupied.add(subModuleId);
+        String functionId = normalizeAiNodeId(rawFnId, 'f', occupied);
+        if (!StringUtils.hasText(moduleId)
+                || !StringUtils.hasText(subModuleId)
+                || !StringUtils.hasText(functionId)
+                || moduleId.length() > 16
+                || subModuleId.length() > 16
+                || functionId.length() > 16) {
+            return null;
+        }
+        return new String[]{moduleId, subModuleId, functionId};
     }
 
     /**
