@@ -18,7 +18,8 @@ class RepoGitConnectivityGateTest {
         RepoGitConnectivityService svc = new RepoGitConnectivityService(
                 mock(com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper.class),
                 new com.company.codeinsight.common.config.RepoGitCheckProperties(),
-                Runnable::run);
+                Runnable::run,
+                mock(com.company.codeinsight.modules.repository.stack.RepoStackProbeService.class));
 
         CodeRepository unchecked = new CodeRepository();
         BusinessException e1 = assertThrows(BusinessException.class, () -> svc.assertReachableForTask(unchecked));

@@ -1,174 +1,321 @@
-import React, { useEffect, useState } from 'react';
-import { Button, Card, Input, Modal, Segmented, Space, Switch, Table, Tag, Typography, message } from 'antd';
+import React, { useCallback, useEffect, useState } from 'react';
+import {
+  Button,
+  Card,
+  DatePicker,
+  Input,
+  Modal,
+  Progress,
+  Select,
+  Space,
+  Switch,
+  Table,
+  Tag,
+  Typography,
+  message,
+} from 'antd';
 import { EditOutlined, ReloadOutlined } from '@ant-design/icons';
-import { listScanWindows, upsertScanWindow, getSchedulerCron, updateSchedulerCron, updateSchedulerEnabled } from '../../api/scan-window';
-import { listRepositories } from '../../api/repository';
-import { listSystems } from '../../api/system';
-import type { ScanWindow } from '../../types';
-import ScanWindowModal from '../systems/ScanWindowModal';
-import ScanWindowHeatmap from './ScanWindowHeatmap';
-import { renderComponentCell } from '../../utils/systemSelect';
+import dayjs, { type Dayjs } from 'dayjs';
+import { useNavigate } from 'react-router-dom';
+import {
+  getScanOrchestrationSummary,
+  listScanProbeRecords,
+  updateScanOrchestrationCron,
+  updateScanOrchestrationEnabled,
+  type ScanOrchestrationSummary,
+  type ScanProbeRecord,
+} from '../../api/scan-orchestration';
 
 const { Text, Title } = Typography;
 
-const WEEK_LABELS = ['周一', '周二', '周三', '周四', '周五', '周六', '周日'];
+const STATUS_OPTIONS = [
+  { value: '', label: '全部状态' },
+  { value: 'SUCCESS', label: 'SUCCESS' },
+  { value: 'FAILED', label: 'FAILED' },
+  { value: 'INCONCLUSIVE', label: 'INCONCLUSIVE' },
+  { value: 'DEFERRED_DISPATCH', label: 'DEFERRED_DISPATCH' },
+  { value: 'DISPATCH_FAILED', label: 'DISPATCH_FAILED' },
+  { value: 'SKIPPED_LOCAL', label: 'SKIPPED_LOCAL' },
+];
 
-function bitsToLabel(bits: number): string {
-  const parts: string[] = [];
-  for (let i = 0; i < 7; i++) if ((bits & (1 << i)) !== 0) parts.push(WEEK_LABELS[i]);
-  return parts.length === 0 ? '未设置' : parts.join('、');
+function statusTag(status?: string) {
+  switch (status) {
+    case 'SUCCESS':
+      return <Tag color="success">{status}</Tag>;
+    case 'FAILED':
+      return <Tag color="error">{status}</Tag>;
+    case 'INCONCLUSIVE':
+      return <Tag color="warning">{status}</Tag>;
+    case 'DEFERRED_DISPATCH':
+    case 'DISPATCH_FAILED':
+      return <Tag color="orange">{status}</Tag>;
+    case 'SKIPPED_LOCAL':
+      return <Tag>{status}</Tag>;
+    default:
+      return <Tag>{status ?? '-'}</Tag>;
+  }
 }
 
-function timeLabel(h: number, m: number): string {
-  return `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
-}
+const shortSha = (v?: string) => (v && v.length > 12 ? `${v.slice(0, 10)}…` : v || '-');
 
 const TaskOrchestration: React.FC = () => {
-  const [viewMode, setViewMode] = useState<'list' | 'heatmap'>('list');
-  const [windows, setWindows] = useState<ScanWindow[]>([]);
+  const navigate = useNavigate();
+  const [date, setDate] = useState<Dayjs>(dayjs());
+  const [summary, setSummary] = useState<ScanOrchestrationSummary | null>(null);
+  const [records, setRecords] = useState<ScanProbeRecord[]>([]);
+  const [total, setTotal] = useState(0);
+  const [current, setCurrent] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
+  const [status, setStatus] = useState<string>('');
+  const [keyword, setKeyword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [repoMap, setRepoMap] = useState<Map<number, string>>(new Map());
-  /** repositoryId → 系统名 */
-  const [sysMap, setSysMap] = useState<Map<number, string>>(new Map());
-  /** repositoryId → 组件 */
-  const [componentMap, setComponentMap] = useState<Map<number, string>>(new Map());
-  const [editId, setEditId] = useState<number | null>(null);
-  const [editOpen, setEditOpen] = useState(false);
-
-  // 全局 cron
-  const [cron, setCron] = useState('');
-  const [enabled, setEnabled] = useState(true);
-  const [nextRuns, setNextRuns] = useState<string[]>([]);
   const [cronEditOpen, setCronEditOpen] = useState(false);
   const [cronInput, setCronInput] = useState('');
 
-  const fetch = async () => {
+  const dateStr = date.format('YYYY-MM-DD');
+
+  const fetchAll = useCallback(async () => {
     setLoading(true);
     try {
-      const [wins, repos, systems, cronData] = await Promise.all([
-        listScanWindows(),
-        listRepositories({ current: 1, size: 2000 }),
-        listSystems({ current: 1, size: 200 }),
-        getSchedulerCron().catch(() => null),
+      const [s, page] = await Promise.all([
+        getScanOrchestrationSummary(dateStr),
+        listScanProbeRecords({
+          date: dateStr,
+          status: status || undefined,
+          keyword: keyword.trim() || undefined,
+          current,
+          size: pageSize,
+        }),
       ]);
-      setRepoMap(new Map(repos.records.map((r) => [r.id, r.gitUrl ?? `#${r.id}`])));
-      const systemById = new Map(systems.records.map((s) => [s.id, s]));
-      setSysMap(
-        new Map(
-          repos.records.map((r) => [r.id, systemById.get(r.systemId)?.name ?? `系统 #${r.systemId}`]),
-        ),
-      );
-      setComponentMap(
-        new Map(
-          repos.records.map((r) => {
-            const c = systemById.get(r.systemId)?.component?.trim();
-            return [r.id, c ?? ''];
-          }),
-        ),
-      );
-      setWindows(wins);
-      if (cronData) { setCron(cronData.cron); setEnabled(cronData.enabled); setNextRuns(cronData.nextRuns ?? []); }
-    } finally { setLoading(false); }
-  };
+      setSummary(s);
+      setRecords(page.records ?? []);
+      setTotal(page.total ?? 0);
+    } catch {
+      message.error('加载探测数据失败');
+    } finally {
+      setLoading(false);
+    }
+  }, [dateStr, status, keyword, current, pageSize]);
 
-  useEffect(() => { fetch(); }, []);
+  useEffect(() => {
+    fetchAll();
+  }, [fetchAll]);
 
-  const handleToggle = async (w: ScanWindow) => {
-    await upsertScanWindow({ ...w, enabled: !w.enabled });
-    message.success(w.enabled ? '已停用' : '已启用');
-    fetch();
-  };
+  useEffect(() => {
+    const t = window.setInterval(() => {
+      getScanOrchestrationSummary(dateStr)
+        .then(setSummary)
+        .catch(() => undefined);
+    }, 30000);
+    return () => window.clearInterval(t);
+  }, [dateStr]);
 
-  const handleGlobalToggle = async (v: boolean) => {
-    await updateSchedulerEnabled(v);
-    setEnabled(v);
-    message.success(v ? '扫描调度已启用' : '扫描调度已暂停');
+  const handleEnabled = async (v: boolean) => {
+    try {
+      await updateScanOrchestrationEnabled(v);
+      setSummary((prev) => (prev ? { ...prev, schedulerEnabled: v } : prev));
+      message.success(v ? '扫描调度已启用' : '扫描调度已暂停');
+    } catch {
+      message.error('更新调度开关失败');
+    }
   };
 
   const handleCronSave = async () => {
     try {
-      const res = await updateSchedulerCron(cronInput);
-      setCron(res.cron);
-      setNextRuns(res.nextRuns ?? []);
+      const res = await updateScanOrchestrationCron(cronInput);
+      setSummary((prev) =>
+        prev ? { ...prev, cron: res.cron, nextRuns: res.nextRuns ?? [] } : prev,
+      );
       setCronEditOpen(false);
       message.success('cron 已更新');
-    } catch { message.error('cron 格式错误或更新失败'); }
+    } catch {
+      message.error('cron 格式错误或更新失败');
+    }
   };
+
+  const pct =
+    summary && summary.probeTargetTotal > 0
+      ? Math.min(100, Math.round((summary.probedCount / summary.probeTargetTotal) * 100))
+      : 0;
 
   return (
     <div className="ci-page ci-orchestration-page">
       <Card
         title={<Title level={4} style={{ margin: 0 }}>任务编排</Title>}
-        extra={<Button icon={<ReloadOutlined />} loading={loading} onClick={fetch}>刷新</Button>}
+        extra={
+          <Button icon={<ReloadOutlined />} loading={loading} onClick={fetchAll}>
+            刷新
+          </Button>
+        }
       >
-        {/* 全局调度配置 */}
         <Space size={16} wrap style={{ marginBottom: 16 }}>
           <Space size={4}>
             <Text type="secondary">扫描调度：</Text>
-            <Switch checked={enabled} onChange={handleGlobalToggle} />
-            <Tag color={enabled ? 'green' : 'default'}>{enabled ? '运行中' : '已暂停'}</Tag>
+            <Switch
+              checked={!!summary?.schedulerEnabled}
+              onChange={handleEnabled}
+              disabled={!summary}
+            />
+            <Tag color={summary?.schedulerEnabled ? 'green' : 'default'}>
+              {summary?.schedulerEnabled ? '运行中' : '已暂停'}
+            </Tag>
           </Space>
-          {cron && (
+          {summary?.cron && (
             <Space size={4}>
-              <Tag color="geekblue" style={{ cursor: 'pointer' }} onClick={() => { setCronInput(cron); setCronEditOpen(true); }}>
-                {cron}
+              <Tag
+                color="geekblue"
+                style={{ cursor: 'pointer' }}
+                onClick={() => {
+                  setCronInput(summary.cron);
+                  setCronEditOpen(true);
+                }}
+              >
+                {summary.cron}
               </Tag>
-              <Button size="small" icon={<EditOutlined />} onClick={() => { setCronInput(cron); setCronEditOpen(true); }} />
+              <Button
+                size="small"
+                icon={<EditOutlined />}
+                onClick={() => {
+                  setCronInput(summary.cron);
+                  setCronEditOpen(true);
+                }}
+              />
               <Text type="secondary" style={{ fontSize: 11 }}>
-                下 5 次：{nextRuns.slice(0, 3).join(' · ')}
+                下 5 次：{(summary.nextRuns ?? []).slice(0, 3).join(' · ')}
               </Text>
             </Space>
           )}
+          <Space size={4} wrap>
+            <Text type="secondary" style={{ fontSize: 12 }}>
+              只读配置：
+            </Text>
+            <Tag>全局轮询 {summary?.globalPollEnabled ? '开' : '关'}</Tag>
+            <Tag>日覆盖 {summary?.dailyCoverageEnabled ? '开' : '关'}</Tag>
+            <Tag>验证全量 {summary?.forceFullOnUnchanged ? '开' : '关'}</Tag>
+          </Space>
         </Space>
 
-        {/* 视图切换 */}
-        <Segmented
-          options={[{ value: 'list', label: '列表' }, { value: 'heatmap', label: '热力图' }]}
-          value={viewMode}
-          onChange={(v) => setViewMode(v as 'list' | 'heatmap')}
-          style={{ marginBottom: 16 }}
+        <Space size={16} wrap style={{ marginBottom: 12, width: '100%' }}>
+          <Space size={4}>
+            <Text type="secondary">日期：</Text>
+            <DatePicker
+              value={date}
+              allowClear={false}
+              onChange={(d) => {
+                if (d) {
+                  setDate(d);
+                  setCurrent(1);
+                }
+              }}
+            />
+          </Space>
+          <Text>
+            探测总数 <Text strong>{summary?.probeTargetTotal ?? 0}</Text>
+            {' · 已探测 '}
+            <Text strong>{summary?.probedCount ?? 0}</Text>
+            <Text type="secondary">
+              （下发成功 {summary?.settledSuccessCount ?? 0} + 待重试 {summary?.retryPendingCount ?? 0}）
+            </Text>
+            {' · 未探测 '}
+            <Text strong>{summary?.unprobedCount ?? 0}</Text>
+          </Text>
+          <Text type="secondary" style={{ fontSize: 12 }}>
+            流水尝试 {summary?.attemptCount ?? 0} · 其中已建任务 {summary?.dispatchedCount ?? 0}
+          </Text>
+        </Space>
+        <Progress
+          percent={pct}
+          status={pct >= 100 ? 'success' : 'active'}
+          style={{ marginBottom: 16, maxWidth: 480 }}
         />
 
-        {viewMode === 'heatmap' ? (
-          <ScanWindowHeatmap
-            data={windows}
-            repoMap={repoMap}
-            sysMap={sysMap}
-            componentMap={componentMap}
-            onRefresh={fetch}
+        <Space size={8} wrap style={{ marginBottom: 12 }}>
+          <Select
+            style={{ width: 180 }}
+            options={STATUS_OPTIONS}
+            value={status}
+            onChange={(v) => {
+              setStatus(v);
+              setCurrent(1);
+            }}
           />
-        ) : (
-          <Table
-            dataSource={windows}
-            rowKey="id"
-            loading={loading}
-            pagination={{ pageSize: 20, showSizeChanger: true }}
-            columns={[
-              { title: '仓库', dataIndex: 'repositoryId', key: 'repo', ellipsis: true, width: 240,
-                render: (id: number) => <Text code style={{ fontSize: 12 }}>{repoMap.get(id) ?? `#${id}`}</Text> },
-              { title: '系统', dataIndex: 'repositoryId', key: 'sys', width: 140,
-                render: (id: number) => sysMap.get(id) ?? '-' },
-              { title: '组件', dataIndex: 'repositoryId', key: 'component', width: 120,
-                render: (id: number) => renderComponentCell(componentMap.get(id)) },
-              { title: '周几', dataIndex: 'weekDays', key: 'weekDays', width: 180,
-                render: (v: number) => <Text>{bitsToLabel(v)}</Text> },
-              { title: '时间', key: 'time', width: 90,
-                render: (_: unknown, r: ScanWindow) => <Tag color="geekblue">{timeLabel(r.hour, r.minute)}</Tag> },
-              { title: '启用', dataIndex: 'enabled', key: 'enabled', width: 70,
-                render: (v: boolean, r: ScanWindow) => <Switch size="small" checked={v} onChange={() => handleToggle(r)} /> },
-              { title: '最近触发', dataIndex: 'lastFiredAt', key: 'lastFiredAt', width: 170,
-                render: (v?: string) => v ? new Date(v).toLocaleString() : <Text type="secondary">未触发</Text> },
-              { title: '操作', key: 'action', width: 80,
-                render: (_: unknown, r: ScanWindow) => (
-                  <Button size="small" icon={<EditOutlined />} onClick={() => { setEditId(r.repositoryId); setEditOpen(true); }} />
+          <Input.Search
+            allowClear
+            placeholder="仓库 URL / ID"
+            style={{ width: 260 }}
+            onSearch={(v) => {
+              setKeyword(v);
+              setCurrent(1);
+            }}
+          />
+        </Space>
+
+        <Table<ScanProbeRecord>
+          rowKey="id"
+          loading={loading}
+          dataSource={records}
+          size="small"
+          pagination={{
+            current,
+            pageSize,
+            total,
+            showSizeChanger: true,
+            onChange: (c, s) => {
+              setCurrent(c);
+              setPageSize(s);
+            },
+          }}
+          columns={[
+            { title: '时间', dataIndex: 'probedAt', width: 170 },
+            {
+              title: '仓库',
+              dataIndex: 'gitUrl',
+              ellipsis: true,
+              render: (v: string, r) => v || `#${r.repositoryId}`,
+            },
+            { title: '尝试', dataIndex: 'attemptNo', width: 60 },
+            {
+              title: '状态',
+              dataIndex: 'status',
+              width: 140,
+              render: (v: string) => statusTag(v),
+            },
+            {
+              title: 'HEAD',
+              dataIndex: 'remoteHead',
+              width: 120,
+              render: shortSha,
+            },
+            {
+              title: '基线',
+              dataIndex: 'baselineCommit',
+              width: 120,
+              render: shortSha,
+            },
+            {
+              title: '下发',
+              dataIndex: 'dispatchAction',
+              width: 110,
+              render: (v?: string) => v || '-',
+            },
+            {
+              title: '任务',
+              dataIndex: 'taskId',
+              width: 90,
+              render: (id?: number) =>
+                id ? (
+                  <Button type="link" size="small" onClick={() => navigate(`/tasks/${id}`)}>
+                    #{id}
+                  </Button>
+                ) : (
+                  '-'
                 ),
-              },
-            ]}
-          />
-        )}
+            },
+            { title: '说明', dataIndex: 'message', ellipsis: true },
+          ]}
+        />
       </Card>
 
-      {/* cron 编辑 Modal */}
       <Modal
         title="编辑扫描 cron 表达式"
         open={cronEditOpen}
@@ -176,21 +323,15 @@ const TaskOrchestration: React.FC = () => {
         onOk={handleCronSave}
         width={480}
       >
-        <Input value={cronInput} onChange={(e) => setCronInput(e.target.value)} placeholder="0 */1 * * * *" />
+        <Input
+          value={cronInput}
+          onChange={(e) => setCronInput(e.target.value)}
+          placeholder="0 */5 * * * *"
+        />
         <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>
-          格式：秒 分 时 日 月 周（Spring Cron）。修改后即时生效无需重启。
+          6 段 cron（含秒）。全局轮询 / 日覆盖 / 批次等请改配置文件或阿波罗。
         </Text>
       </Modal>
-
-      {/* 单个窗口编辑 Modal */}
-      {editId != null && (
-        <ScanWindowModal
-          open={editOpen}
-          repositoryId={editId}
-          onClose={() => { setEditOpen(false); setEditId(null); }}
-          onSaved={fetch}
-        />
-      )}
     </div>
   );
 };

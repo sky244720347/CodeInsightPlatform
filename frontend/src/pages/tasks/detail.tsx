@@ -15,8 +15,9 @@ import {
 import { useNavigate, useParams } from 'react-router-dom';
 import { getTask, getTaskExecutionLog, getTaskLogSummary, retryTask, retryBaselineInherit, startTask, terminateTask } from '../../api/task';
 import { getSystem } from '../../api/system';
+import { getRepository } from '../../api/repository';
 import { listVersions, type KnowledgeVersion } from '../../api/knowledge';
-import type { PipelineStageStat, System, Task, TaskLogSummary } from '../../types';
+import type { PipelineStageStat, Repository, System, Task, TaskLogSummary } from '../../types';
 import IncrementalImpactCard from './components/IncrementalImpactCard';
 
 /** 构造携带当前任务上下文（systemId + taskId）的复核页跳转链接 */
@@ -106,7 +107,7 @@ function resolveFlowStep(task: Task): number {
 
 /**
  * 任务执行详情监控组件 (TaskDetail)
- * 展示任务的静态配置（负责人、代码库 ID、模型、耗时及日志存储路径）、
+ * 展示任务的静态配置（负责人、代码库 gitUrl、模型、耗时及日志存储路径）、
  * 串联 Steps 指引任务当前流转到哪一步骤，并在底部提供流式模拟终端日志呈现和 Token 预估分析栏。
  */
 const TaskDetail: React.FC = () => {
@@ -114,9 +115,10 @@ const TaskDetail: React.FC = () => {
   const navigate = useNavigate();
   const taskId = Number(id);
 
-  // 任务实体数据及所属系统实体
+  // 任务实体数据及所属系统 / 代码库实体
   const [task, setTask] = useState<Task | null>(null);
   const [system, setSystem] = useState<System | null>(null);
+  const [repository, setRepository] = useState<Repository | null>(null);
   
   // 数据加载 loading 与操作按钮的 actionLoading 状态
   const [loading, setLoading] = useState(false);
@@ -217,6 +219,25 @@ const TaskDetail: React.FC = () => {
   useEffect(() => {
     fetchTaskDetails();
   }, [fetchTaskDetails]);
+
+  // 按 repositoryId 拉取 gitUrl（轮询任务时不必重复请求）
+  useEffect(() => {
+    if (!task?.repositoryId) {
+      setRepository(null);
+      return;
+    }
+    let cancelled = false;
+    getRepository(task.repositoryId)
+      .then((repo) => {
+        if (!cancelled) setRepository(repo);
+      })
+      .catch(() => {
+        if (!cancelled) setRepository(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [task?.repositoryId]);
 
   // 建版及之后：拉取本任务知识版本号，挂在「建版」步描述上
   useEffect(() => {
@@ -663,7 +684,11 @@ const timelineItem = (s: PipelineStageStat) => {
             <Descriptions bordered column={1} size="small">
               <Descriptions.Item label="业务系统">{system?.name ?? `系统 #${task.systemId}`}</Descriptions.Item>
               <Descriptions.Item label="负责人">{system?.owner || '-'}</Descriptions.Item>
-              <Descriptions.Item label="代码库 ID">{task.repositoryId}</Descriptions.Item>
+              <Descriptions.Item label="gitUrl">
+                <Text copyable={!!repository?.gitUrl} ellipsis={{ tooltip: repository?.gitUrl }}>
+                  {repository?.gitUrl || '-'}
+                </Text>
+              </Descriptions.Item>
               <Descriptions.Item label="提示词版本">v{task.promptVersion || 1}</Descriptions.Item>
               <Descriptions.Item label="AI模型">{task.modelName || '-'}</Descriptions.Item>
               <Descriptions.Item label="进度">
