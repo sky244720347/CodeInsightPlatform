@@ -15,6 +15,7 @@ public class AsyncExecutorConfig {
     public static final String KNOWLEDGE_PUBLISH_EXECUTOR = "knowledgePublishExecutor";
     public static final String BATCH_INITIAL_EXECUTOR = "batchInitialExecutor";
     public static final String REPO_GIT_CHECK_EXECUTOR = "repoGitCheckExecutor";
+    public static final String RELEASE_PRUNE_EXECUTOR = "releasePruneExecutor";
 
     @Bean(name = KNOWLEDGE_PUBLISH_EXECUTOR)
     public Executor knowledgePublishExecutor() {
@@ -51,6 +52,20 @@ public class AsyncExecutorConfig {
         executor.setMaxPoolSize(6);
         executor.setQueueCapacity(500);
         executor.setThreadNamePrefix("repo-git-check-");
+        executor.setWaitForTasksToCompleteOnShutdown(true);
+        executor.setAwaitTerminationSeconds(120);
+        executor.initialize();
+        return executor;
+    }
+
+    /** 历史 release / publish-snapshot 清理（推送后异步 + 对账） */
+    @Bean(name = RELEASE_PRUNE_EXECUTOR)
+    public Executor releasePruneExecutor() {
+        ThreadPoolTaskExecutor executor = new ThreadPoolTaskExecutor();
+        executor.setCorePoolSize(1);
+        executor.setMaxPoolSize(2);
+        executor.setQueueCapacity(200);
+        executor.setThreadNamePrefix("release-prune-");
         executor.setWaitForTasksToCompleteOnShutdown(true);
         executor.setAwaitTerminationSeconds(120);
         executor.initialize();

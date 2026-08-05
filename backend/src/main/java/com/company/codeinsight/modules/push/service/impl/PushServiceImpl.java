@@ -109,6 +109,9 @@ public class PushServiceImpl implements PushService {
     @Autowired
     private RepositoryPublishService repositoryPublishService;
 
+    @Autowired
+    private com.company.codeinsight.modules.push.retention.ReleaseRetentionService releaseRetentionService;
+
     private final ObjectMapper objectMapper = new ObjectMapper();
 
     /** pushMethod -> PushStrategy 的映射表 */
@@ -352,6 +355,12 @@ public class PushServiceImpl implements PushService {
                     stateMachineService.transitTo(version.getTaskId(), TaskStatus.PUSHED, null);
                 }
                 taskDiskCleanupService.cleanupAfterPush(version.getTaskId());
+                try {
+                    releaseRetentionService.submitAfterPushSuccess(version.getRepositoryId());
+                } catch (Exception pruneEx) {
+                    log.warn("推送成功后 release 保留清理提交失败 versionId={} repoId={}: {}",
+                            versionId, version.getRepositoryId(), pruneEx.getMessage());
+                }
 
                 log.info("推送任务执行成功: pushTaskId={}, result={}", pushTaskId, result);
             } catch (Exception e) {
