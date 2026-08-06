@@ -23,12 +23,12 @@ public class ScanProperties {
     /**
      * true：全局 cron 扫全部远程仓；false：仅命中 {@code ci_scan_window} 的仓。
      */
-    private boolean globalPollEnabled = false;
+    private boolean globalPollEnabled = true;
 
     /**
      * 验证开关：有基线且 HEAD 无变化时仍下发 INITIAL；关闭则跳过。
      */
-    private boolean forceFullOnUnchanged = false;
+    private boolean forceFullOnUnchanged = true;
 
     /**
      * 全局轮询时按自然日覆盖：已成功探测的仓当日不再重复；失败/超时不记完成，后续 tick 重试。

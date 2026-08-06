@@ -151,20 +151,27 @@ public class RepoStackProbeService {
 
         int batch = Math.max(1, properties.getStackProbeBatchSize());
         long cursor = cursorId.get();
-        List<CodeRepository> batch1 = listVacuumAfter(cursor, batch);
+        // 热路径只拉「可达」或「URL 可判 DB」的真空仓；git_reachable=0 不进定时批次（等连通唤醒）
+        List<CodeRepository> batch1 = listEligibleVacuumAfter(cursor, batch);
         List<CodeRepository> listed = batch1;
         if (batch1.size() < batch && cursor > 0 && !batch1.isEmpty()) {
-            List<CodeRepository> wrap = listVacuumAfter(0L, batch - batch1.size());
+            List<CodeRepository> wrap = listEligibleVacuumAfter(0L, batch - batch1.size());
             listed = new ArrayList<>(batch1);
             listed.addAll(wrap);
         } else if (batch1.isEmpty() && cursor > 0) {
-            // 回绕再查一次（仅非空游标且首次空时）
-            listed = listVacuumAfter(0L, batch);
+            listed = listEligibleVacuumAfter(0L, batch);
         }
 
         if (listed.isEmpty()) {
             enterIdle(now);
             return 0;
+        }
+
+        long listedMaxId = cursor;
+        for (CodeRepository repo : listed) {
+            if (repo.getId() != null && repo.getId() > listedMaxId) {
+                listedMaxId = repo.getId();
+            }
         }
 
         List<CodeRepository> candidates = new ArrayList<>(listed.size());
@@ -175,7 +182,8 @@ public class RepoStackProbeService {
             candidates.add(repo);
         }
         if (candidates.isEmpty()) {
-            // 全是冷却仓：当作空，走退避，避免每 20s 空转处理
+            // 本批全冷却：推进游标越过它们，避免低 id 不可达/失败仓永久堵死后面的可达仓
+            cursorId.set(listedMaxId);
             enterIdle(now);
             return 0;
         }
@@ -201,10 +209,10 @@ public class RepoStackProbeService {
                         e.getMessage(), false);
             }
         }
-        cursorId.set(maxId);
+        cursorId.set(Math.max(maxId, listedMaxId));
         if (done > 0) {
             log.info("stack probe batch done={} tried={} cursor={} instance={}",
-                    done, candidates.size(), maxId, clusterInstanceId.get());
+                    done, candidates.size(), cursorId.get(), clusterInstanceId.get());
         }
         return done;
     }
@@ -387,10 +395,17 @@ public class RepoStackProbeService {
         return list.stream().mapToLong(Long::longValue).toArray();
     }
 
-    private List<CodeRepository> listVacuumAfter(long afterId, int limit) {
+    /**
+     * 定时批次候选：真空 且（Git 已连通 或 URL 可零远程判 DB）。
+     * <p>{@code git_reachable = 0 / NULL} 的非 DB 仓不进热路径，避免数百不可达占满 LIMIT、拖死可达仓。</p>
+     */
+    private List<CodeRepository> listEligibleVacuumAfter(long afterId, int limit) {
         LambdaQueryWrapper<CodeRepository> q = new LambdaQueryWrapper<>();
         q.apply(VACUUM_TYPE)
                 .apply(VACUUM_STACK)
+                .and(w -> w.eq(CodeRepository::getGitReachable, 1)
+                        .or()
+                        .apply("git_url ~* '[_-]db(\\.git)?/*$'"))
                 .gt(afterId > 0, CodeRepository::getId, afterId)
                 .orderByAsc(CodeRepository::getId)
                 .last("LIMIT " + Math.max(1, limit));
