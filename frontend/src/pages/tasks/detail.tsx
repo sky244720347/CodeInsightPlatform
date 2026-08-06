@@ -18,6 +18,7 @@ import { getSystem } from '../../api/system';
 import { getRepository } from '../../api/repository';
 import { listVersions, type KnowledgeVersion } from '../../api/knowledge';
 import type { PipelineStageStat, Repository, System, Task, TaskLogSummary } from '../../types';
+import { formatDurationMs } from '../../utils/formatDuration';
 import IncrementalImpactCard from './components/IncrementalImpactCard';
 
 /** 构造携带当前任务上下文（systemId + taskId）的复核页跳转链接 */
@@ -332,7 +333,7 @@ const timelineItem = (s: PipelineStageStat) => {
     : s.status === 'skipped' ? ' · 已跳过'
     : '';
   const duration = s.durationMs && s.durationMs > 0
-    ? `执行耗时 ${(s.durationMs / 1000).toFixed(1)} 秒`
+    ? `执行耗时 ${formatDurationMs(s.durationMs)}`
     : '—';
   return {
     color,
@@ -359,22 +360,22 @@ const timelineItem = (s: PipelineStageStat) => {
   const friendlyHint = (() => {
     if (!task) return '';
     const durMs = summary?.durationMs || task.durationMs || 0;
-    const sec = durMs > 0 ? (durMs / 1000).toFixed(1) : '0.0';
+    const durText = formatDurationMs(durMs, '0秒');
     if (task.status === 'FAILED') {
       return '任务失败，请查看完整日志';
     }
     if (['PUSHED', 'CANCELLED', 'ARCHIVED'].includes(task.status)) {
-      return `任务已结束 · 执行耗时 ${sec} 秒`;
+      return `任务已结束 · 执行耗时 ${durText}`;
     }
     if (['PENDING_REVIEW', 'REVIEWING', 'CONFIRMED'].includes(task.status)) {
-      return `等待人工复核 · 执行耗时 ${sec} 秒`;
+      return `等待人工复核 · 执行耗时 ${durText}`;
     }
     if (['ENTRYPOINT_REVIEW', 'MODULE_HIERARCHY_REVIEW'].includes(task.status)) {
-      return `等待人工断点复核 · 执行耗时 ${sec} 秒`;
+      return `等待人工断点复核 · 执行耗时 ${durText}`;
     }
     const done = summary?.pipeline?.filter((s) => s.status === 'done' || s.status === 'skipped').length ?? 0;
     const total = summary?.pipeline?.length ?? 9;
-    return `正在：${currentStageLabel || meta?.label || task.status} · 已完成 ${done}/${total} 阶段 · 执行 ${sec} 秒`;
+    return `正在：${currentStageLabel || meta?.label || task.status} · 已完成 ${done}/${total} 阶段 · 执行 ${durText}`;
   })();
 
   // Mock 模式 / 真实模型文案
@@ -694,7 +695,7 @@ const timelineItem = (s: PipelineStageStat) => {
               <Descriptions.Item label="进度">
                 <Progress percent={task.progress} size="small" status={task.status === 'FAILED' ? 'exception' : 'active'} />
               </Descriptions.Item>
-              <Descriptions.Item label="执行耗时">{task.durationMs ? `${(task.durationMs / 1000).toFixed(1)} 秒` : '-'}</Descriptions.Item>
+              <Descriptions.Item label="执行耗时">{formatDurationMs(task.durationMs)}</Descriptions.Item>
               <Descriptions.Item label="开始时间">{task.startedAt ? new Date(task.startedAt).toLocaleString() : '-'}</Descriptions.Item>
               <Descriptions.Item label="结束时间">{task.endedAt ? new Date(task.endedAt).toLocaleString() : '-'}</Descriptions.Item>
               <Descriptions.Item label="日志 URI">
@@ -875,7 +876,7 @@ const timelineItem = (s: PipelineStageStat) => {
             <Tag color={aiModeColor}>{aiModeLabel}</Tag>
             <Tag color="purple">模型：{summary?.modelName || task.modelName || '未指定'}</Tag>
             <Tag color="blue">
-              执行耗时 {(((summary?.durationMs ?? task.durationMs) || 0) / 1000).toFixed(1)} 秒
+              执行耗时 {formatDurationMs(summary?.durationMs ?? task.durationMs, '0秒')}
             </Tag>
             <Tag color={meta.color}>{meta.label}</Tag>
             <Text type="secondary" copyable={{ text: `local://storage/task_${task.id}/pipeline.log` }}>
