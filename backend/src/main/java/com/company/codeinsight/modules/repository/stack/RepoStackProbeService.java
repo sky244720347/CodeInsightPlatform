@@ -3,9 +3,11 @@ package com.company.codeinsight.modules.repository.stack;
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.company.codeinsight.common.cluster.ClusterInstanceId;
-import com.company.codeinsight.common.config.AsyncExecutorConfig;
+import com.company.codeinsight.common.cluster.ClusterLeaderLock;
+import com.company.codeinsight.common.cluster.ClusterProperties;
 import com.company.codeinsight.common.config.RepoGitCheckProperties;
 import com.company.codeinsight.common.storage.EnvStorageResolver;
+import com.company.codeinsight.common.util.DirectoryCleanupUtil;
 import com.company.codeinsight.modules.log.service.OperationLogService;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
@@ -13,32 +15,35 @@ import com.company.codeinsight.modules.repository.model.RepoType;
 import com.company.codeinsight.modules.repository.model.TechStackCatalog;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
 import org.springframework.util.StringUtils;
 
+import java.io.IOException;
+import java.nio.file.DirectoryStream;
+import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.FileTime;
 import java.time.Duration;
+import java.time.Instant;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
-import java.util.concurrent.Executor;
-import java.util.concurrent.Semaphore;
+import java.util.concurrent.ThreadLocalRandom;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 真空仓类型/技术栈多机探测：Redis 按仓锁 + 真空 CAS，无 Leader。
- * <p>忙密闲疏：空结果退避；SKIP/FAIL Redis 冷却；创建/连通唤醒。详见 docs/repo-stack-probe-plan.md。</p>
+ * 真空仓类型/技术栈探测：仅 Leader 串行 + 每批续租/校验 + COUNT 调度冷却 + NAS 整轮统一清理。
+ * <p>无整轮任务锁；防双写靠「丢 Leader 立即停探」。详见 docs/repo-stack-probe-plan.md。</p>
  */
 @Slf4j
 @Service
 public class RepoStackProbeService {
 
-    public static final String LOCK_PREFIX = "ci:lock:stack-probe:";
-    public static final String COOLDOWN_PREFIX = "ci:stack-probe:cooldown:";
-    public static final String IDLE_UNTIL_KEY = "ci:stack-probe:idle-until";
+    public static final String LEADER_LOCK_KEY = "ci:leader:repo-stack-probe";
+    public static final String NEXT_RUN_AT_KEY = "ci:stack-probe:next-run-at";
 
     public static final String ACTION_DB_URL = "STACK_DETECT_DB_URL";
     public static final String ACTION_OK = "STACK_DETECT_OK";
@@ -51,20 +56,22 @@ public class RepoStackProbeService {
             "(tech_stack IS NULL OR btrim(tech_stack) = '')";
     private static final String VACUUM_TYPE_ONLY =
             "(repo_type IS NULL OR btrim(repo_type) = '')";
+    private static final String ELIGIBLE_SQL =
+            "(git_reachable = 1 OR git_url ~* '[_-]db(\\.git)?/*$')";
 
     private static final long[] DEFAULT_BACKOFF = {60_000L, 300_000L, 900_000L};
+    private static final String RUN_DIR_PREFIX = "stack_probe_run_";
 
     private final RepoGitCheckProperties properties;
     private final CodeRepositoryMapper repositoryMapper;
     private final EnvStorageResolver storageResolver;
     private final OperationLogService operationLogService;
     private final ClusterInstanceId clusterInstanceId;
-    private final Executor stackProbeExecutor;
+    private final ClusterLeaderLock clusterLeaderLock;
+    private final ClusterProperties clusterProperties;
 
     private final AtomicLong cursorId = new AtomicLong(0L);
     private final AtomicInteger emptyStreak = new AtomicInteger(0);
-    private final AtomicLong nextProbeAtMs = new AtomicLong(0L);
-    private volatile Semaphore treeSemaphore;
 
     @Autowired(required = false)
     private StringRedisTemplate redisTemplate;
@@ -75,186 +82,213 @@ public class RepoStackProbeService {
             EnvStorageResolver storageResolver,
             OperationLogService operationLogService,
             ClusterInstanceId clusterInstanceId,
-            @Qualifier(AsyncExecutorConfig.STACK_PROBE_EXECUTOR) Executor stackProbeExecutor) {
+            ClusterLeaderLock clusterLeaderLock,
+            ClusterProperties clusterProperties) {
         this.properties = properties;
         this.repositoryMapper = repositoryMapper;
         this.storageResolver = storageResolver;
         this.operationLogService = operationLogService;
         this.clusterInstanceId = clusterInstanceId;
-        this.stackProbeExecutor = stackProbeExecutor;
+        this.clusterLeaderLock = clusterLeaderLock;
+        this.clusterProperties = clusterProperties;
     }
 
-    /** 清空本机/全局空闲门闩，使下一 tick 可立刻查库 */
+    /** 唤醒调度：清 Redis next-run-at 与本机 emptyStreak（不并行 clone） */
     public void wake() {
         emptyStreak.set(0);
-        nextProbeAtMs.set(0L);
-        clearGlobalIdle();
+        clearNextRunAt();
     }
 
-    /** 唤醒并（在 on-create 开启时）异步探一仓；同时清该仓冷却 */
+    /** 新建/更新真空：只唤醒，由 Leader 下轮串行探 */
     public void wakeAndProbeAsync(Long repositoryId) {
-        wake();
-        if (repositoryId != null) {
-            clearCooldown(repositoryId);
+        if (!properties.isStackProbeEnabled()) {
+            return;
         }
-        submitProbeAsync(repositoryId);
+        if (!properties.isStackProbeOnCreate()) {
+            return;
+        }
+        wake();
+        log.debug("stack probe wake (no parallel clone) repoId={}", repositoryId);
     }
 
-    /**
-     * Git 刚变为可达：清冷却并若仍真空则异步探测。
-     */
+    /** Git 刚可达：唤醒调度，下轮 COUNT 会纳入该仓 */
     public void onGitBecameReachable(Long repositoryId) {
         if (repositoryId == null || !properties.isStackProbeEnabled()) {
             return;
         }
         wake();
-        clearCooldown(repositoryId);
-        stackProbeExecutor.execute(() -> {
-            try {
-                CodeRepository repo = repositoryMapper.selectById(repositoryId);
-                if (isVacuum(repo)) {
-                    probeOne(repo);
-                }
-            } catch (Exception e) {
-                log.warn("stack probe after git-reachable failed repoId={}: {}",
-                        repositoryId, e.getMessage());
-            }
-        });
+        log.debug("stack probe wake after git-reachable repoId={}", repositoryId);
     }
 
-    /** 新建真空仓后异步探测（afterCommit 调用） */
-    public void submitProbeAsync(Long repositoryId) {
-        if (repositoryId == null || !properties.isStackProbeEnabled() || !properties.isStackProbeOnCreate()) {
-            return;
-        }
-        stackProbeExecutor.execute(() -> {
-            try {
-                probeOne(repositoryId);
-            } catch (Exception e) {
-                log.warn("stack probe on-create failed repoId={}: {}", repositoryId, e.getMessage());
-            }
-        });
-    }
-
-    /** 调度 tick：处理一批真空仓（可能零 SQL） */
-    public int probeBatch() {
+    /**
+     * Leader 调度入口。分段 try-catch，单点失败不拖垮整轮。
+     *
+     * @return 本轮成功落表仓数
+     */
+    public int runScheduledSweep() {
         if (!properties.isStackProbeEnabled()) {
             return 0;
         }
         long now = System.currentTimeMillis();
-        if (now < nextProbeAtMs.get()) {
-            return 0;
-        }
-        if (isGlobalIdleActive(now)) {
-            return 0;
-        }
-
-        int batch = Math.max(1, properties.getStackProbeBatchSize());
-        long cursor = cursorId.get();
-        // 热路径只拉「可达」或「URL 可判 DB」的真空仓；git_reachable=0 不进定时批次（等连通唤醒）
-        List<CodeRepository> batch1 = listEligibleVacuumAfter(cursor, batch);
-        List<CodeRepository> listed = batch1;
-        if (batch1.size() < batch && cursor > 0 && !batch1.isEmpty()) {
-            List<CodeRepository> wrap = listEligibleVacuumAfter(0L, batch - batch1.size());
-            listed = new ArrayList<>(batch1);
-            listed.addAll(wrap);
-        } else if (batch1.isEmpty() && cursor > 0) {
-            listed = listEligibleVacuumAfter(0L, batch);
-        }
-
-        if (listed.isEmpty()) {
-            enterIdle(now);
-            return 0;
-        }
-
-        long listedMaxId = cursor;
-        for (CodeRepository repo : listed) {
-            if (repo.getId() != null && repo.getId() > listedMaxId) {
-                listedMaxId = repo.getId();
+        try {
+            if (!isDue(now)) {
+                return 0;
             }
+        } catch (Exception e) {
+            log.warn("stack probe next-run-at check failed: {}", e.getMessage());
+            // fail-open：继续尝试
         }
 
-        List<CodeRepository> candidates = new ArrayList<>(listed.size());
-        for (CodeRepository repo : listed) {
-            if (repo.getId() != null && inCooldown(repo.getId())) {
-                continue;
-            }
-            candidates.add(repo);
-        }
-        if (candidates.isEmpty()) {
-            // 本批全冷却：推进游标越过它们，避免低 id 不可达/失败仓永久堵死后面的可达仓
-            cursorId.set(listedMaxId);
-            enterIdle(now);
-            return 0;
-        }
-
-        leaveIdle();
-
+        // 短 runId：毫秒 base36 + 4 位随机，目录名更短；孤儿清理只认前缀
+        String runId = Long.toString(System.currentTimeMillis(), 36)
+                + Integer.toString(ThreadLocalRandom.current().nextInt(0x100000), 36);
+        Path runRoot = null;
         int done = 0;
-        long maxId = cursor;
-        for (CodeRepository repo : candidates) {
-            if (repo.getId() != null && repo.getId() > maxId) {
-                maxId = repo.getId();
-            }
+        try {
             try {
-                if (probeOne(repo)) {
-                    done++;
-                }
+                pruneOrphanRunDirs();
             } catch (Exception e) {
-                log.warn("stack probe failed repoId={}: {}", repo.getId(), e.getMessage());
-                markCooldown(repo.getId(), "FAIL", properties.getStackProbeCooldownFailMs());
-                operationLogService.logOperation(
-                        repo.getSystemId(), null, ACTION_FAIL,
-                        "repoId=" + repo.getId() + " instance=" + clusterInstanceId.get(),
-                        e.getMessage(), false);
+                log.warn("stack probe orphan prune failed: {}", e.getMessage());
+            }
+
+            long eligible;
+            try {
+                eligible = countEligibleVacuum();
+            } catch (Exception e) {
+                log.error("stack probe COUNT failed: {}", e.getMessage(), e);
+                return 0;
+            }
+
+            if (eligible <= 0) {
+                enterScheduleIdle(now);
+                log.debug("stack probe COUNT=0 → schedule idle streak={}", emptyStreak.get());
+                return 0;
+            }
+
+            emptyStreak.set(0);
+            Path workspaceRoot = storageResolver.getActiveWorkspaceRoot();
+            if (workspaceRoot == null) {
+                log.error("stack probe aborted: workspaceRoot is null");
+                return 0;
+            }
+            runRoot = workspaceRoot.resolve(RUN_DIR_PREFIX + runId);
+            try {
+                Files.createDirectories(runRoot);
+            } catch (Exception e) {
+                log.error("stack probe create run dir failed {}: {}", runRoot, e.getMessage());
+                return 0;
+            }
+
+            done = processBatchesUntilEmptyOrDeadline(runRoot);
+            scheduleActiveDelay(System.currentTimeMillis());
+            if (done > 0) {
+                log.info("stack probe run done={} runId={} instance={}",
+                        done, runId, clusterInstanceId.get());
+            }
+            return done;
+        } finally {
+            if (runRoot != null) {
+                try {
+                    DirectoryCleanupUtil.deleteRecursively(runRoot);
+                } catch (IOException e) {
+                    log.warn("stack probe unified cleanup failed {}: {}", runRoot, e.getMessage());
+                }
             }
         }
-        cursorId.set(Math.max(maxId, listedMaxId));
-        if (done > 0) {
-            log.info("stack probe batch done={} tried={} cursor={} instance={}",
-                    done, candidates.size(), cursorId.get(), clusterInstanceId.get());
+    }
+
+    private int processBatchesUntilEmptyOrDeadline(Path runRoot) {
+        int batchSize = Math.max(1, properties.getStackProbeBatchSize());
+        long maxSweepMs = TimeUnit.SECONDS.toMillis(Math.max(60, properties.getStackProbeMaxSweepSeconds()));
+        long deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(maxSweepMs);
+        int done = 0;
+        boolean wrappedThisRun = false;
+
+        while (System.nanoTime() < deadline) {
+            long cursor = cursorId.get();
+            List<CodeRepository> listed;
+            try {
+                listed = listEligibleVacuumAfter(cursor, batchSize);
+            } catch (Exception e) {
+                log.error("stack probe list failed: {}", e.getMessage(), e);
+                break;
+            }
+
+            if (listed.isEmpty()) {
+                if (!wrappedThisRun && cursor > 0) {
+                    wrappedThisRun = true;
+                    cursorId.set(0L);
+                    continue;
+                }
+                cursorId.set(0L);
+                break;
+            }
+
+            // 每批一次续租/校验（降 Redis）；TTL 须盖住本批最坏耗时，见 leaderLockTtlSeconds()
+            if (!renewLeadershipOrStop(batchSize)) {
+                log.warn("stack probe stop: lost leadership before batch cursor={} size={}",
+                        cursor, listed.size());
+                break;
+            }
+
+            long maxId = cursor;
+            for (CodeRepository repo : listed) {
+                if (System.nanoTime() >= deadline) {
+                    break;
+                }
+                if (repo.getId() != null && repo.getId() > maxId) {
+                    maxId = repo.getId();
+                }
+                try {
+                    if (probeOne(repo, runRoot)) {
+                        done++;
+                    }
+                } catch (Exception e) {
+                    log.warn("stack probe failed repoId={}: {}", repo.getId(), e.getMessage());
+                    safeLog(repo.getSystemId(), ACTION_FAIL,
+                            "repoId=" + repo.getId() + " instance=" + clusterInstanceId.get(),
+                            e.getMessage(), false);
+                }
+            }
+            cursorId.set(maxId);
         }
         return done;
     }
 
-    public boolean probeOne(Long repositoryId) {
-        if (repositoryId == null) {
+    /**
+     * 每批续租一次。TTL = max(配置, 本批最坏耗时 + 余量)，避免批内锁过期被他机抢走。
+     *
+     * @return false 表示已不是 Leader，调用方必须停止探测（宁停勿双写）
+     */
+    private boolean renewLeadershipOrStop(int batchSize) {
+        if (!clusterProperties.isEnabled()) {
+            return true;
+        }
+        try {
+            return clusterLeaderLock.tryAcquireLeader(LEADER_LOCK_KEY, leaderLockTtlSeconds(batchSize));
+        } catch (Exception e) {
+            log.warn("stack probe leader renew failed: {}", e.getMessage());
             return false;
         }
-        if (inCooldown(repositoryId)) {
-            return false;
-        }
-        CodeRepository repo = repositoryMapper.selectById(repositoryId);
-        if (repo == null) {
-            return false;
-        }
-        return probeOne(repo);
     }
 
-    private boolean probeOne(CodeRepository repo) {
+    /** 至少覆盖：batchSize × tree-timeout + 2min 余量 */
+    private int leaderLockTtlSeconds(int batchSize) {
+        int configured = Math.max(60, properties.getStackProbeLeaderLockTtlSeconds());
+        long perRepoSec = Math.max(1L, (properties.getStackProbeTreeTimeoutMs() + 999L) / 1000L);
+        int batchWorst = (int) Math.min(Integer.MAX_VALUE,
+                Math.max(1, batchSize) * perRepoSec + 120L);
+        return Math.max(configured, batchWorst);
+    }
+
+    private boolean probeOne(CodeRepository repo, Path runRoot) {
         if (!isVacuum(repo)) {
             return false;
         }
-        if (repo.getId() != null && inCooldown(repo.getId())) {
-            return false;
+        if (RepoStackUrlRules.isDbByUrl(repo.getGitUrl())) {
+            return applyDbByUrl(repo);
         }
-        String lockKey = LOCK_PREFIX + repo.getId();
-        if (!tryLock(lockKey)) {
-            return false;
-        }
-        try {
-            // 不再二次 selectById：靠真空 CAS 防覆盖；锁防并发拉树
-            if (RepoStackUrlRules.isDbByUrl(repo.getGitUrl())) {
-                boolean ok = applyDbByUrl(repo);
-                if (ok) {
-                    clearCooldown(repo.getId());
-                }
-                return ok;
-            }
-            return applyTreeProbe(repo);
-        } finally {
-            unlock(lockKey);
-        }
+        return applyTreeProbe(repo, runRoot);
     }
 
     private boolean applyDbByUrl(CodeRepository repo) {
@@ -270,60 +304,40 @@ public class RepoStackProbeService {
             detail = "repoId=" + repo.getId() + " type=DB stack=(empty)"
                     + " byUrl name=" + RepoStackUrlRules.extractRepoName(repo.getGitUrl()).orElse("?");
         }
-        operationLogService.logOperation(
-                repo.getSystemId(), null, ACTION_DB_URL, detail, null, ok);
+        safeLog(repo.getSystemId(), ACTION_DB_URL, detail, null, ok);
         return ok;
     }
 
-    private boolean applyTreeProbe(CodeRepository repo) {
+    private boolean applyTreeProbe(CodeRepository repo, Path runRoot) {
         Integer reachable = repo.getGitReachable();
         boolean isLocalDir = RepoGitUrlKind.isExistingLocalDirectory(repo.getGitUrl());
         if (!isLocalDir && (reachable == null || reachable != 1)) {
-            markCooldown(repo.getId(), "UNREACHABLE", properties.getStackProbeCooldownUnreachableMs());
-            operationLogService.logOperation(
-                    repo.getSystemId(), null, ACTION_SKIP,
+            safeLog(repo.getSystemId(), ACTION_SKIP,
                     "repoId=" + repo.getId() + " reason=git_unreachable", null, true);
             return false;
         }
-
-        Semaphore sem = treeSemaphore();
-        boolean acquired = false;
+        Path workDir = runRoot.resolve(String.valueOf(repo.getId()));
         try {
-            acquired = sem.tryAcquire();
-            if (!acquired) {
-                // 并发满不冷却，下轮可再试
-                operationLogService.logOperation(
-                        repo.getSystemId(), null, ACTION_SKIP,
-                        "repoId=" + repo.getId() + " reason=tree_concurrency", null, true);
-                return false;
-            }
-            Path workDir = storageResolver.getActiveWorkspaceRoot()
-                    .resolve("stack_probe_" + repo.getId());
             List<String> paths = RepoStackTreeFetcher.fetchPaths(
                     repo.getGitUrl(),
                     repo.getBranch(),
                     repo.getUsername(),
                     repo.getPassword(),
                     workDir,
-                    properties.getStackProbeTreeTimeoutMs());
+                    properties.getStackProbeTreeTimeoutMs(),
+                    false);
             RepoStackTreeClassifier.Result result = RepoStackTreeClassifier.classify(paths);
             if (result == null || !result.isHighEnough()
                     || !StringUtils.hasText(result.getRepoType())
                     || !StringUtils.hasText(result.getTechStack())) {
-                markCooldown(repo.getId(), "LOW", properties.getStackProbeCooldownFailMs());
-                operationLogService.logOperation(
-                        repo.getSystemId(), null, ACTION_SKIP,
+                safeLog(repo.getSystemId(), ACTION_SKIP,
                         "repoId=" + repo.getId() + " reason=low_confidence paths=" + paths.size()
                                 + " evidence=" + (result == null ? "null" : result.getEvidence()),
                         null, true);
                 return false;
             }
             boolean ok = casWritePair(repo.getId(), result.getRepoType(), result.getTechStack());
-            if (ok) {
-                clearCooldown(repo.getId());
-            }
-            operationLogService.logOperation(
-                    repo.getSystemId(), null, ACTION_OK,
+            safeLog(repo.getSystemId(), ACTION_OK,
                     "repoId=" + repo.getId()
                             + " type=" + result.getRepoType()
                             + " stack=" + result.getTechStack()
@@ -333,83 +347,41 @@ public class RepoStackProbeService {
                     null, ok);
             return ok;
         } catch (Exception e) {
-            markCooldown(repo.getId(), "FAIL", properties.getStackProbeCooldownFailMs());
-            operationLogService.logOperation(
-                    repo.getSystemId(), null, ACTION_FAIL,
+            safeLog(repo.getSystemId(), ACTION_FAIL,
                     "repoId=" + repo.getId() + " instance=" + clusterInstanceId.get(),
                     e.getMessage(), false);
             return false;
-        } finally {
-            if (acquired) {
-                sem.release();
-            }
         }
     }
 
-    private void enterIdle(long nowMs) {
-        int streak = emptyStreak.incrementAndGet();
-        long delay = backoffDelayMs(streak);
-        nextProbeAtMs.set(nowMs + delay);
-        if (properties.isStackProbeGlobalIdle()) {
-            writeGlobalIdle(nowMs + delay);
+    private void safeLog(Long systemId, String action, String detail, String err, boolean success) {
+        try {
+            operationLogService.logOperation(systemId, null, action, detail, err, success);
+        } catch (Exception e) {
+            log.warn("stack probe op-log failed action={}: {}", action, e.getMessage());
         }
-        log.debug("stack probe idle streak={} nextDelayMs={} instance={}",
-                streak, delay, clusterInstanceId.get());
     }
 
-    private void leaveIdle() {
-        emptyStreak.set(0);
-        nextProbeAtMs.set(0L);
-        clearGlobalIdle();
+    private long countEligibleVacuum() {
+        LambdaQueryWrapper<CodeRepository> q = eligibleVacuumWrapper();
+        Long n = repositoryMapper.selectCount(q);
+        return n == null ? 0L : n;
     }
 
-    long backoffDelayMs(int streak) {
-        long[] ladder = parseBackoffLadder(properties.getStackProbeIdleBackoffMs());
-        int idx = Math.min(Math.max(streak, 1), ladder.length) - 1;
-        return ladder[idx];
-    }
-
-    static long[] parseBackoffLadder(String raw) {
-        if (!StringUtils.hasText(raw)) {
-            return DEFAULT_BACKOFF.clone();
-        }
-        String[] parts = raw.split(",");
-        List<Long> list = new ArrayList<>();
-        for (String p : parts) {
-            String t = p.trim();
-            if (t.isEmpty()) {
-                continue;
-            }
-            try {
-                long v = Long.parseLong(t);
-                if (v > 0) {
-                    list.add(v);
-                }
-            } catch (NumberFormatException ignored) {
-                // skip bad token
-            }
-        }
-        if (list.isEmpty()) {
-            return DEFAULT_BACKOFF.clone();
-        }
-        return list.stream().mapToLong(Long::longValue).toArray();
-    }
-
-    /**
-     * 定时批次候选：真空 且（Git 已连通 或 URL 可零远程判 DB）。
-     * <p>{@code git_reachable = 0 / NULL} 的非 DB 仓不进热路径，避免数百不可达占满 LIMIT、拖死可达仓。</p>
-     */
     private List<CodeRepository> listEligibleVacuumAfter(long afterId, int limit) {
-        LambdaQueryWrapper<CodeRepository> q = new LambdaQueryWrapper<>();
-        q.apply(VACUUM_TYPE)
-                .apply(VACUUM_STACK)
-                .and(w -> w.eq(CodeRepository::getGitReachable, 1)
-                        .or()
-                        .apply("git_url ~* '[_-]db(\\.git)?/*$'"))
-                .gt(afterId > 0, CodeRepository::getId, afterId)
+        LambdaQueryWrapper<CodeRepository> q = eligibleVacuumWrapper();
+        q.gt(afterId > 0, CodeRepository::getId, afterId)
                 .orderByAsc(CodeRepository::getId)
                 .last("LIMIT " + Math.max(1, limit));
         return repositoryMapper.selectList(q);
+    }
+
+    private LambdaQueryWrapper<CodeRepository> eligibleVacuumWrapper() {
+        LambdaQueryWrapper<CodeRepository> q = new LambdaQueryWrapper<>();
+        q.apply(VACUUM_TYPE)
+                .apply(VACUUM_STACK)
+                .apply(ELIGIBLE_SQL);
+        return q;
     }
 
     static boolean isVacuum(CodeRepository repo) {
@@ -439,126 +411,121 @@ public class RepoStackProbeService {
         return repositoryMapper.update(null, u) > 0;
     }
 
-    private Semaphore treeSemaphore() {
-        Semaphore current = treeSemaphore;
-        if (current != null) {
-            return current;
-        }
-        synchronized (this) {
-            if (treeSemaphore == null) {
-                treeSemaphore = new Semaphore(Math.max(1, properties.getStackProbeTreeConcurrency()));
-            }
-            return treeSemaphore;
-        }
-    }
-
-    private boolean tryLock(String lockKey) {
+    private boolean isDue(long nowMs) {
         if (redisTemplate == null) {
             return true;
         }
         try {
-            Boolean ok = redisTemplate.opsForValue().setIfAbsent(
-                    lockKey,
-                    clusterInstanceId.get(),
-                    Duration.ofSeconds(Math.max(30, properties.getStackProbeLockTtlSeconds())));
-            return Boolean.TRUE.equals(ok);
-        } catch (Exception e) {
-            log.warn("stack probe lock acquire failed key={}: {}", lockKey, e.getMessage());
-            return false;
-        }
-    }
-
-    private void unlock(String lockKey) {
-        if (redisTemplate == null) {
-            return;
-        }
-        try {
-            redisTemplate.delete(lockKey);
-        } catch (Exception e) {
-            log.warn("stack probe lock release failed key={}: {}", lockKey, e.getMessage());
-        }
-    }
-
-    private void markCooldown(Long repoId, String kind, long ttlMs) {
-        if (repoId == null || redisTemplate == null || ttlMs <= 0) {
-            return;
-        }
-        try {
-            redisTemplate.opsForValue().set(
-                    COOLDOWN_PREFIX + repoId,
-                    kind == null ? "1" : kind,
-                    Duration.ofMillis(ttlMs));
-        } catch (Exception e) {
-            log.warn("stack probe cooldown set failed repoId={}: {}", repoId, e.getMessage());
-        }
-    }
-
-    private boolean inCooldown(Long repoId) {
-        if (repoId == null || redisTemplate == null) {
-            return false;
-        }
-        try {
-            Boolean has = redisTemplate.hasKey(COOLDOWN_PREFIX + repoId);
-            return Boolean.TRUE.equals(has);
-        } catch (Exception e) {
-            log.warn("stack probe cooldown check failed repoId={}: {}", repoId, e.getMessage());
-            return false;
-        }
-    }
-
-    private void clearCooldown(Long repoId) {
-        if (repoId == null || redisTemplate == null) {
-            return;
-        }
-        try {
-            redisTemplate.delete(COOLDOWN_PREFIX + repoId);
-        } catch (Exception e) {
-            log.warn("stack probe cooldown clear failed repoId={}: {}", repoId, e.getMessage());
-        }
-    }
-
-    private boolean isGlobalIdleActive(long nowMs) {
-        if (!properties.isStackProbeGlobalIdle() || redisTemplate == null) {
-            return false;
-        }
-        try {
-            String v = redisTemplate.opsForValue().get(IDLE_UNTIL_KEY);
+            String v = redisTemplate.opsForValue().get(NEXT_RUN_AT_KEY);
             if (!StringUtils.hasText(v)) {
-                return false;
+                return true;
             }
-            long until = Long.parseLong(v.trim());
-            return nowMs < until;
+            long next = Long.parseLong(v.trim());
+            return nowMs >= next;
         } catch (Exception e) {
-            return false;
+            log.warn("stack probe read next-run-at failed: {}", e.getMessage());
+            return true;
         }
     }
 
-    private void writeGlobalIdle(long untilMs) {
-        if (!properties.isStackProbeGlobalIdle() || redisTemplate == null) {
-            return;
-        }
-        try {
-            long ttl = Math.max(1_000L, untilMs - System.currentTimeMillis());
-            redisTemplate.opsForValue().set(IDLE_UNTIL_KEY, String.valueOf(untilMs), Duration.ofMillis(ttl));
-        } catch (Exception e) {
-            log.warn("stack probe global idle write failed: {}", e.getMessage());
-        }
+    private void enterScheduleIdle(long nowMs) {
+        int streak = emptyStreak.incrementAndGet();
+        long delay = backoffDelayMs(streak);
+        writeNextRunAt(nowMs + delay, delay);
     }
 
-    private void clearGlobalIdle() {
+    private void scheduleActiveDelay(long nowMs) {
+        long delay = Math.max(1_000L, properties.getStackProbeActiveDelayMs());
+        writeNextRunAt(nowMs + delay, delay);
+    }
+
+    private void writeNextRunAt(long epochMs, long ttlHintMs) {
         if (redisTemplate == null) {
             return;
         }
         try {
-            redisTemplate.delete(IDLE_UNTIL_KEY);
+            long ttl = Math.max(ttlHintMs, epochMs - System.currentTimeMillis());
+            redisTemplate.opsForValue().set(
+                    NEXT_RUN_AT_KEY,
+                    String.valueOf(epochMs),
+                    Duration.ofMillis(Math.max(1_000L, ttl)));
         } catch (Exception e) {
-            log.warn("stack probe global idle clear failed: {}", e.getMessage());
+            log.warn("stack probe write next-run-at failed: {}", e.getMessage());
         }
     }
 
-    /** 测试可见 */
-    long getNextProbeAtMs() {
-        return nextProbeAtMs.get();
+    private void clearNextRunAt() {
+        if (redisTemplate == null) {
+            return;
+        }
+        try {
+            redisTemplate.delete(NEXT_RUN_AT_KEY);
+        } catch (Exception e) {
+            log.warn("stack probe clear next-run-at failed: {}", e.getMessage());
+        }
+    }
+
+    private void pruneOrphanRunDirs() throws IOException {
+        Path workspaceRoot = storageResolver.getActiveWorkspaceRoot();
+        if (workspaceRoot == null || !Files.isDirectory(workspaceRoot)) {
+            return;
+        }
+        long maxAgeMs = TimeUnit.HOURS.toMillis(Math.max(1, properties.getStackProbeOrphanMaxAgeHours()));
+        Instant cutoff = Instant.now().minusMillis(maxAgeMs);
+        try (DirectoryStream<Path> stream = Files.newDirectoryStream(workspaceRoot)) {
+            for (Path p : stream) {
+                if (!Files.isDirectory(p)) {
+                    continue;
+                }
+                String name = p.getFileName().toString();
+                boolean orphanRun = name.startsWith(RUN_DIR_PREFIX);
+                boolean legacyPerRepo = name.startsWith("stack_probe_") && !orphanRun;
+                if (!orphanRun && !legacyPerRepo) {
+                    continue;
+                }
+                FileTime ft = Files.getLastModifiedTime(p);
+                if (ft.toInstant().isBefore(cutoff)) {
+                    try {
+                        DirectoryCleanupUtil.deleteRecursively(p);
+                        log.info("stack probe pruned orphan dir {}", p);
+                    } catch (IOException e) {
+                        log.warn("stack probe prune failed {}: {}", p, e.getMessage());
+                    }
+                }
+            }
+        }
+    }
+
+    long backoffDelayMs(int streak) {
+        long[] ladder = parseBackoffLadder(properties.getStackProbeIdleBackoffMs());
+        int idx = Math.min(Math.max(streak, 1), ladder.length) - 1;
+        return ladder[idx];
+    }
+
+    static long[] parseBackoffLadder(String raw) {
+        if (!StringUtils.hasText(raw)) {
+            return DEFAULT_BACKOFF.clone();
+        }
+        String[] parts = raw.split(",");
+        List<Long> list = new ArrayList<>();
+        for (String p : parts) {
+            String t = p.trim();
+            if (t.isEmpty()) {
+                continue;
+            }
+            try {
+                long v = Long.parseLong(t);
+                if (v > 0) {
+                    list.add(v);
+                }
+            } catch (NumberFormatException ignored) {
+                // skip
+            }
+        }
+        if (list.isEmpty()) {
+            return DEFAULT_BACKOFF.clone();
+        }
+        return list.stream().mapToLong(Long::longValue).toArray();
     }
 
     int getEmptyStreak() {

@@ -7,77 +7,117 @@ spring:
 mybatis-plus:
   mapper-locations: classpath:mapper/*.xml
 
-# 全局默认值（各 profile 可通过 application-{profile}.yml 覆盖）
+# ??????? profile ??? application-{profile}.yml ???
 code-insight:
   env: ${CODE_INSIGHT_ENV:dev}
   cluster:
-    # enabled 不可配：由 ClusterEnvAligner 按 env 推导（dev=false，非 dev=true）
+    # enabled ????? ClusterEnvAligner ? env ???dev=false?? dev=true?
     leader-lock-ttl-seconds: 15
     task-lease-hours: 2
     draft-edit-lock-ttl-seconds: 120
     draft-edit-lock-renew-seconds: 60
-    # 任务并发 Redis 许可：TTL + 续租；崩溃残留靠启动/周期 DB 对账清理
+    # ???? Redis ???TTL + ??????????/?? DB ????
     task-permit-ttl-seconds: 300
     task-permit-renew-seconds: 60
-    # 实例心跳 TTL；续租走 task-permit-reconcile，须明显大于续租间隔
+    # ???? TTL???? task-permit-reconcile??????????
     instance-heartbeat-ttl-seconds: 180
     task-permit-reconcile-interval-ms: 30000
-    # 任务 DB 租约（分钟）+ 过期宽限；接管须「过宽限 ∧ 心跳已死」（见 orphan-reclaim-lease-heartbeat-design.md）
+    # ?? DB ??????+ ???????????? ? ??????? orphan-reclaim-lease-heartbeat-design.md?
     task-lease-minutes: 30
     task-lease-grace-minutes: 10
     task-lease-renew-interval-ms: 120000
     orphan-reclaim-interval-ms: 30000
   storage:
-    # 非 dev 必填绝对路径；dev 写死 ./storage 并派生 ./storage/workspaces、./storage/releases，忽略下列配置
+    # ? dev ???????dev ?? ./storage ??? ./storage/workspaces?./storage/releases???????
     runtime-root: ${STORAGE_RUNTIME_ROOT:}
     releases-root: ${STORAGE_RELEASES_ROOT:}
+
+  publish:
+    release-keep-count: ${PUBLISH_RELEASE_KEEP_COUNT:3}
+    release-prune-max-attempts: ${PUBLISH_RELEASE_PRUNE_MAX_ATTEMPTS:3}
+    release-prune-backoff-ms: ${PUBLISH_RELEASE_PRUNE_BACKOFF_MS:2000}
+    release-prune-reconcile-enabled: ${PUBLISH_RELEASE_PRUNE_RECONCILE_ENABLED:true}
+    release-prune-reconcile-interval-ms: ${PUBLISH_RELEASE_PRUNE_RECONCILE_INTERVAL_MS:3600000}
   parser:
-    # 解析引擎选择。可选：
-    #   ast-fallback-regex（默认）：先 AST，失败无感降级到 REGEX
-    #   ast                       ：纯 AST，失败抛异常（排障用）
-    #   regex                     ：纯正则（保留 MVP 行为）
+    # ??????????
+    #   ast-fallback-regex?????? AST???????? REGEX
+    #   ast                       ?? AST???????????
+    #   regex                     ??????? MVP ???
     engine: ast-fallback-regex
   ai:
-    hierarchy-parallelism: 4   # 模块层级 AI 调用并发数，按模型 API 限流调整
+    hierarchy-parallelism: 4   # ???? AI ????????? API ????
     retry:
-      # 层级提炼与文档生成次数拆分（含首次）
+      # ??????????????????
       hierarchy-max-attempts: 3
       doc-max-attempts: 5
-      backoff-ms: 1000           # 重试退避基数（毫秒），实际等待 = backoff-ms × attempt
-      # 已废弃：等槽仅在 AiSummaryServiceImpl.acquireAiPermitWithWait；保留字段兼容旧配置
+      backoff-ms: 1000           # ??????????????? = backoff-ms * attempt
+      unlimited-attempts: false
+      unlimited-backoff-cap-ms: 60000
+      # ???????? AiSummaryServiceImpl.acquireAiPermitWithWait??????????
       concurrency-backoff-ms: 2000
     doc:
-      # 方案 A：超限后再裁；真分片见 docs/doc-generation-guarantee-plan.md §4
+      # ?? A??????????? docs/doc-generation-guarantee-plan.md ?4
       max-prompt-chars: 100000
       max-method-body-chars: 12000
       http-timeout-seconds: 120
       shrink-factor: 0.5
-      # 本机文档并行工人数（固定池；超额功能排队，不新开线程）
+      # ???????????????????????????
       parallelism: 4
-      # 文档与 MODULE_HIERARCHY 等 AI 全局槽超时（秒），应 ≫ http-timeout；层级用尽重试后弃当前入口
+      # ??? MODULE_HIERARCHY ? AI ?????????? ? http-timeout?????????????
       acquire-wait-seconds: 1800
-      # 等槽轮询间隔（毫秒）；默认 5s，过短无意义
+      # ????????????? 5s??????
       acquire-poll-interval-ms: 5000
-      # true：等槽无超时（一直等到抢到）；中断仍抛出并由 PipelineAiCaller 进入下一 attempt
+      # true?????????????????????? PipelineAiCaller ???? attempt
       acquire-wait-unlimited: false
   review:
-    # true：知识复核允许未逐篇确认时直接「任务整体通过」（未确认草稿一并 CONFIRMED）
+    # true??????????????????????????????? CONFIRMED?
     allow-partial-pass: ${REVIEW_ALLOW_PARTIAL_PASS:false}
   schedule:
-    enabled: true             # 是否启用定时任务调度（false 时 ScheduleExecutor 不会装载）
-    poll-interval-ms: 60000    # 主轮询间隔（毫秒），到点扫描到期 schedule
-    queue-poll-interval-ms: 30000  # 队列消费间隔（QUEUE 策略）
-    lock-ttl-seconds: 30       # Redis 分布式锁 TTL
+    enabled: true             # ???????????false ? ScheduleExecutor ?????
+    poll-interval-ms: 60000    # ???????????????? schedule
+    queue-poll-interval-ms: 30000  # ???????QUEUE ???
+    lock-ttl-seconds: 30       # Redis ???? TTL
+
+  scan:
+    enabled: ${SCAN_ENABLED:true}
+    cron: "${SCAN_CRON:0 */5 * * * *}"
+    global-poll-enabled: ${SCAN_GLOBAL_POLL_ENABLED:true}
+    force-full-on-unchanged: ${SCAN_FORCE_FULL_ON_UNCHANGED:true}
+    daily-coverage-enabled: ${SCAN_DAILY_COVERAGE_ENABLED:true}
+    poll-concurrency: ${SCAN_POLL_CONCURRENCY:2}
+    poll-batch-size: ${SCAN_POLL_BATCH_SIZE:30}
+    max-sweep-seconds: ${SCAN_MAX_SWEEP_SECONDS:300}
+    probe-timeout-seconds: ${SCAN_PROBE_TIMEOUT_SECONDS:30}
+    probe-max-attempts: ${SCAN_PROBE_MAX_ATTEMPTS:3}
+    probe-retry-backoff-ms: ${SCAN_PROBE_RETRY_BACKOFF_MS:2000}
   task:
-    queue-dispatch-interval-ms: 5000   # 任务队列调度器轮询间隔（毫秒），TaskQueueDispatcher 周期
-    # 可执行知识生成的技术栈白名单（逗号分隔，精确匹配目录 label，如 Java 或 Java,Python）；后续可接阿波罗同名配置
+    queue-dispatch-interval-ms: 5000   # ????????????????TaskQueueDispatcher ??
+    # ?????????????????????????? label?? Java ? Java,Python?????????????
     supported-tech-stacks: ${TASK_SUPPORTED_TECH_STACKS:Java}
   repo:
-    # Git 连通性后台轮询间隔（毫秒）；Leader 节点执行
+    # Git ??????????????Leader ????
     git-check-interval-ms: ${REPO_GIT_CHECK_INTERVAL_MS:180000}
-    # 启动后首次轮询延迟（默认与 interval 相同，避免刚启动就全库探测超时误标不通）
+    # ????????????? interval ????????????????????
     git-check-initial-delay-ms: ${REPO_GIT_CHECK_INITIAL_DELAY_MS:180000}
-    # 单次 ls-remote 超时（秒）
+    # ?? ls-remote ?????
     git-check-timeout-seconds: ${REPO_GIT_CHECK_TIMEOUT_SECONDS:15}
-    # 全库/批量检测本机并发
+    # ??/????????
     git-check-concurrency: ${REPO_GIT_CHECK_CONCURRENCY:3}
+    git-check-batch-size: ${REPO_GIT_CHECK_BATCH_SIZE:40}
+    git-check-max-sweep-seconds: ${REPO_GIT_CHECK_MAX_SWEEP_SECONDS:120}
+    git-check-reachable-ttl-ms: ${REPO_GIT_CHECK_REACHABLE_TTL_MS:21600000}
+    git-check-unreachable-ttl-ms: ${REPO_GIT_CHECK_UNREACHABLE_TTL_MS:1800000}
+    # stack probe: Leader serial + COUNT schedule backoff + run-end NAS cleanup
+    stack-probe-enabled: ${REPO_STACK_PROBE_ENABLED:true}
+    stack-probe-interval-ms: ${REPO_STACK_PROBE_INTERVAL_MS:20000}
+    stack-probe-initial-delay-ms: ${REPO_STACK_PROBE_INITIAL_DELAY_MS:30000}
+    stack-probe-batch-size: ${REPO_STACK_PROBE_BATCH_SIZE:30}
+    stack-probe-tree-timeout-ms: ${REPO_STACK_PROBE_TREE_TIMEOUT_MS:45000}
+    stack-probe-max-sweep-seconds: ${REPO_STACK_PROBE_MAX_SWEEP_SECONDS:1800}
+    # Leader TTL floor; renew once per batch; actual TTL >= batchSize*tree-timeout+120 (default 1800s)
+    stack-probe-leader-lock-ttl-seconds: ${REPO_STACK_PROBE_LEADER_LOCK_TTL_SECONDS:1800}
+    stack-probe-active-delay-ms: ${REPO_STACK_PROBE_ACTIVE_DELAY_MS:20000}
+    stack-probe-idle-backoff-ms: "${REPO_STACK_PROBE_IDLE_BACKOFF_MS:60000,300000,900000}"
+    stack-probe-on-create: ${REPO_STACK_PROBE_ON_CREATE:true}
+    stack-probe-orphan-max-age-hours: ${REPO_STACK_PROBE_ORPHAN_MAX_AGE_HOURS:2}
+

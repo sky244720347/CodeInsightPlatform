@@ -21,17 +21,25 @@ public class ClusterLeaderLock {
     private final ClusterProperties clusterProperties;
 
     public boolean tryAcquireLeader(String lockKey) {
+        return tryAcquireLeader(lockKey, clusterProperties.getLeaderLockTtlSeconds());
+    }
+
+    /**
+     * @param ttlSeconds Leader 键 TTL；持有方再次调用会续租。须大于单次业务最坏耗时，并在长任务中周期性续租。
+     */
+    public boolean tryAcquireLeader(String lockKey, int ttlSeconds) {
+        int ttl = Math.max(5, ttlSeconds);
         String holder = instanceId.get();
         Boolean ok = redisTemplate.opsForValue().setIfAbsent(
                 lockKey,
                 holder,
-                Duration.ofSeconds(clusterProperties.getLeaderLockTtlSeconds()));
+                Duration.ofSeconds(ttl));
         if (Boolean.TRUE.equals(ok)) {
             return true;
         }
         String current = redisTemplate.opsForValue().get(lockKey);
         if (holder.equals(current)) {
-            redisTemplate.expire(lockKey, clusterProperties.getLeaderLockTtlSeconds(), TimeUnit.SECONDS);
+            redisTemplate.expire(lockKey, ttl, TimeUnit.SECONDS);
             return true;
         }
         return false;

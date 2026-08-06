@@ -6,6 +6,137 @@
 
 ## [Unreleased]
 
+### 仓库类型 / 技术栈多机探测
+
+详见 [docs/repo-stack-probe-plan.md](./docs/repo-stack-probe-plan.md)。
+
+- **仅 Leader 串行**（无整轮任务锁）：每批续租并校验 Leader（降 Redis）；TTL ≥ max(1800s, batch×tree-timeout+120)；丢主跳过后续批以防双写
+- 先 COUNT 待探，=0 则写 Redis `next-run-at` 拉长调度（非每仓冷却）
+- 待探口径：真空 ∧（`git_reachable=1` ∨ URL `*_db`/`*-db`）；多批直到墙钟/列表空
+- NAS：`stack_probe_run_{runId}/`，整轮结束统一删；创建/连通只唤醒调度不并行 clone
+- 配置：`code-insight.repo.stack-probe-*` / `REPO_STACK_PROBE_*`
+
+### 定时 commit 轮询扫描（INITIAL / INCREMENTAL）
+
+详见 [docs/scheduled-commit-poll-scan-plan.md](./docs/scheduled-commit-poll-scan-plan.md)、[docs/scan-orchestration-ui-plan.md](./docs/scan-orchestration-ui-plan.md)。Webhook 窗口放行方案已废弃。
+
+- `ScanWindowScheduler`：Leader 探测远端 HEAD，无基线全量、有变动增量；验证开关可强制「无变动也全量」
+- 全局轮询开关：开=cron 扫全部远程仓（分批/并发/墙钟）；关=仅 `ci_scan_window` 命中仓
+- 自动任务 `trigger_source=SCHEDULED`，跳过入口/层级复核，创建即 `startTask`；本地路径与同仓非终态任务跳过
+- 配置：`code-insight.scan.*` / `SCAN_*`（含全局轮询、验证全量；仅配置文件/阿波罗，无页面与更新接口）
+- 日覆盖：`daily-coverage-enabled` + Redis `scan:probe:done:{day}`；超时不记完成、后续重试；ls-remote 可多次重试；墙钟到点不 cancel 进行中波次
+- 探测流水表 `ci_scan_probe_record`；API `/scan/orchestration/*`；新「任务编排」页展示进度/流水并配 cron；旧窗口编排页改名为 `orchestration-legacy.tsx` 保留
+- 下发因技术栈未配置/不支持等失败记 `DEFERRED_DISPATCH`，**不**记日覆盖，后续批次可继续下发（配合 RepoStackProbe 打标）
+- 测试：`ScanDispatchDecisionTest` / `GitRemoteHeadPickTest` / `ScanDailyCoverageStoreTest`
+
+### MODULE_HIERARCHY 拆长事务 + 终局落库重试
+
+- `buildAndPersist` 去掉外层 `@Transactional`：AI 串行 merge 只动内存，不占长连接
+- 预处理删模块 / 终局 `persistAll|persistIncremental` + bindings 用短事务
+- 终局 hierarchy+bindings 一体提交，SQL 失败最多重试 3 次，仍失败再 FAILED
+- binding 在 reconcile 之后再解析，避免 ID remap 错位；INSERT 按 500 分片
+
+### 知识 Release 保留近 3 版（异步删盘）
+
+详见 [docs/release-retention-prune-plan.md](./docs/release-retention-prune-plan.md)。
+
+- 推送 SUCCESS 后：每仓只保留最近 3 个 `PUSHED` 版本（保护 `last_published_version_id`）
+- 超额版本：`is_deleted=1`（version / push_task / snapshot），列表不可见
+- 异步删 `{releasesRoot}/…/{versionNum}` 与 `publish-snapshots/{repo}/{versionId}`，失败重试 3 次
+- 小时级扫盘对账；非 `v数字` 脏目录不动
+- 测试：`ReleaseRetentionServiceTest`
+
+### AI 重试不限次开关
+
+详见 [docs/ai-retry-unlimited-switch-plan.md](./docs/ai-retry-unlimited-switch-plan.md)。
+
+- 配置：`code-insight.ai.retry.unlimited-attempts`（`AI_RETRY_UNLIMITED_ATTEMPTS`，默认 `false`）
+- 打开后：模块层级与文档经 `PipelineAiCaller` 的重试不再受 `hierarchy/doc-max-attempts` 限制
+- 仍立即停止：用户终止、Token 额度等 non-retryable；不限次退避封顶 `unlimited-backoff-cap-ms`（默认 60s）
+- 日志分母：`attempt=N/unlimited`；任务 pipeline 打印 `unlimitedAttempts=`
+- 测试：`PipelineAiCallerTest` / `AiRetryPropertiesTest`
+
+### Dev 防污染共享库（无孤儿 + 本机 IP 任务）
+
+详见 [docs/dev-shared-db-safety-plan.md](./docs/dev-shared-db-safety-plan.md)。
+
+- **dev 禁用孤儿接管**：`TaskOrphanReclaimScheduler` 启动/周期扫与草稿 REGENERATING 清理一律跳过
+- **任务 `is_dev`**：创建时按后端 `env.isDev()` 落库；本地 dev 只跑 `is_dev=true`（无 `client_ip` 列）
+- **操作日志 IP**：本机可辨识 IP（非回环 peer / loopback 回落网卡）；不再写死 `127.0.0.1` / `scheduler`
+- **启动 WARN**：提醒 DEV 安全模式 + preferredMachineIp / 脱敏 JDBC
+- **测试**：`LocalAddressSetTest` / `DevTaskAffinityTest` / 孤儿 skip / `ClientIpResolverTest` / `OperationLogServiceImplTest`
+
+
+### Git 连通性扫描：分批 + 分层 TTL
+
+详见 [docs/repo-git-check-batch-ttl-plan.md](./docs/repo-git-check-batch-ttl-plan.md)。
+
+- 定时不再每轮全库复查；按 due 选仓：未检测优先、不通 30min、已连通 6h
+- 每轮 `batch-size` + `max-sweep-seconds` 墙钟上限；防重入；游标扫尾
+- 手动测 / 按系统批量仍不受 TTL
+- 测试：`RepoGitCheckTtlTest`
+
+### 文档生成时间 generated_at
+
+详见 [docs/doc-generated-at-plan.md](./docs/doc-generated-at-plan.md)。
+
+- **字段**：`ci_knowledge_draft.generated_at`（正文最后一次 AI/流水线写出时间）
+- **写入**：生成/重跑成功 → `now`；人工编辑不刷新；增量继承从 `module-map.yaml` 的 `generatedAt` 拷回（缺省回退版本 `pushedAt`/`createdDate`）
+- **发布**：组装 `module-map.yaml` 带上 `generatedAt`
+- **UI**：知识复核详情标题区展示「生成时间」
+- **测试**：`ModuleMapGeneratedAtParseTest`
+
+### 文档源码可达性保证
+
+详见 [docs/doc-source-reachability-plan.md](./docs/doc-source-reachability-plan.md)。
+
+- **落表**：`ci_method_function_binding` 写库失败有限重试 + 回读；白名单剔光/无 method_signatures 时 `source=BACKFILL` 回填；尽量固化 `file_path`
+- **取源**：`SourceFileLocator` 多级定位（binding → method_call → entrypoint → 物理查找）；BFS 空则整文件兜底；文档侧再修一次
+- **降级保留**：AI 失败仍 TEMPLATE；主路径尽量消灭「空源码 + source_unreachable」；单篇失败不拖垮整任务
+- **schema**：`file_path` 列；`source` 允许 `BACKFILL`
+- **测试**：`SourceFileLocatorTest`
+
+### 解析静态缓存残留治理（质量优先 / 不降速）
+
+详见 [docs/parse-memory-static-cache-remediation.md](./docs/parse-memory-static-cache-remediation.md)。STG 证实 `AstJavaParser static caches growing: symbolSolver=18 subtypeIndex=18`。
+
+- **入口试跑**：`TrialRunServiceImpl.executeAsyncInternal` 的 `finally` 调用 `TaskParseMemoryService.evict(trialId)`（成功/失败/早退均清）
+- **驱逐硬化**：`AstJavaParserService.evictTaskCaches` 覆盖相对路径与绝对路径 key；路径匹配增加左侧 `/` 边界；删不干净打 WARN + leftover 样例
+- **不做**：运维 HTTP stats/clear-all；不改 SymbolSolver/subtype 语义（避免影响喂给 AI 的质量）；不把 AI/文档再挂回 `parse.concurrency`（避免降速）
+- **已知峰值**：多模块仓按「最近 pom」各建一套 solver，单任务文档生成中途仍可能刷到较高 `symbolSolver` 计数；idle 残留靠试跑/终态 evict 消除
+- **测试**：`TrialRunParseMemoryEvictTest` / `AstJavaParserEvictCacheTest` / `TaskParseMemoryEvictContractTest`
+
+### 拉代码 / 解析三闸与排队态
+
+详见 [docs/pull-parse-concurrency-redesign.md](./docs/pull-parse-concurrency-redesign.md)。
+
+- **三闸独立**：`task.concurrency`（默认 4）/ `pull.concurrency`（默认 1）/ `parse.concurrency`（默认 1，仅 AST + 入口发现）；AI/层级/文档不占 parse 闸
+- **新状态**：`PULL_QUEUED` / `PARSE_QUEUED`（仍占任务槽，等拉/析槽）；另有 `RESUME_QUEUED`（人工断点后续跑排队）
+- **释 parse**：进入 AI 前 `releaseParsePermitAndEvict`；流水线 finally 再 `TaskParseMemoryService.evict`
+
+### 解析内存 P1-A（调用链落库）
+
+详见 [docs/parse-memory-p1a-plan.md](./docs/parse-memory-p1a-plan.md)。
+
+- **A2**：去掉 `persistAstForTask` 内二次 `inheritMethodCalls`（保留 pipeline 唯一 inherit）
+- **A1**：去掉 `persistAstForTask` 外层长 `@Transactional`；batch 失败上抛
+- **A3**：入口发现按 `forEachEdgeLite` 分页轻量读边，禁止全量 `List<MethodCall>` 进堆
+- **未做（后续）**：B1 写完即清 parseCache；B2 SymbolSolver/subtype 降峰值
+
+### Git Clone 健壮性（去 Mock）
+
+详见 [docs/git-clone-robustness-plan.md](./docs/git-clone-robustness-plan.md)。
+
+- 远程 clone 失败 → 任务/试跑失败，**禁止**静默降级为内置 Mock 仓库
+- NAS 瞬时 IO 定向重试（最多 3 次 attempt）；失败留痕 `GIT_CLONE_FAILED`
+
+### 孤儿接管：租约 + 宽限 + 心跳
+
+详见 [docs/orphan-reclaim-lease-heartbeat-design.md](./docs/orphan-reclaim-lease-heartbeat-design.md)。
+
+- 可接管条件：无认领，或「租约过宽限 **且** 认领方心跳已死」；禁止仅租约过期就抢
+- `task-lease-grace-minutes`（默认 10）；本机在飞流水线跳过接管
+
 ### 系统配置：Redis 值缓存，下线 Pub/Sub
 
 详见 [docs/system-config-redis-cache-plan.md](./docs/system-config-redis-cache-plan.md)。

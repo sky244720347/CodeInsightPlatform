@@ -3,6 +3,7 @@ package com.company.codeinsight.modules.task.service;
 import com.company.codeinsight.common.cluster.ClusterInstanceId;
 import com.company.codeinsight.common.cluster.ClusterProperties;
 import com.company.codeinsight.common.cluster.InstanceHeartbeat;
+import com.company.codeinsight.common.config.CodeInsightEnvProperties;
 import com.company.codeinsight.modules.draft.mapper.KnowledgeDraftMapper;
 import com.company.codeinsight.modules.draft.service.DraftService;
 import com.company.codeinsight.modules.log.service.OperationLogService;
@@ -20,6 +21,8 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.lenient;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 @ExtendWith(MockitoExtension.class)
@@ -45,6 +48,8 @@ class TaskOrphanReclaimSchedulerTest {
     private KnowledgeDraftMapper knowledgeDraftMapper;
     @Mock
     private DraftService draftService;
+    @Mock
+    private CodeInsightEnvProperties envProperties;
 
     private TaskOrphanReclaimScheduler scheduler;
 
@@ -60,8 +65,10 @@ class TaskOrphanReclaimSchedulerTest {
                 instanceHeartbeat,
                 operationLogService,
                 knowledgeDraftMapper,
-                draftService);
+                draftService,
+                envProperties);
         lenient().when(clusterProperties.resolveTaskLeaseGraceMinutes()).thenReturn(10);
+        lenient().when(envProperties.isDev()).thenReturn(false);
     }
 
     @Test
@@ -129,5 +136,13 @@ class TaskOrphanReclaimSchedulerTest {
 
         assertTrue(scheduler.isOrphan(task));
         assertEquals("CLAIMED_BY_OTHER_PROCESS", scheduler.describeOrphanReason(task));
+    }
+
+    @Test
+    void dev_reclaimOnce_skipsScan() {
+        when(envProperties.isDev()).thenReturn(true);
+
+        assertEquals(0, scheduler.reclaimOnce("test"));
+        verify(taskMapper, never()).selectList(org.mockito.ArgumentMatchers.any());
     }
 }

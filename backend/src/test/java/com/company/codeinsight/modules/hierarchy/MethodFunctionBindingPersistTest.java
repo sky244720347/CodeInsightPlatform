@@ -126,9 +126,10 @@ public class MethodFunctionBindingPersistTest {
                                JsonNode increment) throws Exception {
         Method m = ModuleHierarchyServiceImpl.class.getDeclaredMethod(
                 "persistMethodBindingsFromIncrement",
-                Long.class, Long.class, EntryPoint.class, JsonNode.class, Map.class);
+                Long.class, Long.class, EntryPoint.class, JsonNode.class, Map.class,
+                com.company.codeinsight.modules.hierarchy.model.ModuleHierarchy.class);
         m.setAccessible(true);
-        m.invoke(hierarchyService, taskId, systemId, entry, increment, new HashMap<>());
+        m.invoke(hierarchyService, taskId, systemId, entry, increment, new HashMap<>(), null);
     }
 
     /**
@@ -240,26 +241,27 @@ public class MethodFunctionBindingPersistTest {
     }
 
     /**
-     * 幻觉拦截：AI 输出与调用图无关的类 → 拒绝落 binding
+     * 幻觉类：交叉校验剔除后程序 BACKFILL 类级锚点，保证 function 表里有行供文档取源再尝试。
      */
     @Test
     public void testRejectsHallucinatedClass() throws Exception {
         seedCallGraph();
 
         EntryPoint entry = buildEntry("com.demo.OrderController");
-        // 任意一个调用图里没有出现过的类
+        // 任意一个调用图里既不作为 caller 也不作为 callee 的类
         JsonNode increment = buildIncrementJson(
                 List.of("com.fake.NonExistentService"),
                 List.of("doSomething()")
         );
         invokePersist(TASK_ID, SYS_ID, entry, increment);
 
-        Assertions.assertTrue(queryBindings("com.fake.NonExistentService").isEmpty(),
-                "调用图里既不作为 caller 也不作为 callee 的类应被拒绝（防 AI 幻觉）");
-        // 整个 task 也不应有 binding
-        Assertions.assertEquals(0, bindingMapper.selectCount(
-                new LambdaQueryWrapper<MethodFunctionBinding>().eq(MethodFunctionBinding::getTaskId, TASK_ID)
-        ));
+        List<MethodFunctionBinding> rows = queryBindings("com.fake.NonExistentService");
+        Assertions.assertEquals(1, rows.size(),
+                "交叉校验剔除后应 BACKFILL 类级锚点，避免 function 空表");
+        Assertions.assertEquals("BACKFILL", rows.get(0).getSource());
+        Assertions.assertEquals(
+                com.company.codeinsight.modules.ai.support.SourceFileLocator.CLASS_ANCHOR_SIGNATURE,
+                rows.get(0).getMethodSignature());
     }
 
     /**
@@ -319,5 +321,40 @@ public class MethodFunctionBindingPersistTest {
         Assertions.assertEquals("createOrder(OrderDTO)", rows.get(0).getMethodSignature());
         Assertions.assertEquals("f00002", rows.get(0).getFunctionNodeId(),
                 "last-wins：保留后出现的 function");
+    }
+
+    /**
+     * AI 输出超长 id（超过 VARCHAR(16)）时，应归一化为 5 位规范 ID 后再落表，不再抛 PSQLException。
+     */
+    @Test
+    public void testNormalizesOversizedAiNodeIdsBeforeInsert() throws Exception {
+        EntryPoint entry = buildEntry("com.demo.OrderController");
+        String json = "{\n" +
+                "  \"modules\": [{\n" +
+                "    \"id\": \"mThisIdIsWayTooLongForVarchar16\",\n" +
+                "    \"module_name\": \"订单模块\",\n" +
+                "    \"sub_modules\": [{\n" +
+                "      \"id\": \"sAlsoFarBeyondSixteenChars\",\n" +
+                "      \"sub_module_name\": \"下单\",\n" +
+                "      \"functions\": [{\n" +
+                "        \"id\": \"fDefinitelyLongerThanSixteen\",\n" +
+                "        \"function_name\": \"创建订单\",\n" +
+                "        \"class_paths\": [\"com.demo.OrderController\"],\n" +
+                "        \"method_signatures\": [\"createOrder(OrderDTO)\"]\n" +
+                "      }]\n" +
+                "    }]\n" +
+                "  }]\n" +
+                "}";
+        invokePersist(TASK_ID, SYS_ID, entry, MAPPER.readTree(json));
+
+        List<MethodFunctionBinding> rows = queryBindings("com.demo.OrderController");
+        Assertions.assertEquals(1, rows.size(), "超长 AI id 归一化后应成功落 binding");
+        MethodFunctionBinding row = rows.get(0);
+        Assertions.assertEquals(5, row.getModuleNodeId().length());
+        Assertions.assertEquals(5, row.getSubModuleNodeId().length());
+        Assertions.assertEquals(5, row.getFunctionNodeId().length());
+        Assertions.assertTrue(row.getModuleNodeId().startsWith("m"));
+        Assertions.assertTrue(row.getSubModuleNodeId().startsWith("s"));
+        Assertions.assertTrue(row.getFunctionNodeId().startsWith("f"));
     }
 }

@@ -14,8 +14,8 @@
 
 | 触发 | 行为 |
 |---|---|
-| 后台定时 | Leader 节点每 **3 分钟**全库探测，有限并发 2～3 |
-| 打开仓库抽屉 | `POST /repositories/batch-test-connection?systemId=` 异步测该系统仓库 |
+| 后台定时 | Leader 每 **3 分钟** tick；**分批 + 分层 TTL**（未检测优先、不通 30min、已连通 6h）；单轮墙钟 ≤120s；防重入。详见 [repo-git-check-batch-ttl-plan.md](./repo-git-check-batch-ttl-plan.md) |
+| 打开仓库抽屉 | `POST /repositories/batch-test-connection?systemId=` 异步测该系统仓库（不受 TTL） |
 | 手动「测试 Git」 | 测完写库，与列表一致 |
 
 前端不周期调用 test-connection，仅读列表字段；抽屉打开期间可轻量轮询列表。
@@ -52,6 +52,10 @@ code-insight:
     git-check-initial-delay-ms: 180000
     git-check-timeout-seconds: 15
     git-check-concurrency: 3
+    git-check-batch-size: 40
+    git-check-max-sweep-seconds: 120
+    git-check-reachable-ttl-ms: 21600000   # 6h
+    git-check-unreachable-ttl-ms: 1800000  # 30min
 ```
 
 ## API

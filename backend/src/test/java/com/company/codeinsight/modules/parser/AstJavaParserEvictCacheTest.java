@@ -20,10 +20,14 @@ public class AstJavaParserEvictCacheTest {
                 "C:/data/workspaces/task_42/src/main/java", 42L));
         Assertions.assertTrue(AstJavaParserService.matchesTaskWorkspacePath(
                 "/var/workspaces/task_42", 42L));
+        Assertions.assertTrue(AstJavaParserService.matchesTaskWorkspacePath(
+                "task_42/a/B.java", 42L));
         Assertions.assertFalse(AstJavaParserService.matchesTaskWorkspacePath(
                 "C:/data/workspaces/task_420/src", 42L));
         Assertions.assertFalse(AstJavaParserService.matchesTaskWorkspacePath(
                 "C:/data/workspaces/task_41/src", 42L));
+        Assertions.assertFalse(AstJavaParserService.matchesTaskWorkspacePath(
+                "C:/data/foo_task_42/src", 42L));
     }
 
     @Test
@@ -64,6 +68,48 @@ public class AstJavaParserEvictCacheTest {
 
         // cleanup static pollution for other tests
         svc.evictTaskCaches(8L);
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void evictTaskCaches_removesAbsolutePathParseKeys() throws Exception {
+        AstJavaParserService svc = new AstJavaParserService();
+        Field parseField = AstJavaParserService.class.getDeclaredField("parseCache");
+        parseField.setAccessible(true);
+        ConcurrentHashMap<String, Object> parseCache =
+                (ConcurrentHashMap<String, Object>) parseField.get(svc);
+
+        String abs7 = new File("workspaces/task_7/mod/Foo.java").getAbsolutePath().replace('\\', '/');
+        String abs8 = new File("workspaces/task_8/mod/Foo.java").getAbsolutePath().replace('\\', '/');
+        parseCache.put(abs7, new Object());
+        parseCache.put(abs8, new Object());
+
+        Field solverField = AstJavaParserService.class.getDeclaredField("SYMBOL_SOLVER_CACHE");
+        solverField.setAccessible(true);
+        ConcurrentHashMap<String, Object> solverCache =
+                (ConcurrentHashMap<String, Object>) solverField.get(null);
+        String moduleRoot7 = new File("workspaces/task_7/mod-a").getAbsolutePath();
+        String moduleRoot7b = new File("workspaces/task_7/mod-b").getAbsolutePath();
+        solverCache.put(moduleRoot7, new Object());
+        solverCache.put(moduleRoot7b, new Object());
+
+        Field subtypeField = AstJavaParserService.class.getDeclaredField("SUBTYPE_INDEX_CACHE");
+        subtypeField.setAccessible(true);
+        ConcurrentHashMap<String, Map<String, Object>> subtypeCache =
+                (ConcurrentHashMap<String, Map<String, Object>>) subtypeField.get(null);
+        subtypeCache.put(moduleRoot7, Map.of());
+        subtypeCache.put(moduleRoot7b, Map.of());
+
+        svc.evictTaskCaches(7L);
+
+        Assertions.assertFalse(parseCache.containsKey(abs7));
+        Assertions.assertTrue(parseCache.containsKey(abs8));
+        Assertions.assertFalse(solverCache.containsKey(moduleRoot7));
+        Assertions.assertFalse(solverCache.containsKey(moduleRoot7b));
+        Assertions.assertFalse(subtypeCache.containsKey(moduleRoot7));
+        Assertions.assertFalse(subtypeCache.containsKey(moduleRoot7b));
+
+        parseCache.remove(abs8);
     }
 
     @Test

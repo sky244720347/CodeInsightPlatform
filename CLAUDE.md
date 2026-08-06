@@ -46,7 +46,7 @@ cd backend
 mvn spring-boot:run                          # http://localhost:8080/api
 mvn -DskipTests compile                      # 仅编译（沙盒无 PG 时可用）
 mvn test-compile                             # 含测试代码编译
-mvn clean test                               # 全量测试（当前 27 个测试类，JUnit 5，需本地 PG + Redis 可达）
+mvn clean test                               # 全量测试（JUnit 5，部分单测需本地 PG + Redis；纯单测类可 -Dtest=… 单独跑）
 mvn -Dtest=ClassNameTest test                # 跑单个测试类
 mvn -Dtest=ClassNameTest#methodName test     # 跑单个测试方法
 mvn -DskipTests clean package                # 打包 JAR
@@ -110,25 +110,41 @@ flowchart TD
 ```
 DRAFT
   └─> PENDING
-        └─> PULLING_CODE
-              └─> PARSING_CODE
-                    └─> ENTRYPOINT_DISCOVERY（入口识别落表）
-                          ├─> ENTRYPOINT_REVIEW（requireEntrypointReview=true 时的断点）
-                          └─> AI_ANALYZING（跳过入口复核时）
-                                ├─> MODULE_HIERARCHY
-                                │     └─> MODULE_HIERARCHY_REVIEW (requireHierarchyReview=true 时的断点)
-                                │           └─> GENERATING_DOC
-                                └─> GENERATING_DOC (requireHierarchyReview=false 时跳过复核断点)
-                                      └─> PENDING_REVIEW
-                                            └─> REVIEWING
-                                                  └─> CONFIRMED
-                                                        └─> PUSHING
-                                                              └─> PUSHED
+        └─> PULL_QUEUED          （已占 task 槽，等 pull.concurrency）
+              └─> PULLING_CODE
+                    └─> PARSE_QUEUED       （已占 task 槽，等 parse.concurrency）
+                          └─> PARSING_CODE → 入口识别落表
+                                ├─> ENTRYPOINT_REVIEW（requireEntrypointReview=true）
+                                └─> AI_ANALYZING（跳过入口复核；不占 parse 闸）
+                                      ├─> MODULE_HIERARCHY
+                                      │     └─> MODULE_HIERARCHY_REVIEW（requireHierarchyReview=true）
+                                      │           └─> [INCREMENTAL: BASELINE_DOC_INHERIT →] GENERATING_DOC
+                                      └─> [INCREMENTAL: BASELINE_DOC_INHERIT →] GENERATING_DOC
+                                            └─> PENDING_REVIEW → REVIEWING → CONFIRMED → PUSHING → PUSHED
 ```
 
-`SPLITTING_TASK` 已废弃（历史任务可经状态机恢复流转）；`ci_chunk` 表已从 schema 移除，已有库需手动 `DROP TABLE` 清理。
+人工断点通过后可经 `RESUME_QUEUED` 再抢任务槽续跑。`SPLITTING_TASK` 已废弃；`ci_chunk` / `modules/chunk` 已移除（已有库需手动 `DROP TABLE ci_chunk`）。
 
-终止状态：`FAILED` / `CANCELLED` / `ARCHIVED`。`PUSHED` 为终态。状态机禁止非法跳转；纠错任务（`trigger_source=KNOWLEDGE_REMEDIATION`）按 `resume_from` 字段跳到 `AI_ANALYZING` / `GENERATING_DOC`。`ci_task.require_hierarchy_review` 默认 `true`；关闭后 `MODULE_HIERARCHY` 直接进入 `GENERATING_DOC`，跳过人工断点。
+终止状态：`FAILED` / `CANCELLED` / `ARCHIVED`。`PUSHED` 为终态。状态机禁止非法跳转；纠错任务（`trigger_source=KNOWLEDGE_REMEDIATION`）按 `resume_from` 字段跳到 `AI_ANALYZING` / `GENERATING_DOC`。`ci_task.require_hierarchy_review` 默认 `true`；关闭后跳过层级人工断点。
+
+### 定时 commit 轮询扫描
+
+`ScanWindowScheduler`（Leader：`ci:leader:scan-commit-poll`）按 cron 探测远端 HEAD，与 `ci_repository.last_commit_id`（PUSHED 基线）比对后下发任务：无基线 → INITIAL；有变动 → INCREMENTAL；有基线无变动时由 `force-full-on-unchanged` 决定是否仍 INITIAL。`global-poll-enabled=true` 扫全部远程仓；`daily-coverage-enabled` 用 Redis 按自然日记录已探测仓，超时/不确定不记完成并重试。每次探测写流水表 `ci_scan_probe_record`；编排页 `/basic/orchestration` 调 `/scan/orchestration/*` 看进度与流水、配 cron（无扫描窗口 UI）。配置仅文件/阿波罗（`code-insight.scan.*` / `SCAN_*`）。自动任务 `trigger_source=SCHEDULED`，跳过入口/层级复核，创建即入 `PENDING`。详见 [docs/scheduled-commit-poll-scan-plan.md](./docs/scheduled-commit-poll-scan-plan.md)、[docs/scan-orchestration-ui-plan.md](./docs/scan-orchestration-ui-plan.md)。
+
+### 仓库类型 / 技术栈探测
+
+`RepoStackProbeScheduler` **仅 Leader** 执行：先 COUNT 待探真空仓（可达或 URL `*_db`）；为 0 则写 Redis `ci:stack-probe:next-run-at` 拉长调度；非 0 则整轮锁内串行多批，NAS 目录 `stack_probe_run_{runId}/` 整轮结束统一删除。配置 `code-insight.repo.stack-probe-*`。详见 [docs/repo-stack-probe-plan.md](./docs/repo-stack-probe-plan.md)。
+
+### 本机三闸与解析内存
+
+| 配置 | 默认 | 维度 | 范围 |
+| --- | --- | --- | --- |
+| `task.concurrency` | 4 | 本机 | 流水线执行槽（排队态仍占用） |
+| `pull.concurrency` | 1 | 本机 | `pullAndScan` |
+| `parse.concurrency` | 1 | 本机 | 仅 AST + 入口发现；**不含** AI/层级/文档 |
+| `ai.concurrency` | （系统配置） | 集群 | LLM 调用 |
+
+解析侧无界缓存：`AstJavaParserService` 的 `parseCache` + 静态 `SYMBOL_SOLVER_CACHE` / `SUBTYPE_INDEX_CACHE`。统一经 `TaskParseMemoryService.evict(taskId)` 释放——正式任务在释 parse / 流水线 finally；**入口试跑**在 `TrialRunServiceImpl` finally（见 [docs/parse-memory-static-cache-remediation.md](./docs/parse-memory-static-cache-remediation.md)）。P1-A（去双 inherit、拆长事务、入口发现轻量分页读边）见 [docs/parse-memory-p1a-plan.md](./docs/parse-memory-p1a-plan.md)。多模块仓按最近 pom 各建一套 solver 会造成峰值告警，属已知现象；勿为压峰值改解析语义除非产品接受产出差异。
 
 ### 增量扫描（INCREMENTAL 任务）
 
@@ -203,11 +219,12 @@ DRAFT
 
 集群是否开启由 `CODE_INSIGHT_ENV`（`code-insight.env`）推导：`dev` 单机，非 `dev` 一律集群（单节点亦可）。已删除独立开关 `CLUSTER_ENABLED`。行为细节见 [docs/cluster-shared-storage-design.md](./docs/cluster-shared-storage-design.md) 与 [docs/cluster-readiness.md](./docs/cluster-readiness.md)：
 
-- Leader 选举：`ci:leader:task-dispatcher` / `ci:leader:schedule-executor`。
+- Leader 选举：`ci:leader:repo-git-check` / `ci:leader:scan-commit-poll` 等（任务队列 `TaskQueueDispatcher` 为多节点 SKIP LOCKED，不依赖 Leader）。
 - 任务认领：`SELECT … FOR UPDATE SKIP LOCKED` + `claimed_by` / `lease_until` 预留 `PENDING` 行。
 - Redis 并发：全局 `ci:permits:task:global` + 每系统 `ci:permits:task:sys:{id}`。
-- AI 并发：JVM `Semaphore` → Redis Set `ci:permits:ai:global`；系统配置值缓存 Redis `ci:config:kv:*`（读穿 PG、写后 DEL，无 Pub/Sub）。
-- 共享存储：所有节点挂载同一 `runtimeRoot`（含 data/ 与 workspaces/）与 `releasesRoot`（`EnvStorageResolver` 统一解析；详见 [docs/cluster-storage-runtime-root-plan.md](./docs/cluster-storage-runtime-root-plan.md)）。
+- AI 并发：JVM `Semaphore` → Redis Set `ci:permits:ai:global`；系统配置值缓存 Redis `ci:config:kv:*`（读穿 PG、写后 DEL，**无 Pub/Sub**）。
+- 孤儿接管：`TaskOrphanReclaimScheduler` 仅在「无认领」或「租约过宽限且认领方心跳已死」时接管（见 [docs/orphan-reclaim-lease-heartbeat-design.md](./docs/orphan-reclaim-lease-heartbeat-design.md)）；**`CODE_INSIGHT_ENV=dev` 整段禁用**（见 [docs/dev-shared-db-safety-plan.md](./docs/dev-shared-db-safety-plan.md)）。
+- 共享存储：所有节点挂载同一 `runtimeRoot`（含 data/ 与 workspaces/）与 `releasesRoot`（`EnvStorageResolver` 统一解析；详见 [docs/cluster-storage-runtime-root-plan.md](./docs/cluster-storage-runtime-root-plan.md)）。远程 Git clone 失败禁止 Mock 降级（见 [docs/git-clone-robustness-plan.md](./docs/git-clone-robustness-plan.md)）。
 
 ### 存储边界（不要把正文塞进数据库）
 

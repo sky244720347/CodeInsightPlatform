@@ -41,9 +41,11 @@ class PipelineAiCallerTest {
 
     @BeforeEach
     void setUp() {
+        lenient().when(retryProperties.isUnlimitedAttempts()).thenReturn(false);
         lenient().when(retryProperties.resolveMaxAttempts(any())).thenReturn(3);
         lenient().when(retryProperties.getBackoffMs()).thenReturn(0L);
         lenient().when(retryProperties.getConcurrencyBackoffMs()).thenReturn(0L);
+        lenient().when(retryProperties.resolveBackoffWaitMs(anyInt(), anyBoolean())).thenReturn(0L);
         lenient().when(cancellationRegistry.isCancelled(any())).thenReturn(false);
     }
 
@@ -294,5 +296,62 @@ class PipelineAiCallerTest {
         ));
 
         verify(aiSummaryService, times(1)).summarizeWithPrompt(eq(78L), anyString(), anyString(), any());
+    }
+
+    @Test
+    void unlimitedAttempts_recoversAfterExceedingConfiguredMax() {
+        when(retryProperties.isUnlimitedAttempts()).thenReturn(true);
+        when(retryProperties.resolveMaxAttempts(any())).thenReturn(3);
+        when(aiSummaryService.summarizeWithPrompt(eq(90L), anyString(), anyString(), any()))
+                .thenReturn("{}")
+                .thenReturn("{}")
+                .thenReturn("{}")
+                .thenReturn("{}")
+                .thenReturn("{\"modules\":[{\"id\":\"m1\"}]}");
+
+        String result = pipelineAiCaller.callWithRetry(
+                90L,
+                "MODULE_HIERARCHY",
+                "com.example.UnlimitedController",
+                "prompt",
+                "test-model",
+                new AiSummaryService.AiCallMeta(),
+                response -> {
+                    if (!StringUtils.hasText(response) || "{}".equals(response.trim())) {
+                        return PipelineAiCaller.ValidationResult.fail("empty");
+                    }
+                    return PipelineAiCaller.ValidationResult.ok(response);
+                },
+                null
+        );
+
+        assertEquals("{\"modules\":[{\"id\":\"m1\"}]}", result);
+        verify(aiSummaryService, times(5)).summarizeWithPrompt(eq(90L), anyString(), anyString(), any());
+        verify(execLog, atLeastOnce()).log(eq(90L), argThat(msg ->
+                msg.contains("[AI-RETRY]") && msg.contains("/unlimited")));
+        verify(execLog).log(eq(90L), argThat(msg ->
+                msg.contains("[AI-OK]") && msg.contains("/unlimited")));
+    }
+
+    @Test
+    void unlimitedAttempts_stillStopsOnQuota() {
+        when(retryProperties.isUnlimitedAttempts()).thenReturn(true);
+        when(aiSummaryService.summarizeWithPrompt(eq(91L), anyString(), anyString(), any()))
+                .thenThrow(new BusinessException("Token 消耗额度超限"));
+
+        String result = pipelineAiCaller.callWithRetry(
+                91L,
+                "FUNCTION_DOC",
+                "文档",
+                "prompt",
+                "test-model",
+                new AiSummaryService.AiCallMeta(),
+                response -> PipelineAiCaller.ValidationResult.ok(response),
+                null
+        );
+
+        assertEquals("{}", result);
+        verify(aiSummaryService, times(1)).summarizeWithPrompt(eq(91L), anyString(), anyString(), any());
+        verify(execLog).log(eq(91L), argThat(msg -> msg.contains("non-retryable")));
     }
 }

@@ -44,6 +44,8 @@ code-insight:
       hierarchy-max-attempts: ${AI_RETRY_HIERARCHY_MAX_ATTEMPTS:3}
       doc-max-attempts: ${AI_RETRY_DOC_MAX_ATTEMPTS:5}
       backoff-ms: ${AI_RETRY_BACKOFF_MS:1000}
+      unlimited-attempts: ${AI_RETRY_UNLIMITED_ATTEMPTS:false}
+      unlimited-backoff-cap-ms: ${AI_RETRY_UNLIMITED_BACKOFF_CAP_MS:60000}
     doc:
       parallelism: ${AI_DOC_PARALLELISM:4}
       acquire-wait-seconds: ${AI_DOC_ACQUIRE_WAIT_SECONDS:1800}

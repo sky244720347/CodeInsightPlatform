@@ -8,18 +8,19 @@
 
 ## 当前状态与验证
 
-第一阶段 MVP 任务清单已完成，覆盖系统、仓库、提示词、任务、扫描解析、切片、AI/Mock AI、草稿、知识版本、推送、Token 与日志模块。第二阶段已完成登录认证（UM 账号 + 平安令牌）、系统/代码库软删除与聚合指标、模块层级人工复核断点，以及基于 Git Diff 的增量扫描链路。第三阶段（v0.1.5–v0.1.9）已落地：分布式 / 集群就绪、扫描窗口与定时任务、提示词绑定仓库 + 扫描配置试跑、知识查看（入口 / 层级 / 文档）三页拆分 + 纠错重跑 + NAS 发布仓库、业务知识维护、增量任务门禁 + 推送 merge（不丢模块）、方法→功能反向绑定表，以及通过 `IncrementalImpactAnalyzer` + `MethodCallReverseGraphService` 实现的「非入口类变更 → 反向 BFS 追溯入口」业务语义判定。
+第一阶段 MVP 任务清单已完成，覆盖系统、仓库、提示词、任务、扫描解析、AI/Mock AI、草稿、知识版本、推送、Token 与日志模块。第二阶段已完成登录认证（UM 账号 + 平安令牌）、系统/代码库软删除与聚合指标、模块层级人工复核断点，以及基于 Git Diff 的增量扫描链路。第三阶段（v0.1.5–v0.1.9）已落地：分布式 / 集群就绪、扫描窗口与定时任务、提示词绑定仓库 + 扫描配置试跑、知识查看（入口 / 层级 / 文档）三页拆分 + 纠错重跑 + NAS 发布仓库、业务知识维护、增量任务门禁 + 推送 merge（不丢模块）、方法→功能反向绑定表，以及通过 `IncrementalImpactAnalyzer` + `MethodCallReverseGraphService` 实现的「非入口类变更 → 反向 BFS 追溯入口」业务语义判定。
 
-截至 2026-07-03 的可复现验证结果：
+近期（Unreleased）已落地：本机拉/析三闸（`task` / `pull` / `parse.concurrency`）与 `PULL_QUEUED` / `PARSE_QUEUED` 排队态、解析内存 P1-A（拆长事务 / 去双 inherit / 入口发现轻量分页读边）、解析静态缓存按任务/试跑驱逐、远程 Git clone 失败禁止 Mock、孤儿接管（租约宽限 + 心跳）。详见 [CHANGELOG.md](./CHANGELOG.md) `[Unreleased]`。
+
+本地验证基线（随迭代更新；完整清单以 CI / 本地复跑为准）：
 
 | 验证项 | 结果 | 说明 |
 | --- | --- | --- |
-| `npm run lint` | 通过 | ESLint 无错误 |
-| `npm run build` | 通过 | Vite 构建成功；存在主包超过 500 kB 的非阻断告警 |
+| `npm run lint` / `npm run build` | 通过 | Vite 构建成功；存在主包超过 500 kB 的非阻断告警 |
 | `java -version` | 通过 | Java 17 |
-| `mvn -DskipTests compile` | 通过 | 后端 22 个模块全部编译通过 |
-| `mvn test-compile` | 通过 | 测试类全部编译通过（含 v0.1.9 新增的 `MethodCallReverseGraphServiceTest` / `RepositoryPublishServiceRollbackTest` / `TaskQueueDispatcherRemediationTest` / `TaskStateMachineRemediationTransitTest` 等） |
-| `mvn test` | 受限 | 需本地 PostgreSQL + Redis 可达（沙盒环境无 PG，扫描器单测启动时会因 DataSource 失败） |
+| `mvn -DskipTests compile` / `mvn test-compile` | 通过 | 后端 21 个领域模块；测试源可编译 |
+| 解析缓存相关单测 | 通过 | `AstJavaParserEvictCacheTest` / `TrialRunParseMemoryEvictTest` / `TaskParseMemoryEvictContractTest` 等 |
+| `mvn test` | 受限 | 部分集成测需本地 PostgreSQL + Redis 可达 |
 | `mvn clean package` | 受限 | 运行中的后端 JAR 被 Windows 锁定时 `clean` 无法删除旧产物，需先停服 |
 
 这里的"完成"指 MVP 功能和本地验收基线完成，并不等于生产环境开箱即用。生产部署前仍需补齐正式身份认证与授权、密钥托管、真实模型服务、远程 Git 权限、基础设施运维配置和前端代码分包。详细迭代记录见 [CHANGELOG.md](./CHANGELOG.md)。
@@ -60,10 +61,11 @@ AI 只负责归纳和建议。模块 ID、类路径绑定、Schema 校验、状�
 - **业务知识维护**（v0.1.8）：在系统层沉淀业务术语 / 规则 / 合规口径，与代码知识统一索引。
 - **提示词**：模板、版本、复制、启停、变量替换、试跑，按 `MODULARIZE` / `DOCUMENT_GENERATION` 分类；作用域支持系统级 / 仓库级，任务创建按「任务 → 仓库 → 系统」回退。
 - **任务引擎**：初始化 / 增量任务、手动 / 定时调度、状态机、进度、重试、终止、执行日志、执行日志实时刷新；纠错任务按 `resume_from` 跳到指定阶段。
-- **扫描解析**：JGit 拉取、文件快照、Java 类型/路由/方法/异常/表与基础调用关系解析；扫描配置可在仓库 / 任务独立覆盖，并提供「试跑」入口（不创建正式任务）。
-- **增量扫描（v0.1.4 起 / v0.1.9 升级）**：基于 `git diff <lastCommit>..HEAD` 识别变更/删除文件；下游 AST、切片、模块层级、草稿生成全链路按 `IncrementalContext` 跳过未变文件；v0.1.9 新增 `IncrementalImpactAnalyzer` + `MethodCallReverseGraphService`（反向 BFS 深度上限 15），让「非入口类变更」也能精准命中其入口所属模块，文档阶段重生成范围 = `moduleTouchedByChange ∪ docRetargetModuleIds`。
-- **增量任务门禁 + 推送 merge**（v0.1.9）：仓库必须有 PUSHED 版本 + `lastCommitId` 非空，否则拒绝创建；推送时以 `last_published_version_id` 对应的 NAS `releases` 为权威来源，与 `applyFromTask` 做 merge，不丢模块，删除文件语义同步剔除。
-- **切片与 AI**：文件、类、方法和 Diff 切片，Token 预估、额度阻断、Mock/真实模型适配；`PipelineAiCaller` + `AiRetryProperties` 封装通用重试与上下文清理。
+- **扫描解析**：JGit 拉取、文件快照、Java AST（SymbolSolver + subtype 索引）解析类型/路由/方法/调用链/SQL；扫描配置可在仓库 / 任务独立覆盖，并提供入口「试跑」（不创建正式任务；结束后驱逐解析缓存）。远程 clone 失败直接失败，不再 Mock。
+- **本机三闸**：`task.concurrency`（默认 4）/ `pull.concurrency`（默认 1）/ `parse.concurrency`（默认 1，仅 AST+入口发现）；AI/层级/文档走 `ai.concurrency`，不占 parse 闸。见 [docs/pull-parse-concurrency-redesign.md](./docs/pull-parse-concurrency-redesign.md)。
+- **增量扫描（v0.1.4 起 / v0.1.9 升级）**：基于 `git diff <lastCommit>..HEAD` 识别变更/删除文件；下游 AST、模块层级、草稿生成按 `IncrementalContext` 处理变更；`IncrementalImpactAnalyzer` + `MethodCallReverseGraphService`（反向 BFS 深度上限 15）让「非入口类变更」命中入口所属模块，文档重生成范围 = `moduleTouchedByChange ∪ docRetargetModuleIds`。
+- **增量任务门禁 + 推送 merge**（v0.1.9）：仓库必须有 PUSHED 版本 + `lastCommitId` 非空，否则拒绝创建；运行期条件不满足时 **FAIL**（不降级全量）；推送时以 `last_published_version_id` 对应 NAS `releases` 为权威来源 merge，不丢模块。
+- **AI 归纳与文档**：Token 预估、额度阻断、Mock/真实模型适配；`PipelineAiCaller` + `AiRetryProperties` 封装通用重试；文档本机并行受 `AI_DOC_PARALLELISM` 等配置约束。
 - **方法→功能反向绑定**（v0.1.9）：新表 `ci_method_function_binding` 规避 `function.method_signatures` 回填污染；模块说明文档的功能级提取以此为权威源。
 - **模块层级人工复核**：AI 提炼后任务停在 `MODULE_HIERARCHY_REVIEW` 状态，前端在 `/tasks/hierarchy-review` 页签中编辑后提交，流水线继续进入草稿生成。可在创建任务时通过 `requireHierarchyReview=false` 跳过该断点。
 - **草稿复核**：三栏编辑区、来源行号、待确认项、修订记录、意见、自动保存和编辑锁；从任务详情「打开复核」按钮直达 `?systemId=&taskId=`。
@@ -72,8 +74,9 @@ AI 只负责归纳和建议。模块 ID、类路径绑定、Schema 校验、状�
 - **知识输出**：版本元数据、标准概述文件、推送前校验、Git 提交和 ZIP 导出；仓库级已发布快照写在 `ci_repository_publish_snapshot`，生效版本指针 `last_published_version_id` 由推送成功 / 回滚更新。
 - **审计**：Token 明细与趋势、额度策略、操作日志和异常追踪。
 - **AI 模型管理**：自定义模型、预设模型、指标与试跑。
-- **扫描窗口 + 定时调度**（v0.1.5）：`scanwindow` 模块定义允许扫描的时间窗口；`ScheduleExecutor` 仅在窗口内由 Leader 节点拉起；前端 `ScanWindowHeatmap` 可视化。
-- **集群 / 分布式就绪**（v0.1.5+）：由 `CODE_INSIGHT_ENV` 推导（`dev` 单机，非 `dev` 一律集群；已删除 `CLUSTER_ENABLED`）；Leader 选举（`ci:leader:*`）、`SELECT … FOR UPDATE SKIP LOCKED` 任务认领、Redis Set `ci:permits:*` 并发控制、系统配置 Redis 值缓存（`ci:config:kv:*`，无 Pub/Sub）、共享存储卷。详见 [docs/cluster-shared-storage-design.md](./docs/cluster-shared-storage-design.md)。
+- **扫描窗口 + 定时 commit 轮询**（见 [docs/scheduled-commit-poll-scan-plan.md](./docs/scheduled-commit-poll-scan-plan.md)）：`ScanWindowScheduler` 比对远端 HEAD 与发布基线后下发 INITIAL/INCREMENTAL；全局轮询/验证全量仅配置文件或阿波罗。
+- **集群 / 分布式就绪**（v0.1.5+）：由 `CODE_INSIGHT_ENV` 推导（`dev` 单机，非 `dev` 一律集群；已删除 `CLUSTER_ENABLED`）；Leader 选举（`ci:leader:*`）、`SELECT … FOR UPDATE SKIP LOCKED` 任务认领、Redis Set `ci:permits:*` 并发控制、系统配置 Redis 值缓存（`ci:config:kv:*`，无 Pub/Sub）、共享 `runtimeRoot` + `releasesRoot`、孤儿接管（租约宽限 + 心跳）。详见 [docs/cluster-shared-storage-design.md](./docs/cluster-shared-storage-design.md)。
+- **Dev 防污染共享库**：`CODE_INSIGHT_ENV=dev` 时禁用孤儿接管；任务落 `is_dev`，本地只跑 `is_dev=true`；操作日志写本机可辨识 IP（loopback 回落网卡）。详见 [docs/dev-shared-db-safety-plan.md](./docs/dev-shared-db-safety-plan.md)。
 
 ## 快速开始
 
@@ -131,10 +134,13 @@ npm run dev
 | `DB_NAME` / `DB_USER` | `code_insight` / `postgres` | 数据库与用户 |
 | `DB_PASSWORD` | `postgres` | 本地默认密码，生产环境必须覆盖 |
 | `REDIS_HOST` / `REDIS_PORT` / `REDIS_PASSWORD` | `localhost` / `6379` / 空 | Redis 连接配置 |
-| `STORAGE_LOCAL_PATH` | `./storage` | MVP 本地正文存储目录 |
+| `CODE_INSIGHT_ENV` | `dev` | `dev` 单机写死 `./storage` + 防污染兜底（无孤儿/仅本机 IP 任务）；非 `dev` 一律集群调度 |
+| `STORAGE_RUNTIME_ROOT` | （非 dev 必填） | 运行数据 + workspaces 根；已取代旧的 `STORAGE_DATA_ROOT` / `STORAGE_WORKSPACE_ROOT` |
+| `STORAGE_RELEASES_ROOT` | （非 dev 必填） | 已发布知识 NAS 根 |
 | `LLM_MOCK` | `true` | 是否启用本地 Mock AI；切真实模型时设为 `false` 并填 `LLM_API_KEY` |
 | `LLM_API_KEY` | 空 | 真实模型服务密钥 |
 | `LLM_API_URL` / `LLM_MODEL_NAME` | 见 `.env.example` | 模型服务地址与模型名 |
+| `AI_DOC_PARALLELISM` 等 | 见 `.env.example` | 文档本机并行与等 AI 槽参数 |
 
 ## 开发与验证
 
@@ -186,10 +192,9 @@ CodeInsightPlatform/
 |   |   |   +-- prompt/         提示词模板（系统 / 仓库 / 任务三级绑定）
 |   |   |   +-- task/           知识构建任务 + 状态机 + 增量影响查询
 |   |   |   +-- scanner/        拉取 + 扫描 + 增量 diff（pullAndScan / ScanResult / IncrementalContext）
-|   |   |   +-- scanwindow/     扫描窗口 + 定时调度
-|   |   |   +-- parser/         Java AST 解析
+|   |   |   +-- scanwindow/     扫描窗口 + 定时 commit 轮询
+|   |   |   +-- parser/         Java AST 解析 + TaskParseMemoryService
 |   |   |   +-- callchain/      方法调用链 + 反向 BFS + 增量影响分析
-|   |   |   +-- chunk/          代码切片
 |   |   |   +-- entrypoint/     入口识别（Controller / JOB / MQ）+ 试跑
 |   |   |   +-- hierarchy/      模块层级 + 人工复核落表
 |   |   |   +-- ai/             AI 归纳 + 草稿生成 + 通用调用
@@ -200,7 +205,7 @@ CodeInsightPlatform/
 |   |   |   +-- auth/           登录认证
 |   |   |   +-- token/          Token 审计
 |   |   |   +-- log/            操作日志
-|   |   |   +-- quotacontrol/   额度策略
+|   |   |   +-- quotacontrol/   额度策略 + 流量管控配置
 |   |   |   +-- dashboard/      工作台聚合
 |   |   |   +-- businessknowledge/ 业务知识维护
 |   +-- src/main/resources/
@@ -208,7 +213,7 @@ CodeInsightPlatform/
 |   |   +-- application-local.yml
 |   |   +-- application-local.properties
 |   |   +-- analyze_prompt.md
-|   |   +-- db/schema.sql       34 张表，幂等初始化
+|   |   +-- db/schema.sql       幂等初始化（表数量随迭代增减）
 |   +-- src/test/java/...           测试类（JUnit 5）
 +-- frontend/
 |   +-- package.json
@@ -228,19 +233,12 @@ CodeInsightPlatform/
 |   |   |   +-- token-audit/      Token 审计
 |   |   |   +-- logs/             操作日志
 |   |   |   +-- schedules/        定时计划
-|   |   |   +-- basic/            ScanWindowHeatmap / orchestration
+|   |   |   +-- basic/            ScanWindowHeatmap / orchestration（含流量管控）
 |   |   +-- router/        createHashRouter 路由
 |   |   +-- stores/        Zustand 状态（含 useAuthStore）
 |   |   +-- types/         与后端 DTO 对齐的 TS 类型
 |   |   +-- utils/         draftHierarchyTree / scanConfigDefaults / treeExpandKeys / pageTitle
-+-- docs/
-|   +-- cluster-readiness.md
-|   +-- incremental-hierarchy-doc-plan.md
-|   +-- incremental-release-merge-plan.md
-|   +-- knowledge-browse-dual-view-plan.md
-|   +-- knowledge-query-split-plan.md
-|   +-- method-binding-reverse-index.md
-|   +-- roadmap-8-9-plan.md
++-- docs/               设计与实施方案（含 pull-parse / parse-memory / cluster / incremental 等）
 +-- CHANGELOG.md
 +-- CLAUDE.md
 +-- README.md
@@ -252,26 +250,26 @@ CodeInsightPlatform/
 ```text
 DRAFT
   └─> PENDING
-        └─> PULLING_CODE
-              └─> PARSING_CODE
-                    └─> ENTRYPOINT_DISCOVERY / ENTRYPOINT_REVIEW?
-                          └─> AI_ANALYZING
-                                ├─> MODULE_HIERARCHY
-                                │     └─> MODULE_HIERARCHY_REVIEW (requireHierarchyReview=true 时的断点)
-                                │           └─> GENERATING_DOC
-                                └─> GENERATING_DOC (requireHierarchyReview=false 时跳过复核断点)
-                                      └─> PENDING_REVIEW
-                                            └─> REVIEWING
-                                                  └─> CONFIRMED
-                                                        └─> PUSHING
-                                                              └─> PUSHED
+        └─> PULL_QUEUED            （已占 task 槽，等 pull.concurrency）
+              └─> PULLING_CODE
+                    └─> PARSE_QUEUED         （已占 task 槽，等 parse.concurrency）
+                          └─> PARSING_CODE → 入口识别落表
+                                ├─> ENTRYPOINT_REVIEW（requireEntrypointReview=true）
+                                └─> AI_ANALYZING（不占 parse 闸）
+                                      ├─> MODULE_HIERARCHY
+                                      │     └─> MODULE_HIERARCHY_REVIEW（requireHierarchyReview=true）
+                                      │           └─> [INCREMENTAL: BASELINE_DOC_INHERIT →] GENERATING_DOC
+                                      └─> [INCREMENTAL: BASELINE_DOC_INHERIT →] GENERATING_DOC
+                                            └─> PENDING_REVIEW → REVIEWING → CONFIRMED → PUSHING → PUSHED
 
 终止态：FAILED / CANCELLED / ARCHIVED
+人工断点后续跑可经 RESUME_QUEUED 再抢任务槽
 ```
 
 - 状态机禁止非法跳转；任何状态变更都需在 `ci_operation_log` 留痕。
-- `requireHierarchyReview` 在 `ci_task` 上默认 `true`；关闭后 `MODULE_HIERARCHY` 直接进入 `GENERATING_DOC`。
-- `MODULE_HIERARCHY_REVIEW` 是人工断点：流水线在 `AI_ANALYZING → MODULE_HIERARCHY` 完成后停在 `MODULE_HIERARCHY_REVIEW`，等待用户在 `/tasks/hierarchy-review` 提交后再继续。
+- `requireHierarchyReview` 在 `ci_task` 上默认 `true`；关闭后跳过层级人工断点。
+- `PULL_QUEUED` / `PARSE_QUEUED` 仍占用 `task.concurrency`，避免 PENDING 插队抢拉导致队列雪崩。
+- 解析缓存经 `TaskParseMemoryService.evict` 在释 parse / 流水线结束 / 入口试跑 finally 释放。
 
 ## 增量扫描（INCREMENTAL 任务）
 
@@ -280,22 +278,16 @@ DRAFT
 | 阶段 | 增量行为 | 跳过/保留 |
 | --- | --- | --- |
 | `pullAndScan` | 计算 `changedPaths` / `deletedPaths` | 仅重写变更文件 snapshot；删除被删文件的 snapshot；刷新 `repo.lastCommitId` |
-| `methodCallService` | 删除变更 + 删除文件的历史调用链记录 | 仅对 `changedPaths` 中 .java 重新解析；未变文件记录保留 |
-| `IncrementalImpactAnalyzer` | 解析 PARSING_CODE 之后的 `ci_method_call`，对变更类做反向 BFS（深度上限 15） | 产出 `hierarchyRetargetEntries` + `docRetargetModuleIds` + `traces`；反查失败时 `classPaths` 直接命中仍纳入（降级并集） |
-| `codeChunkService` | 删除变更 + 删除文件的历史 chunk | 仅对 `changedPaths` 重建 FILE/CLASS/METHOD；未变文件 chunk 保留 |
-| `moduleHierarchyService` | 以 `hierarchyRetargetEntries` 替代纯路径命中；删除文件按 Maven 路径规则推 FQ 类名并从 `function.classPaths` 移除 | 整体仍走 `deleteByTaskId + 全量 insert` 保证幂等 |
-| `aiSummaryService.generateDraftDocument` | `moduleTouchedByChange ∪ docRetargetModuleIds` 决定重跑集合 | 未受影响模块的旧草稿保留；被删文件对应的旧草稿暂不主动删（保留审计） |
+| `methodCallService.persistAstForTask` | 删除变更 + 删除文件的历史调用链记录 | 仅对 `changedPaths` 中 .java 重新解析；未变文件记录保留 |
+| `IncrementalImpactAnalyzer` | 对变更类做反向 BFS（深度上限 15） | 产出 `hierarchyRetargetEntries` + `docRetargetModuleIds` + `traces`；无调用链命中时可用源码方法名作种子 |
+| `moduleHierarchyService` | 以 `hierarchyRetargetEntries` 替代纯路径命中；删除文件按 Maven 路径推 FQ 并从 `function.classPaths` 移除 | 落表仍走 `deleteByTaskId + 全量 insert` |
+| `aiSummaryService.generateDraftDocument` | `moduleTouchedByChange ∪ docRetargetModuleIds` 决定重跑集合 | 未受影响模块的旧草稿保留 |
 
-降级路径（不会因为增量分支异常挂掉流水线）：
+**INCREMENTAL 不降级为全量**：创建期门禁要求仓库有 PUSHED 版本且 `lastCommitId` 非空；运行期基线不可解析 / 无 gitHandle / 本地路径模式 → 任务 **FAIL**（`INCREMENTAL_BASELINE_LOST` 等），见 [docs/incremental-task-strict-gate.md](./docs/incremental-task-strict-gate.md)。INITIAL 任务始终全量，不读 `lastCommitId`。
 
-- `repo.lastCommitId` 为空（首次增量）→ 全量扫描 + 刷新基线
-- 本地路径或 Mock 降级（无 Git 句柄）→ 全量扫描
-- `lastCommitId` 在新 history 不可解析（force-push / rebase）→ 全量扫描
-- `pullAndScan` 在所有路径下都会刷新 `repo.lastCommitId`，下次增量即可生效。
+推送时以 `last_published_version_id` 对应的 NAS `releases` 为权威来源与任务内产物 merge，删除文件语义同步剔除（见 [docs/incremental-release-merge-plan.md](./docs/incremental-release-merge-plan.md)）。
 
-任务门禁：增量任务必须满足「仓库存在 PUSHED 版本 + `lastCommitId` 非空」，否则拒绝创建（见 [docs/incremental-release-merge-plan.md](./docs/incremental-release-merge-plan.md) D4）。推送时以 `last_published_version_id` 对应的 NAS `releases` 为权威来源与任务内产物 merge，删除文件语义同步剔除（D1 / D2 / D3 / D5）。
-
-实现细节参见 `backend/src/main/java/com/company/codeinsight/modules/scanner/model/IncrementalContext.java` 与 `ScanResult.java`；反向 BFS 与影响分析见 `modules/callchain/{MethodCallReverseGraphService, IncrementalImpactAnalyzer}`。
+实现细节参见 `IncrementalContext` / `ScanResult`；反向 BFS 与影响分析见 `modules/callchain/`。
 
 ## 知识输出目录
 
@@ -330,18 +322,18 @@ DRAFT
 - `auth` 模块当前为配置化账号占位实现（`AuthService` 不依赖外部 UM/SSO），生产前必须替换为真实身份源。
 - 增量扫描的「被删文件对应草稿」不会主动删除，保留以备审计；后续可基于 `filePath in deletedPaths` 在 UI 增加过滤提示。
 - Mock AI 能验证流程和数据落库，真实模型质量、配额和失败恢复仍需在目标环境验证。
-- Git 推送测试可在无 `.git` 环境下降级为 Mock；生产交付前必须用真实远程仓库和最小权限凭证复验。
-- PostgreSQL、Redis、外部模型与远程 Git 的可用性属于运行环境前置条件。
+- PostgreSQL、Redis、外部模型与远程 Git 的可用性属于运行环境前置条件；远程 clone 失败会直接让任务/试跑失败（不再 Mock）。
 - 部分历史中文文档在非 UTF-8 终端下可能显示乱码，应显式使用 UTF-8 读取。
 - 知识查询 MVP 限制：纠错任务的「scope 外模块」不会自动从 release 导入草稿，复核页可能不完整；文档人工修订 MVP 为「提交待审 / 批准并写入」同页操作，无独立审批工作台（详见 [docs/knowledge-query-split-plan.md](./docs/knowledge-query-split-plan.md)）。
-- Phase 1-3 parser 切换后有 6 个老测试因 API drift（方法签名已变）不能编译，已在 [pom.xml](./backend/pom.xml) 的 maven-compiler-plugin `testExcludes` 中跳过，并在每个类头部加 `@Disabled` 与 javadoc 标注原因；CI 上不参与验证，留待单独 PR 修对每个测试后再启用。
+- **解析堆峰值**：多模块仓按最近 `pom.xml` 各建一套 SymbolSolver/subtype，文档生成阶段（`doc-ai-*`）可能出现 `AstJavaParser static caches growing`；任务/试跑结束后应被 `TaskParseMemoryService.evict` 清掉。压峰值若改「仓库根合并」会改变跨模块解析结果，需单独评审（见 [docs/parse-memory-static-cache-remediation.md](./docs/parse-memory-static-cache-remediation.md)）。P1-A 未做项：B1 写完即清 parseCache、B2 SymbolSolver 降峰值（见 [docs/parse-memory-p1a-plan.md](./docs/parse-memory-p1a-plan.md)）。
+- 系统配置已改为 Redis 值缓存，**不再使用 Redis Pub/Sub** 做配置广播。
 
 ## 后续演进
 
 1. 完成生产级认证（UM/SSO 接入）、授权、审计身份绑定和密钥托管。
 2. 配置真实模型与远程 Git 仓库，执行带权限、配额和失败恢复的端到端验收。
 3. 拆分前端大包，清理 Ant Design 旧组件弃用提示。
-4. **#9 增量影响分析**：P1 后端（已落地）→ P2 完整 `target_signature` / 方法级 seed / 可配置 `reverse-bfs-max-depth` → P3 `ImpactTrace` 持久化与 API 暴露（已写日志 + 内存结构）。
-5. **#8 增量扫描 UI 化**（依赖 #9）：任务详情展示「本次增量更新了 N 个模块」影响面摘要 + `ImpactTrace` 列表 + 可选增量基线；后端 API `GET /api/tasks/{id}/incremental-impact`（[IncrementalImpactQueryService](./backend/src/main/java/com/company/codeinsight/modules/task/service/IncrementalImpactQueryService.java)）。
-6. **#7 联调补丁入库**：把 `TaskQueueDispatcher` / `TaskStateMachineServiceImpl` / `DecompileTaskServiceImpl` 纠错续跑逻辑正式提交，并补纠错 / 知识查询 API 专项测试。
-7. 集群 / 分布式：非 `dev` 环境验证集群全链路（Leader 选举、Redis 许可、共享卷、Pub/Sub 广播）。
+4. **#9 增量影响分析**：P1 后端（已落地）→ P2 完整 `target_signature` / 方法级 seed / 可配置 `reverse-bfs-max-depth` → P3 `ImpactTrace` 持久化与 API 暴露（已有日志 + 查询 API）。
+5. **#8 增量扫描 UI 化**（依赖 #9）：任务详情影响面摘要 + `ImpactTrace` 列表 + 可选增量基线（`GET /api/tasks/{id}/incremental-impact` 已具备）。
+6. 解析内存后续：在**不降低产出质量、不主动降速**的前提下评估 B1/B2；多模块根合并仅在产品接受解析结果差异时推进。
+7. 集群 / 分布式：非 `dev` 环境验证 Leader 选举、Redis 许可、共享卷、孤儿接管与配置 Redis 值缓存全链路（无 Pub/Sub）。

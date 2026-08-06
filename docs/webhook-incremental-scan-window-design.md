@@ -3,7 +3,7 @@
 > **管什么**：Git 平台 master 归并回调后，为平台内匹配仓库排队增量任务（DRAFT、不执行）；扫描时间窗口命中时按 FIFO 放行；手动启动 WEBHOOK DRAFT 时的顺序校验与「放弃更早 draft」确认流。  
 > **不管什么**：Webhook HTTP 入口 / 鉴权 / `action=accept` / `targetBranch=master` 过滤（公司侧 `WebhookServiceImpl` 已有）；增量 diff / 基线继承 / 推送语义（见既有增量方案）。  
 > **关联**：[incremental-task-strict-gate.md](./incremental-task-strict-gate.md)、[incremental-baseline-design.md](./incremental-baseline-design.md)（若存在）、`ScanWindowScheduler`、`DecompileTaskService`。  
-> **状态：待实施**（方案已确认，2026-07-23）。
+> **状态：废弃**（2026-08-05）。由 [scheduled-commit-poll-scan-plan.md](./scheduled-commit-poll-scan-plan.md) 取代：定时路径改为 commit 轮询下发 INITIAL/INCREMENTAL，不再做「Webhook 排队 + 窗口 FIFO 放行」；`SCHEDULED` 保留。下文仅作历史参考，勿实施。
 
 ---
 

@@ -45,6 +45,7 @@ import {
 import { listSystems } from '../../api/system';
 import type { System, Task } from '../../types';
 import { isTaskDeletable } from '../../utils/taskActions';
+import { formatDurationMs } from '../../utils/formatDuration';
 import {
   filterSystemSelectOption,
   renderComponentCell,
@@ -350,14 +351,6 @@ const TaskListTab: React.FC = () => {
       },
     },
     {
-      title: 'AI模型',
-      dataIndex: 'modelName',
-      key: 'modelName',
-      width: 150,
-      render: (modelName: string) =>
-        modelName ? <Tag color="orange">{modelName}</Tag> : '-',
-    },
-    {
       title: '状态',
       dataIndex: 'status',
       key: 'status',
@@ -404,7 +397,7 @@ const TaskListTab: React.FC = () => {
       dataIndex: 'durationMs',
       key: 'durationMs',
       width: 120,
-      render: (ms: number) => (ms ? `${(ms / 1000).toFixed(1)}s` : '-'),
+      render: (ms: number) => formatDurationMs(ms),
     },
     {
       title: '创建时间',
@@ -686,7 +679,7 @@ const TaskListTab: React.FC = () => {
           columns={columns}
           rowKey="id"
           loading={loading}
-          scroll={{ x: 1300 }}
+          scroll={{ x: 1150 }}
           pagination={{
             current,
             pageSize: size,

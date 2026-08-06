@@ -30,6 +30,7 @@ import java.util.concurrent.TimeoutException;
 
 /**
  * 轻量取相对路径列表：本地列目录，或 JGit depth=1 bare clone + TreeWalk。
+ * <p>远程 clone 默认<strong>不</strong>在方法内删除 workDir（由整轮统一清理）。</p>
  */
 @Slf4j
 public final class RepoStackTreeFetcher {
@@ -42,16 +43,22 @@ public final class RepoStackTreeFetcher {
     private RepoStackTreeFetcher() {
     }
 
+    /**
+     * @param workDir           远程 clone 目标目录（整轮 run 下的 repo 子目录）
+     * @param deleteWorkDirAfter 为 true 时在 finally 删除 workDir（整轮模式传 false）
+     */
     public static List<String> fetchPaths(String gitUrl, String branch, String username, String password,
-                                          Path workDir, long timeoutMs) throws Exception {
+                                          Path workDir, long timeoutMs, boolean deleteWorkDirAfter)
+            throws Exception {
         if (RepoGitUrlKind.isExistingLocalDirectory(gitUrl)) {
             return listLocalPaths(Path.of(gitUrl.trim()));
         }
-        return fetchRemoteWithTimeout(gitUrl, branch, username, password, workDir, timeoutMs);
+        return fetchRemoteWithTimeout(gitUrl, branch, username, password, workDir, timeoutMs, deleteWorkDirAfter);
     }
 
     private static List<String> fetchRemoteWithTimeout(String gitUrl, String branch, String username, String password,
-                                                       Path workDir, long timeoutMs) throws Exception {
+                                                       Path workDir, long timeoutMs, boolean deleteWorkDirAfter)
+            throws Exception {
         ExecutorService single = Executors.newSingleThreadExecutor(r -> {
             Thread t = new Thread(r, "stack-probe-tree");
             t.setDaemon(true);
@@ -68,10 +75,12 @@ public final class RepoStackTreeFetcher {
             }
         } finally {
             single.shutdownNow();
-            try {
-                DirectoryCleanupUtil.deleteRecursively(workDir);
-            } catch (IOException cleanupEx) {
-                log.warn("清理 stack probe 工作目录失败 {}: {}", workDir, cleanupEx.getMessage());
+            if (deleteWorkDirAfter) {
+                try {
+                    DirectoryCleanupUtil.deleteRecursively(workDir);
+                } catch (IOException cleanupEx) {
+                    log.warn("清理 stack probe 工作目录失败 {}: {}", workDir, cleanupEx.getMessage());
+                }
             }
         }
     }
