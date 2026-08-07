@@ -171,8 +171,8 @@ COMMENT ON COLUMN ci_repository.last_published_task_id IS '最近一次成功发
 COMMENT ON COLUMN ci_repository.last_published_version_id IS '当前生效的已发布知识版本 ID（ci_knowledge_version.id）；知识浏览与回滚均以此指针读取 NAS releases';
 COMMENT ON COLUMN ci_repository.published_at IS '最近一次成功发布到仓库的时间';
 COMMENT ON COLUMN ci_repository.published_by IS '最近一次成功发布到仓库的操作人';
-COMMENT ON COLUMN ci_repository.repo_type IS '代码库类型（与展示文案一致）：前端 / 后端 / DB；前后端拆分靠独立仓库 + scan_root';
-COMMENT ON COLUMN ci_repository.tech_stack IS '技术栈（与展示文案一致，如 Java / React）；须属于 repo_type 对应目录；任务下发再校验可执行白名单';
+COMMENT ON COLUMN ci_repository.repo_type IS '代码库类型（与展示文案一致）：前端 / 后端 / 前后端 / DB；混合仓可为前后端，tech_stack 逗号多值；仍可用 scan_root 收窄扫描';
+COMMENT ON COLUMN ci_repository.tech_stack IS '技术栈（与展示文案一致，如 Java / React）；单类型单值，前后端可为逗号多值；任务下发按 token 与可执行白名单求交';
 COMMENT ON COLUMN ci_repository.git_reachable IS 'Git 连通性：NULL=未检测（默认） 1=连通 0=不通；任务下发要求=1；超时不写 0';
 COMMENT ON COLUMN ci_repository.git_checked_at IS '最近一次 Git 连通性检测时间';
 COMMENT ON COLUMN ci_repository.git_check_msg IS '最近一次检测失败摘要（可选）';
@@ -1515,6 +1515,14 @@ SET description = '【本机】同时进行重解析（AST + 入口发现）的�
 WHERE key = 'parse.concurrency'
   AND description IS DISTINCT FROM '【本机】同时进行重解析（AST + 入口发现）的任务数上限；不含 AI 层级/文档';
 
+-- 定时 commit 轮询调度（编排页可改；与 yml SCAN_ENABLED / SCAN_CRON 默认对齐）
+INSERT INTO ci_system_config (key, value, description, updated_by, created_by)
+VALUES ('scan.scheduler.enabled', 'true', '定时 commit 轮询扫描总开关', 'sys', 'sys')
+ON CONFLICT (key) DO NOTHING;
+
+INSERT INTO ci_system_config (key, value, description, updated_by, created_by)
+VALUES ('scan.scheduler.cron', '0 */5 * * * *', '定时 commit 轮询扫描 cron（6 段，含秒）', 'sys', 'sys')
+ON CONFLICT (key) DO NOTHING;
 
 -- ============================================================
 -- 25. ci_user — 用户表

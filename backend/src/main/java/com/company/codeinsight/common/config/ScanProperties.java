@@ -7,17 +7,19 @@ import org.springframework.stereotype.Component;
 /**
  * 定时 commit 轮询扫描配置（docs/scheduled-commit-poll-scan-plan.md）。
  * <p>{@code global-poll-enabled} / {@code force-full-on-unchanged} 等仅通过配置文件或阿波罗修改，
- * 无管理 API；tick 时直接读本 Bean。{@code enabled}/{@code cron} 仍可由既有调度 API + Redis 覆盖。</p>
+ * 无管理 API；tick 时直接读本 Bean。
+ * {@code enabled}/{@code cron} 仅在 {@code ci_system_config} 尚无对应 key 时作 bootstrap；
+ * 页面/API 写入后以库为准（Redis 经 {@code SystemConfigService} 只做读缓存）。</p>
  */
 @Data
 @Component
 @ConfigurationProperties(prefix = "code-insight.scan")
 public class ScanProperties {
 
-    /** 调度总开关默认值 */
+    /** 调度总开关 bootstrap（库无 scan.scheduler.enabled 时） */
     private boolean enabled = true;
 
-    /** 默认 cron（6 段，含秒） */
+    /** cron bootstrap（库无 scan.scheduler.cron 时；6 段，含秒） */
     private String cron = "0 */5 * * * *";
 
     /**

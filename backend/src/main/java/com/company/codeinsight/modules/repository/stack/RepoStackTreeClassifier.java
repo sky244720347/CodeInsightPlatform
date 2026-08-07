@@ -187,15 +187,23 @@ public final class RepoStackTreeClassifier {
 
         String bestType = topKey(typeScore);
         String bestStack = topKey(stackScore);
-        if (bestType == null || bestStack == null) {
-            return null;
-        }
 
         int fe = typeScore.getOrDefault(RepoType.FRONTEND.getCode(), 0);
         int be = typeScore.getOrDefault(RepoType.BACKEND.getCode(), 0);
         if (fe > 0 && be > 0 && Math.abs(fe - be) < 30) {
-            // monorepo / 冲突
+            // monorepo / 冲突：仅此分支标「前后端」+ 双侧 top 栈（逗号）
+            String beStack = topStackAmong(stackScore, RepoType.BACKEND.getCode());
+            String feStack = topStackAmong(stackScore, RepoType.FRONTEND.getCode());
+            if (beStack != null && !beStack.isBlank() && feStack != null && !feStack.isBlank()) {
+                String joined = TechStackCatalog.joinStacks(beStack, feStack);
+                evidence.add("fullstack-conflict fe=" + fe + " be=" + be);
+                return new Result(RepoType.FULLSTACK.getCode(), joined, Confidence.HIGH, evidence);
+            }
             return new Result(null, null, Confidence.LOW, evidence);
+        }
+
+        if (bestType == null || bestStack == null) {
+            return null;
         }
 
         if (!TechStackCatalog.isValidPair(bestType, bestStack)) {
@@ -230,6 +238,13 @@ public final class RepoStackTreeClassifier {
             return new Result(bestType, chosenStack, confidence, evidence);
         }
         return new Result(bestType, chosenStack, confidence, evidence);
+    }
+
+    private static String topStackAmong(Map<String, Integer> stackScore, String repoTypeCode) {
+        return TechStackCatalog.stacksOf(repoTypeCode).stream()
+                .filter(s -> stackScore.getOrDefault(s, 0) > 0)
+                .max(Comparator.comparingInt(s -> stackScore.getOrDefault(s, 0)))
+                .orElse(null);
     }
 
     private static void bump(Map<String, Integer> map, String key, int delta) {

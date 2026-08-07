@@ -36,7 +36,7 @@ public class CodeRepository extends BaseEntity {
     private String gitUrl;
 
     /**
-     * 代码库类型（与展示文案一致）：前端 / 后端 / DB
+     * 代码库类型（与展示文案一致）：前端 / 后端 / 前后端 / DB
      */
     private String repoType;
 

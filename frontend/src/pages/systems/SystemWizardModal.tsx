@@ -533,7 +533,7 @@ const SystemWizardModal: React.FC<Props> = ({
             type="info"
             showIcon
             style={{ marginBottom: 16 }}
-            message="添加第一个 Git 仓库。请选择代码库类型与技术栈；前后端请拆成独立仓库或用扫描根目录区分。"
+            message="添加第一个 Git 仓库。混合仓可选「前后端」并多选技术栈；仍建议配置扫描根目录。"
           />
           <Form<RepositoryFormValues>
             form={repoForm}
@@ -549,14 +549,34 @@ const SystemWizardModal: React.FC<Props> = ({
               rules={[{ required: true, message: '请选择代码库类型' }]}
             >
               <Select
-                placeholder="前端 / 后端 / DB"
+                placeholder="前端 / 后端 / 前后端 / DB"
                 options={repoTypeOptions}
                 onChange={() => repoForm.setFieldsValue({ techStack: undefined })}
               />
             </Form.Item>
-            <Form.Item name="techStack" label="技术栈" rules={[{ required: true, message: '请选择技术栈' }]}>
+            <Form.Item
+              name="techStack"
+              label="技术栈"
+              rules={[{ required: true, message: '请选择技术栈' }]}
+              getValueFromEvent={(v) => (Array.isArray(v) ? v.join(',') : v)}
+              getValueProps={(v) => ({
+                value:
+                  repoTypeWatch === '前后端'
+                    ? typeof v === 'string' && v
+                      ? v.split(',').map((s) => s.trim()).filter(Boolean)
+                      : []
+                    : v,
+              })}
+            >
               <Select
-                placeholder={repoTypeWatch ? '请选择技术栈' : '请先选择代码库类型'}
+                mode={repoTypeWatch === '前后端' ? 'multiple' : undefined}
+                placeholder={
+                  !repoTypeWatch
+                    ? '请先选择代码库类型'
+                    : repoTypeWatch === '前后端'
+                      ? '请选择前端+后端技术栈'
+                      : '请选择技术栈'
+                }
                 options={techStackOptions}
                 disabled={!repoTypeWatch}
               />

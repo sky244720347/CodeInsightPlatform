@@ -129,7 +129,7 @@ DRAFT
 
 ### 定时 commit 轮询扫描
 
-`ScanWindowScheduler`（Leader：`ci:leader:scan-commit-poll`）按 cron 探测远端 HEAD，与 `ci_repository.last_commit_id`（PUSHED 基线）比对后下发任务：无基线 → INITIAL；有变动 → INCREMENTAL；有基线无变动时由 `force-full-on-unchanged` 决定是否仍 INITIAL。`global-poll-enabled=true` 扫全部远程仓；`daily-coverage-enabled` 用 Redis 按自然日记录已探测仓，超时/不确定不记完成并重试。每次探测写流水表 `ci_scan_probe_record`；编排页 `/basic/orchestration` 调 `/scan/orchestration/*` 看进度与流水、配 cron（无扫描窗口 UI）。配置仅文件/阿波罗（`code-insight.scan.*` / `SCAN_*`）。自动任务 `trigger_source=SCHEDULED`，跳过入口/层级复核，创建即入 `PENDING`。详见 [docs/scheduled-commit-poll-scan-plan.md](./docs/scheduled-commit-poll-scan-plan.md)、[docs/scan-orchestration-ui-plan.md](./docs/scan-orchestration-ui-plan.md)。
+`ScanWindowScheduler`（Leader：`ci:leader:scan-commit-poll`）按 cron 探测远端 HEAD，与 `ci_repository.last_commit_id`（PUSHED 基线）比对后下发任务：无基线 → INITIAL；有变动 → INCREMENTAL；有基线无变动时由 `force-full-on-unchanged` 决定是否仍 INITIAL。`global-poll-enabled=true` 扫全部远程仓；`daily-coverage-enabled` 用 Redis 按自然日记录已探测仓，超时/不确定不记完成并重试。每次探测写流水表 `ci_scan_probe_record`；编排页 `/basic/orchestration` 调 `/scan/orchestration/*` 看进度与流水、配 cron（无扫描窗口 UI）。`enabled`/`cron` 存 `ci_system_config`（`scan.scheduler.*`，Redis 仅缓存）；其余 `code-insight.scan.*` / `SCAN_*` 仅文件/阿波罗。自动任务 `trigger_source=SCHEDULED`，跳过入口/层级复核，创建即入 `PENDING`。详见 [docs/scheduled-commit-poll-scan-plan.md](./docs/scheduled-commit-poll-scan-plan.md)、[docs/scan-orchestration-ui-plan.md](./docs/scan-orchestration-ui-plan.md)。
 
 ### 仓库类型 / 技术栈探测
 

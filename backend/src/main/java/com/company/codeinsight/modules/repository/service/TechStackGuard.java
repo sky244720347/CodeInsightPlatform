@@ -27,7 +27,7 @@ public class TechStackGuard {
             throw new BusinessException("请选择代码库类型");
         }
         if (!RepoType.isValid(repoType)) {
-            throw new BusinessException("代码库类型无效，可选：前端 / 后端 / DB");
+            throw new BusinessException("代码库类型无效，可选：前端 / 后端 / 前后端 / DB");
         }
         if (!StringUtils.hasText(techStack)) {
             throw new BusinessException("请选择技术栈");

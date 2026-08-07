@@ -22,7 +22,7 @@ export interface Repository {
   id: number;
   systemId: number;
   gitUrl: string;
-  /** 代码库类型：前端 / 后端 / DB（与展示文案一致） */
+  /** 代码库类型：前端 / 后端 / 前后端 / DB（与展示文案一致） */
   repoType?: string | null;
   /** 技术栈：如 Java / React（与展示文案一致） */
   techStack?: string | null;

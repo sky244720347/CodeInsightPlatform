@@ -123,7 +123,9 @@ CONFIRMED, PUSHING, RESUME_QUEUED
 | `code-insight.scan.probe-max-attempts` | 超时类重试次数 | `3` |
 | `code-insight.scan.probe-retry-backoff-ms` | 重试退避基数 | `2000` |
 
-`global-poll-enabled` / `force-full-on-unchanged` / 日覆盖与探测参数 **仅配置文件或阿波罗**，无管理 API、无页面开关；调度 tick 直接读 `ScanProperties`。既有 `enabled` / `cron` 仍可由 `/scan-windows/scheduler/*` + Redis 覆盖。
+`global-poll-enabled` / `force-full-on-unchanged` / 日覆盖与探测参数 **仅配置文件或阿波罗**，无管理 API、无页面开关；调度 tick 直接读 `ScanProperties`。
+
+`enabled` / `cron` 存 `ci_system_config`（键 `scan.scheduler.enabled` / `scan.scheduler.cron`，schema 种子默认 `true` / `0 */5 * * * *`），经 `SystemConfigService` 读写（Redis `ci:config:kv:*` 仅缓存）；yml/`SCAN_*` 仅在库中尚无该 key 时作 bootstrap。编排 API `/scan/orchestration/*` 与旧 `/scan-windows/scheduler/*` 写入 PG。启动时若仍有旧独立 Redis 键 `scan:scheduler:enabled|cron`，迁入 PG 后删除。
 
 ### 4.1.1 日覆盖与稳健性（1000 仓）
 

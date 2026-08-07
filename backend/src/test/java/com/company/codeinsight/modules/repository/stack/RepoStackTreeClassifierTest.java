@@ -52,7 +52,7 @@ class RepoStackTreeClassifierTest {
     }
 
     @Test
-    void conflictMonorepoYieldsLow() {
+    void conflictMonorepoYieldsFullstack() {
         var r = RepoStackTreeClassifier.classify(List.of(
                 "pom.xml",
                 "src/main/java/A.java",
@@ -63,8 +63,9 @@ class RepoStackTreeClassifierTest {
                 "frontend/src/Home.vue",
                 "frontend/src/X.vue"));
         assertNotNull(r);
-        assertEquals(RepoStackTreeClassifier.Confidence.LOW, r.getConfidence());
-        assertNull(r.getRepoType());
+        assertEquals(RepoType.FULLSTACK.getCode(), r.getRepoType());
+        assertEquals("Java,Vue", r.getTechStack());
+        assertTrue(r.isHighEnough());
     }
 
     @Test

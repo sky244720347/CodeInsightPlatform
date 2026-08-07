@@ -10,6 +10,8 @@ public enum RepoType {
 
     FRONTEND("前端"),
     BACKEND("后端"),
+    /** 单仓前后端信号冲突（monorepo）；tech_stack 可为逗号多值，任务门禁按 token 交集 */
+    FULLSTACK("前后端"),
     DB("DB");
 
     private final String code;

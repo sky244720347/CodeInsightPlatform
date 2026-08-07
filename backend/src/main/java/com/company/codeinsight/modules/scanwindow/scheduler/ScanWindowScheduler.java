@@ -1,9 +1,13 @@
 package com.company.codeinsight.modules.scanwindow.scheduler;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.company.codeinsight.common.auth.OperatorContext;
 import com.company.codeinsight.common.cluster.ClusterLeaderLock;
 import com.company.codeinsight.common.cluster.ClusterProperties;
 import com.company.codeinsight.common.config.ScanProperties;
+import com.company.codeinsight.common.exception.BusinessException;
+import com.company.codeinsight.common.exception.ErrorCode;
+import com.company.codeinsight.modules.quotacontrol.service.SystemConfigService;
 import com.company.codeinsight.modules.repository.dto.GitRemoteHeadResult;
 import com.company.codeinsight.modules.repository.entity.CodeRepository;
 import com.company.codeinsight.modules.repository.mapper.CodeRepositoryMapper;
@@ -15,8 +19,6 @@ import com.company.codeinsight.modules.scanwindow.service.ScanWindowService;
 import com.company.codeinsight.modules.scanwindow.support.ScanDailyCoverageStore;
 import com.company.codeinsight.modules.scanwindow.support.ScanDispatchAction;
 import com.company.codeinsight.modules.scanwindow.support.ScanDispatchDecision;
-import com.company.codeinsight.common.exception.BusinessException;
-import com.company.codeinsight.common.exception.ErrorCode;
 import com.company.codeinsight.modules.scanwindow.support.ScanProbeStatus;
 import com.company.codeinsight.modules.task.entity.DecompileTask;
 import com.company.codeinsight.modules.task.enums.TaskStatus;
@@ -48,7 +50,8 @@ import java.util.concurrent.atomic.AtomicInteger;
 /**
  * 定时 commit 轮询扫描：Leader 探测远端 HEAD，按基线决策下发 INITIAL / INCREMENTAL。
  * <p>全局模式默认按自然日覆盖：失败/超时不记完成，后续 tick 重试，直至当日全部探测完毕。
- * 见 docs/scheduled-commit-poll-scan-plan.md。</p>
+ * {@code enabled}/{@code cron} 存 {@code ci_system_config}（Redis 仅作 SystemConfig 读缓存）；
+ * yml 仅在库中尚无该 key 时作 bootstrap。见 docs/scheduled-commit-poll-scan-plan.md。</p>
  */
 @Slf4j
 @Component
@@ -57,8 +60,17 @@ public class ScanWindowScheduler {
 
     public static final String LEADER_LOCK_KEY = "ci:leader:scan-commit-poll";
 
-    private static final String REDIS_KEY_CRON = "scan:scheduler:cron";
-    private static final String REDIS_KEY_ENABLED = "scan:scheduler:enabled";
+    /** PG / SystemConfig 权威键 */
+    public static final String CONFIG_KEY_ENABLED = "scan.scheduler.enabled";
+    public static final String CONFIG_KEY_CRON = "scan.scheduler.cron";
+
+    /** 旧版独立 Redis 真相源（启动时迁入 ci_system_config 后删除） */
+    private static final String LEGACY_REDIS_KEY_CRON = "scan:scheduler:cron";
+    private static final String LEGACY_REDIS_KEY_ENABLED = "scan:scheduler:enabled";
+
+    private static final String DESC_ENABLED = "定时 commit 轮询扫描总开关";
+    private static final String DESC_CRON = "定时 commit 轮询扫描 cron（6 段，含秒）";
+
     private static final DateTimeFormatter SLOT_FMT = DateTimeFormatter.ofPattern("yyyyMMddHHmm");
     private static final Set<String> TERMINAL_STATUSES = Set.of(
             TaskStatus.FAILED.name(),
@@ -75,6 +87,7 @@ public class ScanWindowScheduler {
     private final ScanProbeRecordService probeRecordService;
     private final TaskScheduler taskScheduler;
     private final ScanProperties scanProperties;
+    private final SystemConfigService systemConfigService;
     private final ClusterLeaderLock clusterLeaderLock;
     private final ClusterProperties clusterProperties;
 
@@ -89,25 +102,66 @@ public class ScanWindowScheduler {
 
     @PostConstruct
     public void init() {
-        enabled = scanProperties.isEnabled();
-        currentCron = StringUtils.hasText(scanProperties.getCron())
-                ? scanProperties.getCron() : "0 */5 * * * *";
-
-        if (redisTemplate != null) {
-            try {
-                String redisCron = redisTemplate.opsForValue().get(REDIS_KEY_CRON);
-                if (StringUtils.hasText(redisCron)) {
-                    currentCron = redisCron;
-                }
-                String redisEnabled = redisTemplate.opsForValue().get(REDIS_KEY_ENABLED);
-                if (redisEnabled != null) {
-                    enabled = Boolean.parseBoolean(redisEnabled);
-                }
-            } catch (Exception e) {
-                log.warn("ScanWindowScheduler 从 Redis 恢复配置失败，使用本地默认 — {}", e.toString());
-            }
-        }
+        migrateLegacyRedisIfNeeded();
+        reloadFromStore();
         start();
+    }
+
+    /** 从 ci_system_config（经 Redis 缓存）加载；缺省回退 ScanProperties。 */
+    private void reloadFromStore() {
+        boolean defaultEnabled = scanProperties.isEnabled();
+        String defaultCron = StringUtils.hasText(scanProperties.getCron())
+                ? scanProperties.getCron() : "0 */5 * * * *";
+        enabled = systemConfigService.getBoolean(CONFIG_KEY_ENABLED, defaultEnabled);
+        String cfgCron = systemConfigService.getString(CONFIG_KEY_CRON);
+        currentCron = StringUtils.hasText(cfgCron) ? cfgCron.trim() : defaultCron;
+    }
+
+    /**
+     * 一次性：旧 Redis 键 → ci_system_config，然后删除旧键。
+     * 若 PG 已有值，只清理旧键，不覆盖。
+     */
+    private void migrateLegacyRedisIfNeeded() {
+        if (redisTemplate == null) {
+            return;
+        }
+        try {
+            migrateLegacyKey(CONFIG_KEY_ENABLED, LEGACY_REDIS_KEY_ENABLED, DESC_ENABLED, true);
+            migrateLegacyKey(CONFIG_KEY_CRON, LEGACY_REDIS_KEY_CRON, DESC_CRON, false);
+        } catch (Exception e) {
+            log.warn("ScanWindowScheduler 迁移旧 Redis 调度配置失败 — {}", e.toString());
+        }
+    }
+
+    private void migrateLegacyKey(String configKey, String legacyRedisKey, String description, boolean asBoolean) {
+        String legacy;
+        try {
+            legacy = redisTemplate.opsForValue().get(legacyRedisKey);
+        } catch (Exception e) {
+            log.debug("legacy redis get degraded key={}: {}", legacyRedisKey, e.getMessage());
+            return;
+        }
+        if (legacy == null) {
+            return;
+        }
+        if (systemConfigService.getString(configKey) == null) {
+            String value = asBoolean ? String.valueOf(Boolean.parseBoolean(legacy)) : legacy.trim();
+            if (!StringUtils.hasText(value)) {
+                try {
+                    redisTemplate.delete(legacyRedisKey);
+                } catch (Exception e) {
+                    log.warn("删除旧 Redis 键失败 key={}: {}", legacyRedisKey, e.getMessage());
+                }
+                return;
+            }
+            systemConfigService.putString(configKey, value, description, "sys");
+            log.info("Migrated {} from legacy Redis {} to ci_system_config", configKey, legacyRedisKey);
+        }
+        try {
+            redisTemplate.delete(legacyRedisKey);
+        } catch (Exception e) {
+            log.warn("删除旧 Redis 键失败 key={}: {}", legacyRedisKey, e.getMessage());
+        }
     }
 
     private void start() {
@@ -159,18 +213,14 @@ public class ScanWindowScheduler {
 
     public void updateCron(String cron) {
         CronExpression.parse(cron);
+        systemConfigService.putString(CONFIG_KEY_CRON, cron, DESC_CRON, OperatorContext.get());
         currentCron = cron;
-        if (redisTemplate != null) {
-            redisTemplate.opsForValue().set(REDIS_KEY_CRON, cron);
-        }
         start();
     }
 
     public void setEnabled(boolean e) {
+        systemConfigService.putString(CONFIG_KEY_ENABLED, String.valueOf(e), DESC_ENABLED, OperatorContext.get());
         enabled = e;
-        if (redisTemplate != null) {
-            redisTemplate.opsForValue().set(REDIS_KEY_ENABLED, String.valueOf(e));
-        }
         if (e) {
             start();
         } else {

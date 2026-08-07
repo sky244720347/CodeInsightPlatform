@@ -11,6 +11,7 @@
 详见 [docs/repo-stack-probe-plan.md](./docs/repo-stack-probe-plan.md)。
 
 - **仅 Leader 串行**（无整轮任务锁）：每批续租并校验 Leader（降 Redis）；TTL ≥ max(1800s, batch×tree-timeout+120)；丢主跳过后续批以防双写
+- FE/BE 分数冲突：写 `repo_type=前后端` + 双侧 top 栈逗号拼接（如 `Java,Vue`）；任务门禁按 token∩可执行白名单
 - 先 COUNT 待探，=0 则写 Redis `next-run-at` 拉长调度（非每仓冷却）
 - 待探口径：真空 ∧（`git_reachable=1` ∨ URL `*_db`/`*-db`）；多批直到墙钟/列表空
 - NAS：`stack_probe_run_{runId}/`，整轮结束统一删；创建/连通只唤醒调度不并行 clone
@@ -24,6 +25,7 @@
 - 全局轮询开关：开=cron 扫全部远程仓（分批/并发/墙钟）；关=仅 `ci_scan_window` 命中仓
 - 自动任务 `trigger_source=SCHEDULED`，跳过入口/层级复核，创建即 `startTask`；本地路径与同仓非终态任务跳过
 - 配置：`code-insight.scan.*` / `SCAN_*`（含全局轮询、验证全量；仅配置文件/阿波罗，无页面与更新接口）
+- `enabled` / `cron`：权威源改为 `ci_system_config`（`scan.scheduler.*`，schema 种子默认 true / `0 */5 * * * *`），Redis 仅经 `SystemConfigService` 做读缓存；yml 作库无 key 时的 bootstrap；旧 `scan:scheduler:*` Redis 键启动时迁入后删除
 - 日覆盖：`daily-coverage-enabled` + Redis `scan:probe:done:{day}`；超时不记完成、后续重试；ls-remote 可多次重试；墙钟到点不 cancel 进行中波次
 - 探测流水表 `ci_scan_probe_record`；API `/scan/orchestration/*`；新「任务编排」页展示进度/流水并配 cron；旧窗口编排页改名为 `orchestration-legacy.tsx` 保留
 - 下发因技术栈未配置/不支持等失败记 `DEFERRED_DISPATCH`，**不**记日覆盖，后续批次可继续下发（配合 RepoStackProbe 打标）

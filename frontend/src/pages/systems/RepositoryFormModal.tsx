@@ -101,10 +101,10 @@ const RepositoryFormModal: React.FC<Props> = ({
               name="repoType"
               label="代码库类型"
               rules={[{ required: true, message: '请选择代码库类型' }]}
-              extra="前后端请拆成独立仓库，或用扫描根目录区分"
+              extra="混合仓可选「前后端」；技术栈可多选。仍建议用扫描根目录缩小范围"
             >
               <Select
-                placeholder="前端 / 后端 / DB"
+                placeholder="前端 / 后端 / 前后端 / DB"
                 options={repoTypeOptions}
                 onChange={() => form.setFieldsValue({ techStack: undefined })}
               />
@@ -115,9 +115,25 @@ const RepositoryFormModal: React.FC<Props> = ({
               name="techStack"
               label="技术栈"
               rules={[{ required: true, message: '请选择技术栈' }]}
+              getValueFromEvent={(v) => (Array.isArray(v) ? v.join(',') : v)}
+              getValueProps={(v) => ({
+                value:
+                  repoType === '前后端'
+                    ? typeof v === 'string' && v
+                      ? v.split(',').map((s) => s.trim()).filter(Boolean)
+                      : []
+                    : v,
+              })}
             >
               <Select
-                placeholder={repoType ? '请选择技术栈' : '请先选择代码库类型'}
+                mode={repoType === '前后端' ? 'multiple' : undefined}
+                placeholder={
+                  !repoType
+                    ? '请先选择代码库类型'
+                    : repoType === '前后端'
+                      ? '请选择前端+后端技术栈'
+                      : '请选择技术栈'
+                }
                 options={techStackOptions}
                 disabled={!repoType}
               />

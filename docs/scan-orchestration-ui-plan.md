@@ -145,8 +145,8 @@ CREATE INDEX IF NOT EXISTS idx_scan_probe_date_repo
 |---|---|---|
 | GET | `/scan/orchestration/summary?date=` | 进度 + 只读配置 + cron/enabled |
 | GET | `/scan/orchestration/records?date=&status=&keyword=&current=&size=` | **流水**分页；keyword 匹配仓 gitUrl / id |
-| PUT | `/scan/orchestration/cron` | `{ cron }` → `ScanWindowScheduler.updateCron` |
-| PUT | `/scan/orchestration/enabled` | `{ enabled }` → `setEnabled` |
+| PUT | `/scan/orchestration/cron` | `{ cron }` → `updateCron` → `ci_system_config.scan.scheduler.cron` |
+| PUT | `/scan/orchestration/enabled` | `{ enabled }` → `setEnabled` → `ci_system_config.scan.scheduler.enabled` |
 
 旧 `/scan-windows/scheduler/*` 保留兼容；**新页只调** `/scan/orchestration/*`。
 

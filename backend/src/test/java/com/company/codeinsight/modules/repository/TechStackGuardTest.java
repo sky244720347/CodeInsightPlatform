@@ -30,7 +30,9 @@ class TechStackGuardTest {
         assertTrue(TechStackCatalog.isValidPair("后端", "Java"));
         assertTrue(TechStackCatalog.isValidPair("前端", "React"));
         assertFalse(TechStackCatalog.isValidPair("前端", "Java"));
+        assertTrue(TechStackCatalog.isValidPair("前后端", "Java,Vue"));
         assertFalse(TechStackCatalog.isValidPair("前后端", "Java"));
+        assertFalse(TechStackCatalog.isValidPair("前后端", "React,Vue"));
     }
 
     @Test
@@ -45,6 +47,23 @@ class TechStackGuardTest {
         CodeRepository repo = new CodeRepository();
         repo.setTechStack("Java");
         guard.assertExecutableForTask(repo);
+    }
+
+    @Test
+    void assertExecutableAllowsFullstackWhenAnyTokenSupported() {
+        CodeRepository repo = new CodeRepository();
+        repo.setRepoType("前后端");
+        repo.setTechStack("Java,React");
+        guard.assertExecutableForTask(repo);
+    }
+
+    @Test
+    void assertExecutableRejectsFullstackWhenNoTokenSupported() {
+        CodeRepository repo = new CodeRepository();
+        repo.setTechStack("Python,React");
+        BusinessException ex = assertThrows(BusinessException.class,
+                () -> guard.assertExecutableForTask(repo));
+        assertEquals(ErrorCode.TECH_STACK_UNSUPPORTED.getCode(), ex.getCode());
     }
 
     @Test

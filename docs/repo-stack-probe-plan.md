@@ -14,6 +14,7 @@
 | D | 有活批间 | **同一轮锁内多批**直到墙钟/列表空 |
 | E | NAS | `stack_probe_run_{短runId}/{repoId}/`（毫秒 base36 + 随机）；**整轮 finally 统一删** |
 | F | 唤醒 | 新建真空 / 连通变 1 → 清 next-run-at；**不**并行 clone |
+| G | FE/BE 冲突 | 仅冲突分支写 `repo_type=前后端` + 双侧 top 栈逗号拼接；任务门禁 token∩白名单 |
 
 ---
 
